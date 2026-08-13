@@ -2,11 +2,8 @@ using System.Text;
 
 namespace GtaMiniGameBot;
 
-internal sealed class MainForm : Form
+internal sealed class OilWellPanel : UserControl
 {
-    private const int HOTKEY_START = 1, HOTKEY_STOP = 2;
-    private const uint VK_F8 = 0x77, VK_F9 = 0x78;
-
     private readonly BotConfig _cfg = BotConfig.Load();
     private OilWellBot _bot;
     private MiniGameReader _monitor;
@@ -33,13 +30,13 @@ internal sealed class MainForm : Form
     private readonly Button _btnDebug = new();
     private readonly System.Windows.Forms.Timer _timer = new();
 
-    public MainForm()
+    public bool IsRunning => _bot is { Running: true };
+
+    public OilWellPanel()
     {
-        Text = "GtaMiniGameBot — Giếng Khoan Dầu";
         Font = new Font("Segoe UI", 9F);
-        ClientSize = new Size(820, 760);
-        StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(740, 580);
+        Dock = DockStyle.Fill;
+        BackColor = Color.White;
 
         BuildUi();
 
@@ -54,12 +51,36 @@ internal sealed class MainForm : Form
         Append("Ở giàn khoan mới: bấm “Hiệu chỉnh” một lần để kiểm — phải ra 4 toạ độ với độ nổi ≥ 30.");
     }
 
+    public void StartFromHotkey()
+    {
+        if (!IsRunning) StartBot(oneCycle: false);
+    }
+
+    public void StopFromHotkey() => _bot?.Stop();
+
+    /// <summary>Dừng bot và nhả chuột khi đổi job, giữ panel để quay lại.</summary>
+    public void StopWork()
+    {
+        _bot?.Stop();
+        try { InputSender.LeftUp(); } catch { }
+    }
+
+    /// <summary>Dọn hết khi đóng app.</summary>
+    public void Shutdown()
+    {
+        _timer.Stop();
+        _bot?.Stop();
+        try { InputSender.LeftUp(); } catch { }
+        _monitor?.Dispose();
+        _monitor = null;
+    }
+
     // ---------------------------------------------------------------- UI
 
     private void BuildUi()
     {
         int y = 12;
-        int w = ClientSize.Width - 24;
+        const int w = 796;
 
         _status.SetBounds(12, y, w, 30);
         _status.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
@@ -118,7 +139,6 @@ internal sealed class MainForm : Form
 
         y += 170;
 
-        // Hai khoang cho cua chuoi reset xe - de sua duoc khi server lag.
         Controls.Add(new Label { Text = "Chờ sau khi lên xe (ms):", Location = new Point(14, y + 4), AutoSize = true });
         _afterEnter.SetBounds(180, y, 80, 24);
         _afterEnter.Minimum = 500; _afterEnter.Maximum = 15000; _afterEnter.Increment = 250;
@@ -182,46 +202,13 @@ internal sealed class MainForm : Form
 
         y += 34;
 
-        _log.SetBounds(12, y, w, ClientSize.Height - y - 12);
+        _log.SetBounds(12, y, w, 760 - y - 12);
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
         _log.Font = new Font("Consolas", 9F);
         _log.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
         Controls.Add(_log);
-    }
-
-    // ---------------------------------------------------------------- hotkey
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        if (!Native.RegisterHotKey(Handle, HOTKEY_START, 0, VK_F8))
-            Append("cảnh báo: không đăng ký được F8 (có thể app khác đang giữ phím này)");
-        if (!Native.RegisterHotKey(Handle, HOTKEY_STOP, 0, VK_F9))
-            Append("cảnh báo: không đăng ký được F9");
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == Native.WM_HOTKEY)
-        {
-            int id = m.WParam.ToInt32();
-            if (id == HOTKEY_START && _bot is null or { Running: false }) StartBot(oneCycle: false);
-            else if (id == HOTKEY_STOP) _bot?.Stop();
-        }
-        base.WndProc(ref m);
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        _timer.Stop();
-        _bot?.Stop();
-        try { InputSender.LeftUp(); } catch { }   // khong bao gio de chuot ket
-        Native.UnregisterHotKey(Handle, HOTKEY_START);
-        Native.UnregisterHotKey(Handle, HOTKEY_STOP);
-        _monitor?.Dispose();
-        base.OnFormClosing(e);
     }
 
     // ---------------------------------------------------------------- hanh dong
@@ -255,9 +242,6 @@ internal sealed class MainForm : Form
         catch (Exception ex) { Append("hiệu chỉnh lỗi: " + ex.Message); }
     }
 
-    /// <summary>
-    /// Chup mau dong ho toc do. Phai bam KHI DANG NGOI TRONG XE.
-    /// </summary>
     private void DoCaptureCarTemplate()
     {
         string overlap = ProbeOverlapWarning();
@@ -286,7 +270,7 @@ internal sealed class MainForm : Form
                    $"trong xe phải ≥ {_cfg.CarNccIn:F2}. (Số này chỉ để tham khảo, không dùng quyết định.)");
 
             _monitor?.Dispose();
-            _monitor = null;   // nap lai mau o lan doc ke tiep
+            _monitor = null;
         }
         catch (Exception ex) { Append("chụp mẫu lỗi: " + ex.Message); }
     }
@@ -302,13 +286,9 @@ internal sealed class MainForm : Form
         catch (Exception ex) { Append("không mở được thư mục bằng chứng: " + ex.Message); }
     }
 
-    /// <summary>
-    /// Cua so app de len vung do thi moi phep do se doc pixel cua chinh app.
-    /// Kiem truoc khi chay - loai hang mot nguyen nhan rat kho doan.
-    /// </summary>
     private string ProbeOverlapWarning()
     {
-        var mine = Bounds;
+        var mine = FindForm()?.Bounds ?? Rectangle.Empty;
         var zones = new (string name, Rectangle r)[]
         {
             ("dải 4 thanh", _cfg.BarRegion),
@@ -369,11 +349,10 @@ internal sealed class MainForm : Form
         _btnStop.Enabled = running;
     }
 
-    // ---------------------------------------------------------------- theo doi
-
     private void Tick()
     {
-        if (_bot is { Running: true }) return;   // bot dang chay thi no tu cap nhat
+        if (!Visible) return;
+        if (_bot is { Running: true }) return;
         if (!_watch.Checked) return;
 
         try
@@ -418,8 +397,6 @@ internal sealed class MainForm : Form
         };
     }
 
-    // ---------------------------------------------------------------- log
-
     private void Post(Action a)
     {
         if (IsDisposed || !IsHandleCreated) return;
@@ -427,8 +404,6 @@ internal sealed class MainForm : Form
     }
 
     private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "bot-log.txt");
-
-    // BOM de Notepad nhan ra UTF-8, khong thi tieng Viet co dau se thanh ky tu la.
     private static readonly Encoding LogEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
 
     private void Append(string line)
@@ -438,13 +413,11 @@ internal sealed class MainForm : Form
             _log.Lines = _log.Lines.Skip(200).ToArray();
         _log.AppendText($"[{stamp}] {line}{Environment.NewLine}");
 
-        // Ghi ra file luon: khong co no thi moi lan co su co lai phai doan
-        // thay vi doc, va doan thi ton mot luot chay thu cua nguoi dung.
         try
         {
             File.AppendAllText(LogPath,
                 $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  {line}{Environment.NewLine}", LogEncoding);
         }
-        catch { /* het cho ghi / bi khoa - khong duoc lam sap UI vi chuyen nay */ }
+        catch { }
     }
 }

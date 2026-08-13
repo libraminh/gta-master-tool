@@ -1,0 +1,146 @@
+namespace GtaMiniGameBot;
+
+internal sealed class HomeForm : Form
+{
+    private const int HOTKEY_START = 1, HOTKEY_STOP = 2;
+    private const uint VK_F8 = 0x77, VK_F9 = 0x78;
+    private const int SidebarW = 200;
+
+    private readonly Button _btnOil = new();
+    private readonly Button _btnFish = new();
+    private readonly Panel _host = new();
+    private readonly OilWellPanel _oil = new();
+    private readonly Panel _fishingSoon = new();
+    private bool _oilActive = true;
+
+    public HomeForm()
+    {
+        Text = "GTA Master Tool";
+        Font = new Font("Segoe UI", 9F);
+        ClientSize = new Size(SidebarW + 820, 760);
+        MinimumSize = new Size(SidebarW + 760, 620);
+        StartPosition = FormStartPosition.CenterScreen;
+
+        BuildSidebar();
+        BuildHost();
+        ShowOil();
+    }
+
+    private void BuildSidebar()
+    {
+        var side = new Panel
+        {
+            Dock = DockStyle.Left,
+            Width = SidebarW,
+            BackColor = Color.FromArgb(245, 246, 248)
+        };
+        Controls.Add(side);
+
+        var title = new Label
+        {
+            Text = "GTA Master Tool",
+            Font = new Font("Segoe UI", 11F, FontStyle.Bold),
+            AutoSize = false
+        };
+        title.SetBounds(12, 16, SidebarW - 24, 48);
+        side.Controls.Add(title);
+
+        StyleNav(_btnOil, "Dầu khí", 76);
+        _btnOil.Click += (_, _) => ShowOil();
+        side.Controls.Add(_btnOil);
+
+        StyleNav(_btnFish, "Câu cá", 118);
+        _btnFish.Click += (_, _) => ShowFishing();
+        side.Controls.Add(_btnFish);
+    }
+
+    private static void StyleNav(Button b, string text, int y)
+    {
+        b.Text = text;
+        b.SetBounds(12, y, SidebarW - 24, 36);
+        b.FlatStyle = FlatStyle.Flat;
+        b.FlatAppearance.BorderSize = 0;
+        b.TextAlign = ContentAlignment.MiddleLeft;
+        b.Padding = new Padding(8, 0, 0, 0);
+        b.Cursor = Cursors.Hand;
+    }
+
+    private void BuildHost()
+    {
+        _host.Dock = DockStyle.Fill;
+        _host.BackColor = Color.White;
+        Controls.Add(_host);
+        _host.BringToFront();
+
+        _oil.Dock = DockStyle.Fill;
+        _host.Controls.Add(_oil);
+
+        _fishingSoon.Dock = DockStyle.Fill;
+        _fishingSoon.BackColor = Color.White;
+        var soon = new Label
+        {
+            Text = "Sắp có",
+            Font = new Font("Segoe UI", 16F, FontStyle.Bold),
+            ForeColor = Color.DimGray,
+            AutoSize = true,
+            Location = new Point(32, 32)
+        };
+        _fishingSoon.Controls.Add(soon);
+        _host.Controls.Add(_fishingSoon);
+    }
+
+    private void ShowOil()
+    {
+        _fishingSoon.Hide();
+        _oil.Show();
+        _oil.BringToFront();
+        _oilActive = true;
+        HighlightNav(oil: true);
+    }
+
+    private void ShowFishing()
+    {
+        if (_oil.IsRunning)
+            _oil.StopWork();
+
+        _oil.Hide();
+        _fishingSoon.Show();
+        _fishingSoon.BringToFront();
+        _oilActive = false;
+        HighlightNav(oil: false);
+    }
+
+    private void HighlightNav(bool oil)
+    {
+        _btnOil.BackColor = oil ? Color.White : Color.Transparent;
+        _btnOil.Font = new Font("Segoe UI", 9F, oil ? FontStyle.Bold : FontStyle.Regular);
+        _btnFish.BackColor = oil ? Color.Transparent : Color.White;
+        _btnFish.Font = new Font("Segoe UI", 9F, oil ? FontStyle.Regular : FontStyle.Bold);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Native.RegisterHotKey(Handle, HOTKEY_START, 0, VK_F8);
+        Native.RegisterHotKey(Handle, HOTKEY_STOP, 0, VK_F9);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == Native.WM_HOTKEY && _oilActive)
+        {
+            int id = m.WParam.ToInt32();
+            if (id == HOTKEY_START) _oil.StartFromHotkey();
+            else if (id == HOTKEY_STOP) _oil.StopFromHotkey();
+        }
+        base.WndProc(ref m);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        Native.UnregisterHotKey(Handle, HOTKEY_START);
+        Native.UnregisterHotKey(Handle, HOTKEY_STOP);
+        _oil.Shutdown();
+        base.OnFormClosing(e);
+    }
+}
