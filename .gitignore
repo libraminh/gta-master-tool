@@ -1,0 +1,21 @@
+# Build
+**/bin/
+**/obj/
+*.user
+
+# Published app artifacts
+app/*.exe
+app/*.dll
+app/*.pdb
+app/*.runtimeconfig.json
+app/*.deps.json
+
+# Runtime logs / dumps
+app/debug/
+app/bot-log.txt
+**/verify-report.txt
+**/pick-car-template.txt
+
+# Local capture dumps (too large for git)
+recordings/**/*.png
+app/car-template.png

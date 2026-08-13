@@ -1,0 +1,207 @@
+{"i":1,"t":111,"dt":111,"act":"recorder_started","mouseHook":true,"keyHook":true,"win":"Settings","img":"001.png"}
+{"i":3,"t":2197,"dt":120,"act":"mouse_up_left","at":[828,340],"win":"Settings"}
+{"i":2,"t":2077,"dt":1966,"act":"mouse_down_left","at":[828,340],"win":"Settings","img":"002.png"}
+{"i":5,"t":2820,"dt":126,"act":"mouse_up_left","at":[1452,563],"win":"Settings"}
+{"i":4,"t":2694,"dt":497,"act":"mouse_down_left","at":[1452,563],"win":"Settings","img":"004.png"}
+{"i":6,"t":3116,"dt":296,"act":"key_down","key":"VK_91","vk":91,"sc":91,"win":"Settings","img":"006.png"}
+{"i":8,"t":3610,"dt":107,"act":"key_up","key":"G","vk":71,"sc":34,"win":"Settings"}
+{"i":7,"t":3503,"dt":387,"act":"key_down","key":"G","vk":71,"sc":34,"win":"Settings","img":"007.png"}
+{"i":9,"t":3672,"dt":62,"act":"key_up","key":"VK_91","vk":91,"sc":91,"win":"Settings"}
+{"i":10,"t":4652,"dt":980,"act":"screen_changed","diff":0.1101,"win":"","img":"010.png"}
+{"i":12,"t":6332,"dt":110,"act":"mouse_up_left","at":[1853,299],"win":""}
+{"i":11,"t":6222,"dt":1570,"act":"mouse_down_left","at":[1853,300],"win":"","img":"011.png"}
+{"i":13,"t":6454,"dt":122,"act":"screen_changed","diff":0.1027,"win":"Settings","img":"013.png"}
+{"i":15,"t":7126,"dt":93,"act":"mouse_up_left","at":[1955,122],"win":"Settings"}
+{"i":14,"t":7033,"dt":579,"act":"mouse_down_left","at":[1955,123],"win":"Settings","img":"014.png"}
+{"i":16,"t":7235,"dt":109,"act":"screen_changed","diff":0.0817,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"016.png"}
+{"i":17,"t":7760,"dt":525,"act":"screen_changed","diff":0.0284,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"017.png"}
+{"i":18,"t":8278,"dt":518,"act":"screen_changed","diff":0.0348,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"018.png"}
+{"i":19,"t":8544,"dt":266,"act":"screen_changed","diff":0.0415,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"019.png"}
+{"i":20,"t":8826,"dt":282,"act":"screen_changed","diff":0.0726,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"020.png"}
+{"i":21,"t":9109,"dt":283,"act":"screen_changed","diff":0.0344,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"021.png"}
+{"i":22,"t":9386,"dt":277,"act":"screen_changed","diff":0.0428,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"022.png"}
+{"i":24,"t":9591,"dt":106,"act":"key_up","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":23,"t":9485,"dt":99,"act":"key_down","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"023.png"}
+{"i":25,"t":9669,"dt":78,"act":"screen_changed","diff":0.0633,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"025.png"}
+{"i":26,"t":9945,"dt":276,"act":"screen_changed","diff":0.1600,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"026.png"}
+{"i":28,"t":10137,"dt":124,"act":"key_up","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":27,"t":10013,"dt":68,"act":"key_down","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"027.png"}
+{"i":29,"t":10224,"dt":87,"act":"screen_changed","diff":0.1640,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"029.png"}
+{"i":30,"t":10509,"dt":285,"act":"screen_changed","diff":0.0584,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"030.png"}
+{"i":33,"t":10957,"dt":113,"act":"mouse_up_left","at":[1300,328],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":31,"t":10786,"dt":277,"act":"screen_changed","diff":0.0409,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"031.png"}
+{"i":32,"t":10844,"dt":58,"act":"mouse_down_left","at":[1300,328],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"032.png"}
+{"i":34,"t":11322,"dt":365,"act":"screen_changed","diff":0.0714,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"034.png"}
+{"i":35,"t":11599,"dt":277,"act":"screen_changed","diff":0.0423,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"035.png"}
+{"i":36,"t":11873,"dt":274,"act":"screen_changed","diff":0.0283,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"036.png"}
+{"i":37,"t":12145,"dt":272,"act":"screen_changed","diff":0.1445,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"037.png"}
+{"i":38,"t":12424,"dt":279,"act":"screen_changed","diff":0.1255,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"038.png"}
+{"i":39,"t":12701,"dt":277,"act":"screen_changed","diff":0.0941,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"039.png"}
+{"i":42,"t":13128,"dt":94,"act":"key_up","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":40,"t":12981,"dt":280,"act":"screen_changed","diff":0.0285,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"040.png"}
+{"i":41,"t":13034,"dt":53,"act":"key_down","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"041.png"}
+{"i":43,"t":13250,"dt":122,"act":"screen_changed","diff":0.0602,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"043.png"}
+{"i":44,"t":13525,"dt":275,"act":"screen_changed","diff":0.1709,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"044.png"}
+{"i":46,"t":13704,"dt":110,"act":"key_up","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":45,"t":13594,"dt":69,"act":"key_down","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"045.png"}
+{"i":50,"t":13967,"dt":61,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":""}
+{"i":47,"t":13808,"dt":104,"act":"screen_changed","diff":0.1755,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"047.png"}
+{"i":51,"t":14029,"dt":62,"act":"key_up","key":"Tab","vk":9,"sc":15,"win":"Settings"}
+{"i":48,"t":13842,"dt":34,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"048.png"}
+{"i":49,"t":13906,"dt":64,"act":"key_down","key":"Tab","vk":9,"sc":15,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"049.png"}
+{"i":52,"t":14097,"dt":68,"act":"screen_changed","diff":0.0399,"win":"Settings","img":"052.png"}
+{"i":53,"t":14388,"dt":291,"act":"screen_changed","diff":0.0938,"win":"Settings","img":"053.png"}
+{"i":54,"t":15753,"dt":1365,"act":"wheel","at":[1067,543],"delta":-120,"win":"Settings"}
+{"i":55,"t":15769,"dt":16,"act":"wheel","at":[1068,543],"delta":-120,"win":"Settings"}
+{"i":56,"t":15815,"dt":46,"act":"wheel","at":[1068,543],"delta":-120,"win":"Settings"}
+{"i":58,"t":28751,"dt":138,"act":"mouse_up_left","at":[1961,130],"win":"Settings"}
+{"i":57,"t":28613,"dt":12798,"act":"mouse_down_left","at":[1962,129],"win":"Settings","img":"057.png"}
+{"i":59,"t":28836,"dt":85,"act":"screen_changed","diff":0.0427,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"059.png"}
+{"i":60,"t":29113,"dt":277,"act":"screen_changed","diff":0.0657,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"060.png"}
+{"i":62,"t":29445,"dt":170,"act":"mouse_up_left","at":[1445,414],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":61,"t":29275,"dt":162,"act":"mouse_down_left","at":[1457,411],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"061.png"}
+{"i":64,"t":29766,"dt":106,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":63,"t":29660,"dt":215,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"063.png"}
+{"i":65,"t":30117,"dt":351,"act":"screen_changed","diff":0.0866,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"065.png"}
+{"i":66,"t":30386,"dt":269,"act":"screen_changed","diff":0.0934,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"066.png"}
+{"i":67,"t":30662,"dt":276,"act":"screen_changed","diff":0.1165,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"067.png"}
+{"i":68,"t":30943,"dt":281,"act":"screen_changed","diff":0.0317,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"068.png"}
+{"i":69,"t":31962,"dt":1019,"act":"screen_changed","diff":0.0545,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"069.png"}
+{"i":70,"t":32918,"dt":956,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"070.png"}
+{"i":71,"t":32965,"dt":47,"act":"key_down","key":"VK_91","vk":91,"sc":91,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"071.png"}
+{"i":73,"t":33318,"dt":137,"act":"key_up","key":"G","vk":71,"sc":34,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":74,"t":33349,"dt":31,"act":"key_up","key":"VK_91","vk":91,"sc":91,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":75,"t":33396,"dt":47,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":72,"t":33181,"dt":216,"act":"key_down","key":"G","vk":71,"sc":34,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"072.png"}
+{"i":76,"t":33747,"dt":351,"act":"screen_changed","diff":0.1222,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"076.png"}
+{"i":78,"t":40070,"dt":155,"act":"key_up","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":77,"t":39915,"dt":6168,"act":"key_down","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"077.png"}
+{"i":80,"t":41253,"dt":107,"act":"mouse_up_left","at":[245,129],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":79,"t":41146,"dt":1076,"act":"mouse_down_left","at":[245,129],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"079.png"}
+{"i":82,"t":43457,"dt":140,"act":"mouse_up_left","at":[836,218],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":81,"t":43317,"dt":2064,"act":"mouse_down_left","at":[836,218],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"081.png"}
+{"i":83,"t":43628,"dt":171,"act":"screen_changed","diff":0.1259,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"083.png"}
+{"i":84,"t":43901,"dt":273,"act":"screen_changed","diff":0.0262,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"084.png"}
+{"i":85,"t":44169,"dt":268,"act":"screen_changed","diff":0.0331,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"085.png"}
+{"i":88,"t":44545,"dt":98,"act":"key_up","key":"E","vk":69,"sc":18,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":86,"t":44434,"dt":265,"act":"key_down","key":"E","vk":69,"sc":18,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"086.png"}
+{"i":87,"t":44447,"dt":13,"act":"screen_changed","diff":0.0290,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"087.png"}
+{"i":89,"t":44766,"dt":221,"act":"screen_changed","diff":0.1150,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"089.png"}
+{"i":90,"t":45041,"dt":275,"act":"screen_changed","diff":0.0348,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"090.png"}
+{"i":91,"t":45324,"dt":283,"act":"screen_changed","diff":0.0399,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"091.png"}
+{"i":92,"t":45599,"dt":275,"act":"screen_changed","diff":0.0408,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"092.png"}
+{"i":93,"t":45882,"dt":283,"act":"screen_changed","diff":0.0424,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"093.png"}
+{"i":94,"t":46157,"dt":275,"act":"screen_changed","diff":0.0304,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"094.png"}
+{"i":95,"t":46410,"dt":253,"act":"mouse_down_left","at":[366,901],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"095.png"}
+{"i":96,"t":53918,"dt":7508,"act":"mouse_up_left","at":[366,901],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":97,"t":54695,"dt":777,"act":"mouse_down_left","at":[508,935],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"097.png"}
+{"i":98,"t":55437,"dt":742,"act":"mouse_up_left","at":[508,935],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":99,"t":55717,"dt":280,"act":"mouse_down_left","at":[508,935],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"099.png"}
+{"i":100,"t":63174,"dt":7457,"act":"mouse_up_left","at":[508,935],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":101,"t":64061,"dt":887,"act":"mouse_down_left","at":[644,946],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"101.png"}
+{"i":102,"t":64555,"dt":494,"act":"mouse_up_left","at":[644,946],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":103,"t":64893,"dt":338,"act":"mouse_down_left","at":[642,940],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"103.png"}
+{"i":104,"t":72402,"dt":7509,"act":"mouse_up_left","at":[642,940],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":105,"t":73625,"dt":1223,"act":"mouse_down_left","at":[784,934],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"105.png"}
+{"i":106,"t":74056,"dt":431,"act":"mouse_up_left","at":[784,934],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":107,"t":74298,"dt":242,"act":"mouse_down_left","at":[784,934],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"107.png"}
+{"i":108,"t":82005,"dt":7707,"act":"mouse_up_left","at":[784,934],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":110,"t":85514,"dt":154,"act":"key_up","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":109,"t":85360,"dt":3355,"act":"key_down","key":"Esc","vk":27,"sc":1,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"109.png"}
+{"i":111,"t":85544,"dt":30,"act":"screen_changed","diff":0.1117,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"111.png"}
+{"i":112,"t":85822,"dt":278,"act":"screen_changed","diff":0.0403,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"112.png"}
+{"i":113,"t":86095,"dt":273,"act":"screen_changed","diff":0.0655,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"113.png"}
+{"i":114,"t":86374,"dt":279,"act":"screen_changed","diff":0.0959,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"114.png"}
+{"i":115,"t":86651,"dt":277,"act":"screen_changed","diff":0.0950,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"115.png"}
+{"i":116,"t":86926,"dt":275,"act":"screen_changed","diff":0.1015,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"116.png"}
+{"i":117,"t":87205,"dt":279,"act":"screen_changed","diff":0.1111,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"117.png"}
+{"i":120,"t":87545,"dt":63,"act":"mouse_up_left","at":[2339,174],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":118,"t":87453,"dt":248,"act":"mouse_down_left","at":[2339,174],"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"118.png"}
+{"i":119,"t":87482,"dt":29,"act":"screen_changed","diff":0.0638,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"119.png"}
+{"i":121,"t":88033,"dt":488,"act":"screen_changed","diff":0.0778,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"121.png"}
+{"i":122,"t":88561,"dt":528,"act":"screen_changed","diff":0.0300,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"122.png"}
+{"i":123,"t":89084,"dt":523,"act":"screen_changed","diff":0.0427,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"123.png"}
+{"i":124,"t":92590,"dt":3506,"act":"screen_changed","diff":0.0263,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"124.png"}
+{"i":127,"t":94458,"dt":94,"act":"key_up","key":"VK_91","vk":91,"sc":91,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay"}
+{"i":125,"t":94360,"dt":1770,"act":"screen_changed","diff":0.0315,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"125.png"}
+{"i":126,"t":94364,"dt":4,"act":"key_down","key":"VK_91","vk":91,"sc":91,"win":"PlayXGTA by XGTA.NETWORK - XGTA Reborn Roleplay","img":"126.png"}
+{"i":128,"t":94906,"dt":448,"act":"screen_changed","diff":0.0363,"win":"Search","img":"128.png"}
+{"i":130,"t":95881,"dt":153,"act":"mouse_up_left","at":[3296,705],"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":129,"t":95728,"dt":822,"act":"mouse_down_left","at":[3291,702],"win":"Search","img":"129.png"}
+{"i":134,"t":96331,"dt":62,"act":"key_up","key":"Right","vk":39,"sc":77,"win":"dev-team (Channel) - Nera Marketing - Slack"}
+{"i":135,"t":96347,"dt":16,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"dev-team (Channel) - Nera Marketing - Slack"}
+{"i":136,"t":96363,"dt":16,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"dev-team (Channel) - Nera Marketing - Slack"}
+{"i":131,"t":96146,"dt":265,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"131.png"}
+{"i":132,"t":96206,"dt":60,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"132.png"}
+{"i":133,"t":96269,"dt":63,"act":"key_down","key":"Right","vk":39,"sc":77,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"133.png"}
+{"i":140,"t":97190,"dt":60,"act":"key_up","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":141,"t":97206,"dt":16,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":137,"t":97006,"dt":643,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"dev-team (Channel) - Nera Marketing - Slack","img":"137.png"}
+{"i":142,"t":97221,"dt":15,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":138,"t":97067,"dt":61,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"dev-team (Channel) - Nera Marketing - Slack","img":"138.png"}
+{"i":146,"t":97452,"dt":47,"act":"key_up","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":147,"t":97467,"dt":15,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":148,"t":97483,"dt":16,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":139,"t":97130,"dt":63,"act":"key_down","key":"Left","vk":37,"sc":75,"win":"dev-team (Channel) - Nera Marketing - Slack","img":"139.png"}
+{"i":152,"t":97667,"dt":63,"act":"key_up","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":153,"t":97682,"dt":15,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":154,"t":97698,"dt":16,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":143,"t":97282,"dt":61,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"143.png"}
+{"i":144,"t":97342,"dt":60,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"144.png"}
+{"i":158,"t":98083,"dt":61,"act":"key_up","key":"Right","vk":39,"sc":77,"win":"dev-team (Channel) - Nera Marketing - Slack"}
+{"i":145,"t":97405,"dt":63,"act":"key_down","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"145.png"}
+{"i":159,"t":98098,"dt":15,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"dev-team (Channel) - Nera Marketing - Slack"}
+{"i":160,"t":98113,"dt":15,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"dev-team (Channel) - Nera Marketing - Slack"}
+{"i":149,"t":97498,"dt":15,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"149.png"}
+{"i":150,"t":97544,"dt":46,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"150.png"}
+{"i":151,"t":97604,"dt":60,"act":"key_down","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"151.png"}
+{"i":155,"t":97884,"dt":186,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"155.png"}
+{"i":156,"t":97945,"dt":61,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"156.png"}
+{"i":164,"t":98939,"dt":46,"act":"key_up","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":165,"t":98955,"dt":16,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":166,"t":98971,"dt":16,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":157,"t":98022,"dt":77,"act":"key_down","key":"Right","vk":39,"sc":77,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"157.png"}
+{"i":170,"t":99186,"dt":63,"act":"key_up","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":171,"t":99201,"dt":15,"act":"key_up","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":161,"t":98797,"dt":684,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"dev-team (Channel) - Nera Marketing - Slack","img":"161.png"}
+{"i":172,"t":99216,"dt":15,"act":"key_up","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome"}
+{"i":162,"t":98845,"dt":48,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"dev-team (Channel) - Nera Marketing - Slack","img":"162.png"}
+{"i":163,"t":98893,"dt":48,"act":"key_down","key":"Left","vk":37,"sc":75,"win":"dev-team (Channel) - Nera Marketing - Slack","img":"163.png"}
+{"i":167,"t":99002,"dt":31,"act":"key_down","key":"LCtrl","vk":162,"sc":29,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"167.png"}
+{"i":168,"t":99062,"dt":60,"act":"key_down","key":"LAlt","vk":164,"sc":56,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"168.png"}
+{"i":169,"t":99123,"dt":61,"act":"key_down","key":"Left","vk":37,"sc":75,"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"169.png"}
+{"i":174,"t":100190,"dt":138,"act":"mouse_up_left","at":[3868,-557],"win":"Claude"}
+{"i":173,"t":100052,"dt":836,"act":"mouse_down_left","at":[3871,-560],"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"173.png"}
+{"i":176,"t":101264,"dt":107,"act":"mouse_up_left","at":[2797,645],"win":"『💫』 Design & Editor | Cà Rốt Designer - Discord"}
+{"i":175,"t":101157,"dt":967,"act":"mouse_down_left","at":[2797,646],"win":"(IRL) Podcast cùng anh Nị - Người im lặng gặp người hay nói - YouTube - Google Chrome","img":"175.png"}
+{"i":177,"t":103570,"dt":2306,"act":"screen_changed","diff":0.0263,"win":"『💫』 Design & Editor | Cà Rốt Designer - Discord","img":"177.png"}
+{"i":179,"t":105305,"dt":110,"act":"mouse_up_left","at":[3013,1980],"win":""}
+{"i":178,"t":105195,"dt":1625,"act":"mouse_down_left","at":[3013,1980],"win":"『💫』 Design & Editor | Cà Rốt Designer - Discord","img":"178.png"}
+{"i":180,"t":107552,"dt":2247,"act":"screen_changed","diff":0.0270,"win":"Claude","img":"180.png"}
+{"i":182,"t":109383,"dt":125,"act":"mouse_up_left","at":[3256,616],"win":"Claude"}
+{"i":181,"t":109258,"dt":1706,"act":"mouse_down_left","at":[3256,616],"win":"Claude","img":"181.png"}
+{"i":183,"t":110710,"dt":1327,"act":"wheel","at":[3195,482],"delta":120,"win":"Claude"}
+{"i":184,"t":110742,"dt":32,"act":"wheel","at":[3195,482],"delta":120,"win":"Claude"}
+{"i":185,"t":110835,"dt":93,"act":"wheel","at":[3195,482],"delta":120,"win":"Claude"}
+{"i":186,"t":111913,"dt":1078,"act":"wheel","at":[3195,482],"delta":-120,"win":"Claude"}
+{"i":187,"t":111958,"dt":45,"act":"wheel","at":[3195,482],"delta":-120,"win":"Claude"}
+{"i":188,"t":111988,"dt":30,"act":"wheel","at":[3195,482],"delta":-120,"win":"Claude"}
+{"i":189,"t":112035,"dt":47,"act":"wheel","at":[3195,482],"delta":-120,"win":"Claude"}
+{"i":190,"t":113357,"dt":1322,"act":"screen_changed","diff":0.0252,"win":"Claude","img":"190.png"}
+{"i":193,"t":114665,"dt":78,"act":"key_up","key":"X","vk":88,"sc":45,"win":"Claude"}
+{"i":191,"t":114527,"dt":1170,"act":"key_down","key":"X","vk":88,"sc":45,"win":"Claude","img":"191.png"}
+{"i":195,"t":114742,"dt":62,"act":"key_up","key":"O","vk":79,"sc":24,"win":"Claude"}
+{"i":196,"t":114804,"dt":62,"act":"key_up","key":"N","vk":78,"sc":49,"win":"Claude"}
+{"i":192,"t":114587,"dt":60,"act":"key_down","key":"O","vk":79,"sc":24,"win":"Claude","img":"192.png"}
+{"i":198,"t":114959,"dt":109,"act":"key_up","key":"G","vk":71,"sc":34,"win":"Claude"}
+{"i":194,"t":114680,"dt":15,"act":"key_down","key":"N","vk":78,"sc":49,"win":"Claude","img":"194.png"}
+{"i":197,"t":114850,"dt":46,"act":"key_down","key":"G","vk":71,"sc":34,"win":"Claude","img":"197.png"}
+{"i":200,"t":115225,"dt":125,"act":"key_up","key":"Enter","vk":13,"sc":28,"win":"Claude"}
+{"i":199,"t":115100,"dt":141,"act":"key_down","key":"Enter","vk":13,"sc":28,"win":"Claude","img":"199.png"}
+{"i":201,"t":118609,"dt":3384,"act":"screen_changed","diff":0.0251,"win":"Claude","img":"201.png"}
+{"i":202,"t":121380,"dt":2771,"act":"screen_changed","diff":0.0254,"win":"Claude","img":"202.png"}
+{"i":203,"t":123100,"dt":1720,"act":"wheel","at":[3196,502],"delta":120,"win":"Claude"}
+{"i":204,"t":128671,"dt":5571,"act":"key_down","key":"VK_91","vk":91,"sc":91,"win":"Claude","img":"204.png"}
+{"i":206,"t":128951,"dt":95,"act":"key_up","key":"G","vk":71,"sc":34,"win":"Claude"}
+{"i":207,"t":128981,"dt":30,"act":"key_up","key":"VK_91","vk":91,"sc":91,"win":"Claude"}
+{"i":205,"t":128856,"dt":185,"act":"key_down","key":"G","vk":71,"sc":34,"win":"Claude","img":"205.png"}
