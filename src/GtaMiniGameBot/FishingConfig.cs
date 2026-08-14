@@ -106,10 +106,10 @@ internal sealed class FishingConfig
     };
 
     public static string DefaultPath =>
-        Path.Combine(AppContext.BaseDirectory, "fishing.json");
+        Path.Combine(AppPaths.Root, "fishing.json");
 
     public static string ProfileDir(string key) =>
-        Path.Combine(AppContext.BaseDirectory, "fishing", key);
+        Path.Combine(AppPaths.Root, "fishing", key);
 
     public static string BarPreviewPath(string key) => Path.Combine(ProfileDir(key), "bar.png");
     public static string FishTemplatePath(string key) => Path.Combine(ProfileDir(key), "fish.png");

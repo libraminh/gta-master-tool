@@ -28,6 +28,7 @@ internal sealed class FishingPanel : UserControl
     private readonly PictureBox _thumbKeep = new();
     private readonly TextBox _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
+    private string _jobKey = HotkeyText.Job();
 
     public FishingPanel()
     {
@@ -45,12 +46,14 @@ internal sealed class FishingPanel : UserControl
         _timer.Tick += (_, _) => Tick();
         _timer.Start();
 
-        Append("Khoanh thanh + cá rồi F9 để bật/tắt câu.");
+        Append($"Khoanh thanh + cá rồi {_jobKey} để bật/tắt câu.");
         Append("CẤT VÀO: khoanh nút trái lúc vừa câu được cá — bot click rồi mới bấm 4.");
         Append("Game nên cửa sổ không viền / fullscreen windowed — exclusive có thể che overlay.");
     }
 
     public bool IsRunning => _bot is { Running: true };
+
+    public event Action<bool> RunningChanged;
 
     public void StartFromHotkey()
     {
@@ -127,7 +130,7 @@ internal sealed class FishingPanel : UserControl
         Controls.Add(_status);
 
         _btnToggle.SetBounds(390, y, 288, 30);
-        _btnToggle.Text = "Bật  (F9)";
+        _btnToggle.Text = $"Bật  ({_jobKey})";
         _btnToggle.Click += (_, _) => Toggle();
         Controls.Add(_btnToggle);
         y += 38;
@@ -417,14 +420,22 @@ internal sealed class FishingPanel : UserControl
         _bot.Start();
     }
 
+    /// <summary>Nguoi dung doi phim bat/tat job trong tab Tiện ích.</summary>
+    public void SetJobHotkeyText(string text)
+    {
+        _jobKey = text;
+        _btnToggle.Text = IsRunning ? $"Tắt  ({_jobKey})" : $"Bật  ({_jobKey})";
+    }
+
     private void SetRunningUi(bool running)
     {
-        _btnToggle.Text = running ? "Tắt  (F9)" : "Bật  (F9)";
+        _btnToggle.Text = running ? $"Tắt  ({_jobKey})" : $"Bật  ({_jobKey})";
         _btnBar.Enabled = !running;
         _btnFish.Enabled = !running;
         _btnReject.Enabled = !running;
         _btnKeep.Enabled = !running;
         _screens.Enabled = !running;
+        RunningChanged?.Invoke(running);
     }
 
     private void Post(Action a)

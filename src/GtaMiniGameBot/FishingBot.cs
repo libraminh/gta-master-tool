@@ -81,7 +81,7 @@ internal sealed class FishingBot
 
             Emit($"bắt đầu. chờ cắn {_cfg.WaitBiteMs} ms, giữ S tối đa {_cfg.FightTimeoutMs} ms, " +
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
-            Emit("F9 = bật/tắt. Cửa sổ game phải đang focus (" + _cfg.WindowMatch + ").");
+            Emit($"{HotkeyText.Job()} = bật/tắt. Cửa sổ game phải đang focus (" + _cfg.WindowMatch + ").");
             Emit($"mỗi lần 4 sẽ bấm Space sau {_cfg.CastSpaceDelayMs} ms — tắt hotkey 4 trong AutoHotkey.");
 
             Cast(ct, "thả câu");
