@@ -129,6 +129,48 @@ internal sealed class RegionReader : IDisposable
         return outp;
     }
 
+    /// <summary>
+    /// Tỉ lệ hàng (từ dưới lên) có đủ pixel thỏa <paramref name="match"/>.
+    /// Dừng khi gặp khoảng trống sau khi đã có fill. -1 nếu vùng rỗng.
+    /// </summary>
+    public double BottomUpFill01(Func<int, int, int, bool> match, double rowFrac = 0.12)
+    {
+        int w = Region.Width, h = Region.Height;
+        if (w < 1 || h < 1 || _buf.Length == 0) return -1;
+
+        int minPerRow = Math.Max(1, (int)Math.Ceiling(w * rowFrac));
+        int filled = 0;
+        bool started = false;
+        for (int y = h - 1; y >= 0; y--)
+        {
+            int n = 0;
+            int row = y * _stride;
+            for (int x = 0; x < w; x++)
+            {
+                int i = row + x * 4;
+                if (match(_buf[i], _buf[i + 1], _buf[i + 2])) n++;
+            }
+            if (n >= minPerRow)
+            {
+                filled++;
+                started = true;
+            }
+            else if (started && n < Math.Max(1, minPerRow / 3))
+                break;
+        }
+        return filled / (double)h;
+    }
+
+    public int CountMatch(Func<int, int, int, bool> match)
+    {
+        int n = 0;
+        for (int i = 0; i + 3 < _buf.Length; i += 4)
+        {
+            if (match(_buf[i], _buf[i + 1], _buf[i + 2])) n++;
+        }
+        return n;
+    }
+
     /// <summary>Luu vung dang doc ra file - de debug / doi chieu bang mat.</summary>
     public void SaveDebug(string path) => _bmp.Save(path, ImageFormat.Png);
 
