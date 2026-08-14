@@ -25,8 +25,7 @@ internal sealed class OilWellPanel : UserControl
     private readonly Button _btnCalibrate = new();
     private readonly Button _btnCarTemplate = new();
     private readonly Button _btnOneCycle = new();
-    private readonly Button _btnStart = new();
-    private readonly Button _btnStop = new();
+    private readonly Button _btnToggle = new();
     private readonly Button _btnDebug = new();
     private readonly System.Windows.Forms.Timer _timer = new();
 
@@ -47,7 +46,7 @@ internal sealed class OilWellPanel : UserControl
         Append($"cấu hình: thanh x = {string.Join(", ", _cfg.BarX)}   |   thân thanh y = {_cfg.BarYTop}…{_cfg.BarYBottom}");
         Append($"ngưỡng: đầy ≥ {_cfg.FullThreshold}   |   coi là đã reset < {_cfg.ResetThreshold}   |   " +
                $"panel mở khi nổi lên ≥ {_cfg.PanelBarProminenceMin}");
-        Append("F8 = bắt đầu   |   F9 = dừng.");
+        Append("F9 = bật/tắt cày.");
         Append("Ở giàn khoan mới: bấm “Hiệu chỉnh” một lần để kiểm — phải ra 4 toạ độ với độ nổi ≥ 30.");
     }
 
@@ -57,6 +56,12 @@ internal sealed class OilWellPanel : UserControl
     }
 
     public void StopFromHotkey() => _bot?.Stop();
+
+    private void Toggle()
+    {
+        if (IsRunning) StopFromHotkey();
+        else StartBot(oneCycle: false);
+    }
 
     /// <summary>Dừng bot và nhả chuột khi đổi job, giữ panel để quay lại.</summary>
     public void StopWork()
@@ -168,16 +173,10 @@ internal sealed class OilWellPanel : UserControl
         _btnOneCycle.Click += (_, _) => StartBot(oneCycle: true);
         Controls.Add(_btnOneCycle);
 
-        _btnStart.SetBounds(460, y, 160, 32);
-        _btnStart.Text = "Bắt đầu cày  (F8)";
-        _btnStart.Click += (_, _) => StartBot(oneCycle: false);
-        Controls.Add(_btnStart);
-
-        _btnStop.SetBounds(626, y, 110, 32);
-        _btnStop.Text = "Dừng  (F9)";
-        _btnStop.Enabled = false;
-        _btnStop.Click += (_, _) => _bot?.Stop();
-        Controls.Add(_btnStop);
+        _btnToggle.SetBounds(460, y, 276, 32);
+        _btnToggle.Text = "Bật  (F9)";
+        _btnToggle.Click += (_, _) => Toggle();
+        Controls.Add(_btnToggle);
 
         y += 42;
 
@@ -342,11 +341,10 @@ internal sealed class OilWellPanel : UserControl
 
     private void SetRunningUi(bool running)
     {
-        _btnStart.Enabled = !running;
+        _btnToggle.Text = running ? "Tắt  (F9)" : "Bật  (F9)";
         _btnOneCycle.Enabled = !running;
         _btnCalibrate.Enabled = !running;
         _btnCarTemplate.Enabled = !running;
-        _btnStop.Enabled = running;
     }
 
     private void Tick()

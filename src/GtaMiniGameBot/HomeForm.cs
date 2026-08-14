@@ -2,15 +2,15 @@ namespace GtaMiniGameBot;
 
 internal sealed class HomeForm : Form
 {
-    private const int HOTKEY_START = 1, HOTKEY_STOP = 2;
-    private const uint VK_F8 = 0x77, VK_F9 = 0x78;
+    private const int HOTKEY_TOGGLE = 1;
+    private const uint VK_F9 = 0x78;
     private const int SidebarW = 200;
 
     private readonly Button _btnOil = new();
     private readonly Button _btnFish = new();
     private readonly Panel _host = new();
     private readonly OilWellPanel _oil = new();
-    private readonly Panel _fishingSoon = new();
+    private readonly FishingPanel _fish = new();
     private bool _oilActive = true;
 
     public HomeForm()
@@ -75,23 +75,14 @@ internal sealed class HomeForm : Form
         _oil.Dock = DockStyle.Fill;
         _host.Controls.Add(_oil);
 
-        _fishingSoon.Dock = DockStyle.Fill;
-        _fishingSoon.BackColor = Color.White;
-        var soon = new Label
-        {
-            Text = "Sắp có",
-            Font = new Font("Segoe UI", 16F, FontStyle.Bold),
-            ForeColor = Color.DimGray,
-            AutoSize = true,
-            Location = new Point(32, 32)
-        };
-        _fishingSoon.Controls.Add(soon);
-        _host.Controls.Add(_fishingSoon);
+        _fish.Dock = DockStyle.Fill;
+        _host.Controls.Add(_fish);
     }
 
     private void ShowOil()
     {
-        _fishingSoon.Hide();
+        _fish.StopWork();
+        _fish.Hide();
         _oil.Show();
         _oil.BringToFront();
         _oilActive = true;
@@ -104,8 +95,8 @@ internal sealed class HomeForm : Form
             _oil.StopWork();
 
         _oil.Hide();
-        _fishingSoon.Show();
-        _fishingSoon.BringToFront();
+        _fish.Show();
+        _fish.BringToFront();
         _oilActive = false;
         HighlightNav(oil: false);
     }
@@ -121,26 +112,32 @@ internal sealed class HomeForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        Native.RegisterHotKey(Handle, HOTKEY_START, 0, VK_F8);
-        Native.RegisterHotKey(Handle, HOTKEY_STOP, 0, VK_F9);
+        Native.RegisterHotKey(Handle, HOTKEY_TOGGLE, 0, VK_F9);
     }
 
     protected override void WndProc(ref Message m)
     {
-        if (m.Msg == Native.WM_HOTKEY && _oilActive)
+        if (m.Msg == Native.WM_HOTKEY && m.WParam.ToInt32() == HOTKEY_TOGGLE)
         {
-            int id = m.WParam.ToInt32();
-            if (id == HOTKEY_START) _oil.StartFromHotkey();
-            else if (id == HOTKEY_STOP) _oil.StopFromHotkey();
+            if (_oilActive)
+            {
+                if (_oil.IsRunning) _oil.StopFromHotkey();
+                else _oil.StartFromHotkey();
+            }
+            else
+            {
+                if (_fish.IsRunning) _fish.StopFromHotkey();
+                else _fish.StartFromHotkey();
+            }
         }
         base.WndProc(ref m);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        Native.UnregisterHotKey(Handle, HOTKEY_START);
-        Native.UnregisterHotKey(Handle, HOTKEY_STOP);
+        Native.UnregisterHotKey(Handle, HOTKEY_TOGGLE);
         _oil.Shutdown();
+        _fish.Shutdown();
         base.OnFormClosing(e);
     }
 }

@@ -19,3 +19,7 @@ app/bot-log.txt
 # Local capture dumps (too large for git)
 recordings/**/*.png
 app/car-template.png
+
+# Fishing user ROIs / templates (runtime, next to exe or copied to app/)
+app/fishing.json
+app/fishing/
