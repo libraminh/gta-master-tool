@@ -349,11 +349,11 @@ internal sealed class LearnDigitsForm : Form
     private void RefreshInventory()
     {
         var atlas = DigitAtlas.Load(_key);
-        var have = atlas.Known.OrderBy(c => c).ToArray();
-        string missing = atlas.MissingText();
-        _inventory.Text = $"đã có: {(have.Length == 0 ? "chưa có gì" : string.Join(" ", have))}" +
-                          (missing.Length == 0 ? "   —   ĐỦ 12 KÝ TỰ" : $"   —   còn thiếu: {missing}");
-        _inventory.ForeColor = missing.Length == 0 ? Color.DarkGreen : Color.DimGray;
+        string missing = atlas.MissingText(_cfg.BagCapKg, _cfg.TrunkCapKg);
+        _inventory.Text = missing.Length == 0
+            ? $"ĐỦ MẪU ({atlas.Count} mẫu)"
+            : $"{atlas.Count} mẫu — còn thiếu: {missing}";
+        _inventory.ForeColor = missing.Length == 0 ? Color.DarkGreen : Color.Firebrick;
     }
 
     private void Append(string line) =>

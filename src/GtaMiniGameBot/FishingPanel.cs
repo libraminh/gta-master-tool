@@ -27,6 +27,7 @@ internal sealed class FishingPanel : UserControl
     private readonly Button _btnTrunkSetup = new();
     private readonly CheckBox _dumpEnabled = new();
     private readonly NumericUpDown _everyN = new();
+    private readonly NumericUpDown _dumpEvery = new();
     private readonly Label _dumpStatus = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
@@ -223,6 +224,15 @@ internal sealed class FishingPanel : UserControl
         dump.Controls.Add(_everyN);
         dump.Controls.Add(new Label { Text = "con cá", Location = new Point(534, 26), AutoSize = true });
 
+        dump.Controls.Add(new Label { Text = "· đổ mỗi", Location = new Point(596, 26), AutoSize = true });
+        _dumpEvery.SetBounds(654, 22, 56, 24);
+        _dumpEvery.Minimum = 0;
+        _dumpEvery.Maximum = 50;
+        _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, 0, 50);
+        _dumpEvery.ValueChanged += (_, _) => OnDumpEveryChanged();
+        dump.Controls.Add(_dumpEvery);
+        dump.Controls.Add(new Label { Text = "con (0=tắt)", Location = new Point(716, 26), AutoSize = true });
+
         _dumpStatus.SetBounds(16, 52, 760, 18);
         _dumpStatus.Font = new Font("Consolas", 9F);
         dump.Controls.Add(_dumpStatus);
@@ -308,6 +318,7 @@ internal sealed class FishingPanel : UserControl
         {
             _dumpEnabled.Checked = p?.TrunkDumpEnabled == true;
             _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, (int)_everyN.Minimum, (int)_everyN.Maximum);
+            _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, (int)_dumpEvery.Minimum, (int)_dumpEvery.Maximum);
         }
         finally { _syncingDumpUi = false; }
 
@@ -350,6 +361,16 @@ internal sealed class FishingPanel : UserControl
         if (_syncingDumpUi) return;
         _cfg.WeightCheckEveryCatches = (int)_everyN.Value;
         try { _cfg.Save(); } catch { }
+    }
+
+    private void OnDumpEveryChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.DumpEveryCatches = (int)_dumpEvery.Value;
+        try { _cfg.Save(); } catch { }
+        Append(_cfg.DumpEveryCatches == 0
+            ? "trần cứng theo số con: tắt — chỉ đổ theo cân nặng"
+            : $"trần cứng: đổ cốp mỗi {_cfg.DumpEveryCatches} con");
     }
 
     private void OpenTrunkSetup()
@@ -765,6 +786,7 @@ internal sealed class FishingPanel : UserControl
         _btnTrunkSetup.Enabled = !running;
         _dumpEnabled.Enabled = !running;
         _everyN.Enabled = !running;
+        _dumpEvery.Enabled = !running;
         _screens.Enabled = !running;
         RunningChanged?.Invoke(running);
     }

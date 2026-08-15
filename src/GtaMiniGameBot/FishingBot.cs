@@ -285,9 +285,12 @@ internal sealed class FishingBot
         string missing = _dumper.AtlasMissing;
         Emit(missing.Length == 0
             ? $"đổ cốp: bật. Kiểm tra KG mỗi {_cfg.WeightCheckEveryCatches} con, " +
-              $"đổ khi ≥ {_cfg.BagCapKg - _cfg.DumpMarginKg:F1} kg"
+              $"đổ khi ≥ {_cfg.BagCapKg - _cfg.DumpMarginKg:F1} kg hoặc khi chỗ cá sắp không lọt cốp"
             : $"đổ cốp: bật, nhưng thiếu mẫu chữ số {missing} — chạy theo đếm cá " +
               $"(mỗi {_cfg.CatchesPerDumpFallback} con)");
+
+        if (_cfg.DumpEveryCatches > 0)
+            Emit($"đổ cốp: trần cứng mỗi {_cfg.DumpEveryCatches} con, dù ba lô còn nhẹ");
     }
 
     /// <summary>
@@ -302,8 +305,12 @@ internal sealed class FishingBot
         _catches++;
         _catchesSinceDump++;
 
+        // Tran cung theo so con: cat nho moi luot keo. Thu lam hong khong phai cop day ma la
+        // MOT CUM qua nang — cum 13 con nang 22.7 kg thi cop con 9.9 kg la chac chan khong lot.
+        bool byCount = _cfg.DumpEveryCatches > 0 && _catchesSinceDump >= _cfg.DumpEveryCatches;
+
         int every = Math.Max(1, _cfg.WeightCheckEveryCatches);
-        if (_catches % every != 0) return;
+        if (!byCount && _catches % every != 0) return;
 
         if (_dumper.OcrHealthy)
         {
@@ -311,15 +318,27 @@ internal sealed class FishingBot
             if (w.Ok)
             {
                 double full = _cfg.BagCapKg - _cfg.DumpMarginKg;
-                Emit($"ba lô {w.Value:F1}/{w.Cap:F0} kg (đổ khi ≥ {full:F1})");
-                if (w.Value < full) return;
+                double fishKg = _dumper.PendingFishKg(w.Value);
+                double free = _dumper.TrunkFreeKg;
+
+                bool bagFull = w.Value >= full;
+                // Do TRUOC khi cho ca vuot qua cho trong cua cop: qua roi thi cum ca khong con
+                // lot vao dau duoc nua va chuyen di ban ca la bat buoc.
+                bool wontFit = fishKg >= 0 && free >= 0 && fishKg >= free - _cfg.DumpMarginKg;
+
+                Emit($"ba lô {w.Value:F1}/{w.Cap:F0} kg" +
+                     (fishKg >= 0 ? $", chỗ cá ≈ {fishKg:F1} kg" : "") +
+                     (free >= 0 ? $", cốp còn {free:F1} kg" : "") +
+                     $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") + ")");
+
+                if (!bagFull && !wontFit && !byCount) return;
             }
-            else if (_catchesSinceDump < _cfg.CatchesPerDumpFallback)
+            else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
             {
                 return;   // doc hong nhung chua toi nguong dem ca — cau tiep
             }
         }
-        else if (_catchesSinceDump < _cfg.CatchesPerDumpFallback)
+        else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
         {
             return;
         }

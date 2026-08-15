@@ -428,7 +428,7 @@ internal sealed class TrunkSetupForm : Form
     private void TestOcrFromStills()
     {
         var atlas = DigitAtlas.Load(_key);
-        string missing = atlas.MissingText();
+        string missing = atlas.MissingText(_cfg.BagCapKg, _cfg.TrunkCapKg);
         if (atlas.Count == 0) { Append("chưa có mẫu chữ số nào — bấm “Học chữ số…” trước"); return; }
         if (missing.Length > 0) Append($"cảnh báo: còn thiếu mẫu {missing} — kết quả có thể ra '?'");
 
@@ -744,11 +744,11 @@ internal sealed class TrunkSetupForm : Form
         _summary.ForeColor = gaps.StartsWith("đủ") ? Color.DarkGreen : Color.Firebrick;
 
         var atlas = DigitAtlas.Load(_key);
-        string missing = atlas.MissingText();
+        string missing = atlas.MissingText(_cfg.BagCapKg, _cfg.TrunkCapKg);
         _ocrStatus.Text = atlas.Count == 0
             ? "chưa có mẫu chữ số nào"
             : missing.Length == 0
-                ? $"đủ 12 ký tự ({atlas.Count} mẫu)"
+                ? $"đủ mẫu ({atlas.Count} mẫu)"
                 : $"còn thiếu: {missing}";
         _ocrStatus.ForeColor = atlas.Count > 0 && missing.Length == 0 ? Color.DarkGreen : Color.DimGray;
 

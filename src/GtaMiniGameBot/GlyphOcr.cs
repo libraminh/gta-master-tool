@@ -257,11 +257,47 @@ internal sealed class DigitAtlas
         return atlas;
     }
 
-    public string MissingText()
+    /// <summary>Ranh giới cỡ lớn / cỡ nhỏ, theo tỉ lệ so với mẫu cao nhất đang có.</summary>
+    private const double BigFrac = 0.75;
+
+    /// <summary>
+    /// Còn thiếu mẫu nào. Phải tính theo CỠ CHỮ chứ không chỉ theo ký tự: game vẽ số đang mang
+    /// bằng phông to và mẫu số bằng phông nhỏ, nên cùng một chữ số cần hai mẫu khác nhau.
+    ///
+    /// Cỡ nhỏ chỉ dùng cho mẫu số, mà mẫu số là hằng số (30 và 60), nên chỉ cần đúng các chữ
+    /// số có trong <paramref name="caps"/> — đòi đủ 10 chữ số cỡ nhỏ là bắt người dùng dạy
+    /// những mẫu không bao giờ dùng tới.
+    /// </summary>
+    public string MissingText(params double[] caps)
     {
-        var have = Known.ToHashSet();
-        var missing = Classes.Where(c => !have.Contains(c)).ToArray();
-        return missing.Length == 0 ? "" : string.Join(" ", missing);
+        if (_entries.Count == 0) return "chưa có mẫu nào";
+
+        int maxH = _entries.Max(e => e.Tpl.Height);
+        int minH = _entries.Min(e => e.Tpl.Height);
+        if (maxH - minH < 4)
+        {
+            var have1 = Known.ToHashSet();
+            var miss1 = Classes.Where(c => !have1.Contains(c)).ToArray();
+            return miss1.Length == 0 ? "" : string.Join(" ", miss1);
+        }
+
+        int cut = (int)Math.Round(maxH * BigFrac);
+        var big = _entries.Where(e => e.Tpl.Height >= cut).Select(e => e.Ch).ToHashSet();
+        var small = _entries.Where(e => e.Tpl.Height < cut).Select(e => e.Ch).ToHashSet();
+
+        var needSmall = caps
+            .Select(c => ((int)Math.Round(c)).ToString())
+            .SelectMany(s => s)
+            .Distinct()
+            .ToArray();
+
+        var bigMissing = Classes.Where(c => !big.Contains(c)).ToArray();
+        var smallMissing = needSmall.Where(c => !small.Contains(c)).ToArray();
+
+        var parts = new List<string>(2);
+        if (bigMissing.Length > 0) parts.Add("cỡ lớn " + string.Join(" ", bigMissing));
+        if (smallMissing.Length > 0) parts.Add("cỡ nhỏ " + string.Join(" ", smallMissing));
+        return string.Join(", ", parts);
     }
 
     /// <summary>

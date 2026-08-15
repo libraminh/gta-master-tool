@@ -308,6 +308,12 @@ internal sealed class FishingConfig
     public double DumpMarginKg { get; set; } = 3.0;
     /// <summary>Lưới an toàn khi OCR hỏng: cứ bấy nhiêu con là đổ, không cần biết KG.</summary>
     public int CatchesPerDumpFallback { get; set; } = 20;
+    /// <summary>
+    /// Trần cứng: đổ sau mỗi bấy nhiêu con dù ba lô còn nhẹ. 0 = tắt.
+    /// Cắt nhỏ mỗi lượt kéo, vì thứ làm hỏng không phải cốp đầy mà là MỘT CỤM quá nặng —
+    /// một cụm 13 con nặng 22.7 kg thì cốp còn 9.9 kg là chắc chắn không lọt.
+    /// </summary>
+    public int DumpEveryCatches { get; set; }
     /// <summary>Đổ xong KG phải giảm ít nhất bấy nhiêu, không thì coi như kéo trượt.</summary>
     public double MinDropKg { get; set; } = 0.5;
     /// <summary>Hỏng liên tiếp bấy nhiêu lần thì bỏ hẳn OCR cho phần còn lại của phiên.</summary>
@@ -423,6 +429,7 @@ internal sealed class FishingConfig
         if (TrunkCapKg <= 0) TrunkCapKg = 60.0;
         if (DumpMarginKg <= 0) DumpMarginKg = 3.0;
         if (CatchesPerDumpFallback <= 0) CatchesPerDumpFallback = 20;
+        if (DumpEveryCatches < 0) DumpEveryCatches = 0;
         if (MinDropKg <= 0) MinDropKg = 0.5;
         if (WeightOcrFailMax <= 0) WeightOcrFailMax = 3;
         if (MaxWeightJumpKg <= 0) MaxWeightJumpKg = 5.0;

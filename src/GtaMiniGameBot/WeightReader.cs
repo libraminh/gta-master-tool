@@ -56,10 +56,10 @@ internal sealed class WeightReader : IDisposable
         _region = new RegionReader(_abs);
     }
 
-    /// <summary>Bộ mẫu chưa đủ 12 ký tự thì đừng chạy — sẽ chỉ toàn '?'.</summary>
-    public bool AtlasReady => _atlas.MissingText().Length == 0;
+    /// <summary>Bộ mẫu chưa đủ thì đừng chạy — sẽ chỉ toàn '?'.</summary>
+    public bool AtlasReady => AtlasMissing.Length == 0;
 
-    public string AtlasMissing => _atlas.MissingText();
+    public string AtlasMissing => _atlas.MissingText(_cfg.BagCapKg, _cfg.TrunkCapKg);
 
     /// <summary>Quên giá trị lần trước — gọi sau khi đổ cốp, vì lúc đó KG giảm là đúng.</summary>
     public void ResetHistory() => _last = -1;

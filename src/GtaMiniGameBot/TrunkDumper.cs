@@ -24,6 +24,7 @@ internal sealed class TrunkDumper : IDisposable
 
     private readonly TrunkOpener _opener;
     private readonly WeightReader _bagWeight;
+    private readonly WeightReader _trunkWeight;
     private readonly GridScanner _hotbar;
     private readonly GridScanner _bag;
     private readonly GridScanner _trunk;
@@ -34,8 +35,22 @@ internal sealed class TrunkDumper : IDisposable
     public bool OcrHealthy { get; private set; } = true;
     public string AtlasMissing => _bagWeight?.AtlasMissing ?? "";
 
+    /// <summary>Cốp còn trống bao nhiêu kg, đo lần mở cốp gần nhất. -1 = chưa biết.</summary>
+    public double TrunkFreeKg { get; private set; } = -1;
+
+    /// <summary>
+    /// KG ba lô lúc KHÔNG có cá, học được ngay sau mỗi lần đổ sạch. -1 = chưa biết.
+    /// Có nó mới suy ra được chỗ cá đang có nặng bao nhiêu, tức mới biết trước là có lọt cốp
+    /// hay không thay vì kéo rồi mới thấy hỏng.
+    /// </summary>
+    public double BagBaseKg { get; private set; } = -1;
+
+    /// <summary>Chỗ cá đang có nặng bao nhiêu kg. -1 = chưa đủ dữ liệu để biết.</summary>
+    public double PendingFishKg(double bagNow) =>
+        BagBaseKg < 0 || bagNow < 0 ? -1 : Math.Max(0, bagNow - BagBaseKg);
+
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
-                        TrunkOpener opener, WeightReader weight,
+                        TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
                         GridScanner hotbar, GridScanner bag, GridScanner trunk)
     {
         _cfg = cfg;
@@ -44,6 +59,7 @@ internal sealed class TrunkDumper : IDisposable
         _log = log;
         _opener = opener;
         _bagWeight = weight;
+        _trunkWeight = trunkWeight;
         _hotbar = hotbar;
         _bag = bag;
         _trunk = trunk;
@@ -81,8 +97,13 @@ internal sealed class TrunkDumper : IDisposable
 
         var atlas = DigitAtlas.Load(p.Key);
         var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg);
+        var trunkWeight = p.TrunkWeight.IsSet
+            ? new WeightReader(cfg, screen, p.TrunkWeight, atlas, cfg.TrunkCapKg)
+            : null;
+        if (trunkWeight is null)
+            log("chưa khoanh ô số KG cốp — bot sẽ không biết cốp còn trống bao nhiêu");
 
-        return new TrunkDumper(cfg, screen, p, log, opener, weight,
+        return new TrunkDumper(cfg, screen, p, log, opener, weight, trunkWeight,
             new GridScanner(cfg, screen, p.Hotbar),
             new GridScanner(cfg, screen, p.Bag),
             new GridScanner(cfg, screen, p.Trunk));
@@ -164,7 +185,24 @@ internal sealed class TrunkDumper : IDisposable
         InputSender.MoveCursorOnly(_park.X, _park.Y);
         Sleep(ct, 200);
 
-        double before = ReadTrunkScreenWeight();
+        double before = ReadBagWeightNow();
+        MeasureTrunkFree();
+
+        double fishKg = PendingFishKg(before);
+        _log($"ba lô {before:F1} kg" +
+             (fishKg >= 0 ? $" (chỗ cá ≈ {fishKg:F1} kg)" : " (chưa biết chỗ cá nặng bao nhiêu)") +
+             (TrunkFreeKg >= 0 ? $", cốp còn trống {TrunkFreeKg:F1} kg" : ", chưa đọc được KG cốp"));
+
+        // Biet truoc la khong lot thi KHONG keo thu. Cu keo hong lam game hien thong bao do
+        // "Kho do da day" va bot chi biet la "keo that bai", khong phan biet duoc voi keo truot.
+        if (fishKg >= 0 && TrunkFreeKg >= 0 && fishKg > TrunkFreeKg)
+        {
+            _opener.CloseAll(ct);
+            throw new TrunkStepException(
+                $"cốp chỉ còn {TrunkFreeKg:F1} kg mà chỗ cá đang có {fishKg:F1} kg — " +
+                "đi bán cá rồi bật lại");
+        }
+
         int moved = 0;
 
         while (moved < _cfg.MaxDragsPerDump)
@@ -182,7 +220,11 @@ internal sealed class TrunkDumper : IDisposable
                 throw new TrunkStepException("cốp xe không còn ô trống — đã đầy?");
 
             if (!DragOne(source.Value.Scanner, source.Value.Cell, dest, ct))
-                throw new TrunkStepException("kéo cá vào cốp thất bại");
+                throw new TrunkStepException(
+                    TrunkFreeKg is >= 0 and < 5
+                        ? $"kéo không được, cốp chỉ còn {TrunkFreeKg:F1} kg — nhiều khả năng " +
+                          "cụm cá nặng hơn chỗ trống, đi bán cá rồi bật lại"
+                        : "kéo cá vào cốp thất bại");
 
             moved++;
         }
@@ -194,13 +236,21 @@ internal sealed class TrunkDumper : IDisposable
             return DumpResult.NothingToMove;
         }
 
-        double after = ReadTrunkScreenWeight();
+        double after = ReadBagWeightNow();
         if (before >= 0 && after >= 0 && before - after < _cfg.MinDropKg)
             _log($"cảnh báo: kéo {moved} ô nhưng KG chỉ giảm {before - after:F1} " +
                  $"(chờ ít nhất {_cfg.MinDropKg:F1}) — nhiều khả năng cá đã tràn sang một ô " +
                  "chưa khai báo, vào Chọn ô chứa cá thêm ô đó");
+        else if (after >= 0)
+        {
+            // Moi o ca da khai bao deu trong, nen can nang bay gio CHINH LA can nang khong co ca.
+            BagBaseKg = after;
+        }
 
-        _log($"đã kéo {moved} ô sang cốp, KG {before:F1} → {after:F1}");
+        MeasureTrunkFree();
+        _log($"đã kéo {moved} ô sang cốp, ba lô {before:F1} → {after:F1} kg" +
+             (TrunkFreeKg >= 0 ? $", cốp còn trống {TrunkFreeKg:F1} kg" : ""));
+
         _opener.CloseAll(ct);
         Sleep(ct, _cfg.AfterDumpMs);
         _bagWeight.ResetHistory();
@@ -208,11 +258,28 @@ internal sealed class TrunkDumper : IDisposable
     }
 
     /// <summary>KG ba lô đọc ngay trên màn cốp — ô số nằm đúng chỗ cũ. -1 nếu không đọc được.</summary>
-    private double ReadTrunkScreenWeight()
+    private double ReadBagWeightNow()
     {
         if (!OcrHealthy) return -1;
         var r = _bagWeight.Read();
         return r.Ok ? r.Value : -1;
+    }
+
+    /// <summary>Đọc KG cốp và cập nhật chỗ trống. Chỉ gọi được khi cốp đang mở.</summary>
+    private void MeasureTrunkFree()
+    {
+        if (_trunkWeight is null) return;
+
+        var r = _trunkWeight.Read();
+        if (!r.Ok)
+        {
+            _log($"không đọc được KG cốp ({r.Reason}) — “{r.Text}”");
+            return;
+        }
+        // Doc doc lap tung lan, khong rang buoc don dieu: cot cop chi len chu khong xuong,
+        // nhung nguoi choi co the tu lay do ra giua chung.
+        _trunkWeight.ResetHistory();
+        TrunkFreeKg = Math.Max(0, r.Cap - r.Value);
     }
 
     /// <summary>
@@ -344,6 +411,7 @@ internal sealed class TrunkDumper : IDisposable
     {
         _opener?.Dispose();
         _bagWeight?.Dispose();
+        _trunkWeight?.Dispose();
         _hotbar?.Dispose();
         _bag?.Dispose();
         _trunk?.Dispose();
