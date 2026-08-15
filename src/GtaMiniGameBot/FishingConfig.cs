@@ -25,6 +25,71 @@ internal sealed class FishingRect
     };
 }
 
+/// <summary>
+/// Lưới ô kho đồ: người dùng khoanh MỘT hình chữ nhật trùm cả lưới rồi gõ số cột/hàng,
+/// từng ô suy ra bằng phép chia — khoanh 25 ô một tay vừa lâu vừa lệch.
+/// </summary>
+internal sealed class GridSpec
+{
+    public FishingRect Area { get; set; } = new();
+    public int Cols { get; set; }
+    public int Rows { get; set; }
+
+    [JsonIgnore]
+    public bool IsSet => Area.IsSet && Cols > 0 && Rows > 0;
+
+    [JsonIgnore]
+    public int Count => Cols * Rows;
+
+    /// <summary>
+    /// Ô thứ <paramref name="index"/> (trái→phải rồi trên→dưới), toạ độ TƯƠNG ĐỐI góc màn.
+    /// Chia theo mốc tích luỹ chứ không nhân bề rộng ô, để sai số làm tròn không dồn về cuối hàng.
+    /// </summary>
+    public Rectangle CellRelative(int index)
+    {
+        if (!IsSet || index < 0 || index >= Count) return Rectangle.Empty;
+        int c = index % Cols, r = index / Cols;
+        int x0 = Area.X + c * Area.W / Cols;
+        int x1 = Area.X + (c + 1) * Area.W / Cols;
+        int y0 = Area.Y + r * Area.H / Rows;
+        int y1 = Area.Y + (r + 1) * Area.H / Rows;
+        return new Rectangle(x0, y0, x1 - x0, y1 - y0);
+    }
+
+    public Rectangle Cell(Screen screen, int index)
+    {
+        var r = CellRelative(index);
+        if (r.IsEmpty) return r;
+        var o = screen.Bounds.Location;
+        return new Rectangle(o.X + r.X, o.Y + r.Y, r.Width, r.Height);
+    }
+
+    /// <summary>Ô đã co vào mỗi cạnh để bỏ viền ô và vệt sáng khi rê chuột.</summary>
+    public Rectangle CellInset(Screen screen, int index, double insetFrac)
+    {
+        var r = Cell(screen, index);
+        if (r.IsEmpty) return r;
+        int dx = (int)Math.Round(r.Width * insetFrac);
+        int dy = (int)Math.Round(r.Height * insetFrac);
+        var inner = Rectangle.Inflate(r, -dx, -dy);
+        return inner.Width < 4 || inner.Height < 4 ? r : inner;
+    }
+
+    public Point CellCenter(Screen screen, int index)
+    {
+        var r = Cell(screen, index);
+        return r.IsEmpty ? Point.Empty : new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+    }
+
+    /// <summary>Cols/Rows = 0 nghĩa là chia cho 0 — json cũ thiếu field sẽ rơi đúng vào đó.</summary>
+    public void Normalize(int defCols, int defRows)
+    {
+        Area ??= new FishingRect();
+        if (Cols is <= 0 or > 20) Cols = defCols;
+        if (Rows is <= 0 or > 20) Rows = defRows;
+    }
+}
+
 internal sealed class FishingProfile
 {
     public string Device { get; set; }
@@ -34,6 +99,31 @@ internal sealed class FishingProfile
     public FishingRect Fish { get; set; } = new();
     public FishingRect Reject { get; set; } = new();
     public FishingRect Keep { get; set; } = new();
+
+    // ---------------- đổ cá vào cốp xe ----------------
+
+    public bool TrunkDumpEnabled { get; set; }
+
+    /// <summary>Trùm CẢ chuỗi "27.4/30 KG" — mẫu số đọc được chính là cái neo chống đọc sai.</summary>
+    public FishingRect BagWeight { get; set; } = new();
+    public FishingRect TrunkWeight { get; set; } = new();
+
+    /// <summary>Chữ "BA LÔ" / "CỐP PHƯƠNG TIỆN" — dùng để biết màn hình nào đang mở.</summary>
+    public FishingRect BagHeader { get; set; } = new();
+    public FishingRect TrunkHeader { get; set; } = new();
+
+    /// <summary>Tuỳ chọn: dấu hiệu menu tạm dừng, để bắt ca Esc bấm nhầm lúc lệch trạng thái.</summary>
+    public FishingRect PauseMarker { get; set; } = new();
+
+    /// <summary>Vùng quét menu radial. Rỗng thì suy từ tâm màn — xem <see cref="AltSearchBand"/>.</summary>
+    public FishingRect AltBand { get; set; } = new();
+    public FishingRect AltInteract { get; set; } = new();
+    public FishingRect AltTrunk { get; set; } = new();
+    public FishingRect AltFuel { get; set; } = new();
+
+    public GridSpec Hotbar { get; set; } = new();
+    public GridSpec Bag { get; set; } = new();
+    public GridSpec Trunk { get; set; } = new();
 
     /// <summary>
     /// Vùng quét cao trùm mọi vị trí nút CẤT VÀO có thể trượt tới. Chưa khoanh thì
@@ -62,6 +152,70 @@ internal sealed class FishingProfile
         int w = Math.Min(Width - x, Keep.W + side * 2);
         int h = Math.Min(Height - y, Keep.H + up + down);
         return new FishingRect { X = x, Y = y, W = w, H = h };
+    }
+
+    /// <summary>
+    /// Vùng quét menu radial. Menu vẽ quanh TÂM MÀN HÌNH nên suy được, không bắt khoanh tay.
+    /// </summary>
+    public FishingRect AltSearchBand()
+    {
+        if (AltBand.IsSet) return AltBand;
+        if (Width < 200 || Height < 200) return new FishingRect();
+
+        int w = (int)Math.Round(Width * 0.46);
+        int h = (int)Math.Round(Height * 0.38);
+        return new FishingRect
+        {
+            X = Math.Max(0, Width / 2 - w / 2),
+            Y = Math.Max(0, Height / 2 - h / 2),
+            W = Math.Min(Width, w),
+            H = Math.Min(Height, h)
+        };
+    }
+
+    /// <summary>Json cũ thiếu field thì về null/0 — đưa lại mặc định trước khi ai đó chia cho Cols.</summary>
+    public void Normalize()
+    {
+        Bar ??= new FishingRect();
+        Fish ??= new FishingRect();
+        Reject ??= new FishingRect();
+        Keep ??= new FishingRect();
+        KeepBand ??= new FishingRect();
+        BagWeight ??= new FishingRect();
+        TrunkWeight ??= new FishingRect();
+        BagHeader ??= new FishingRect();
+        TrunkHeader ??= new FishingRect();
+        PauseMarker ??= new FishingRect();
+        AltBand ??= new FishingRect();
+        AltInteract ??= new FishingRect();
+        AltTrunk ??= new FishingRect();
+        AltFuel ??= new FishingRect();
+
+        Hotbar ??= new GridSpec();
+        Bag ??= new GridSpec();
+        Trunk ??= new GridSpec();
+        Hotbar.Normalize(1, 5);
+        Bag.Normalize(5, 5);
+        Trunk.Normalize(5, 5);
+    }
+
+    /// <summary>Thiếu gì để bật được đổ cốp — hiện thẳng trên panel thay vì để bot chết giữa chừng.</summary>
+    public string DescribeTrunkGaps()
+    {
+        var missing = new List<string>();
+        if (!BagWeight.IsSet) missing.Add("số KG ba lô");
+        if (!BagHeader.IsSet) missing.Add("chữ BA LÔ");
+        if (!TrunkHeader.IsSet) missing.Add("chữ CỐP");
+        if (!AltInteract.IsSet) missing.Add("nút Tương tác");
+        if (!AltTrunk.IsSet) missing.Add("nút Cốp xe");
+        if (!AltFuel.IsSet) missing.Add("nút Bơm nhiên liệu");
+        if (!Hotbar.IsSet) missing.Add("lưới hotbar");
+        if (!Bag.IsSet) missing.Add("lưới ba lô");
+        if (!Trunk.IsSet) missing.Add("lưới cốp");
+
+        if (missing.Count == 0)
+            return PauseMarker.IsSet ? "đủ cấu hình đổ cốp" : "đủ cấu hình đổ cốp (chưa khoanh menu tạm dừng)";
+        return "thiếu " + string.Join(", ", missing);
     }
 
     public string DescribeGaps()
@@ -114,9 +268,91 @@ internal sealed class FishingConfig
     public int KeepMoveSteps { get; set; } = 8;
     public string WindowMatch { get; set; } = "PlayXGTA";
 
+    // ============ đổ cá vào cốp xe ============
+
+    // -- ngưỡng đổ --
+    /// <summary>Mấy con cá mới mở Tab đọc KG một lần. Đọc mỗi con thì che màn quá nhiều.</summary>
+    public int WeightCheckEveryCatches { get; set; } = 5;
+    public double BagCapKg { get; set; } = 30.0;
+    public double TrunkCapKg { get; set; } = 60.0;
+    /// <summary>Còn thiếu bao nhiêu kg nữa mới đầy thì đã đi đổ — chừa chỗ cho một con cá to.</summary>
+    public double DumpMarginKg { get; set; } = 3.0;
+    /// <summary>Lưới an toàn khi OCR hỏng: cứ bấy nhiêu con là đổ, không cần biết KG.</summary>
+    public int CatchesPerDumpFallback { get; set; } = 20;
+    /// <summary>Đổ xong KG phải giảm ít nhất bấy nhiêu, không thì coi như kéo trượt.</summary>
+    public double MinDropKg { get; set; } = 0.5;
+    /// <summary>Hỏng liên tiếp bấy nhiêu lần thì bỏ hẳn OCR cho phần còn lại của phiên.</summary>
+    public int WeightOcrFailMax { get; set; } = 3;
+    /// <summary>Hai lần đọc liên tiếp lệch quá bấy nhiêu kg = đọc sai, không phải câu được cá to.</summary>
+    public double MaxWeightJumpKg { get; set; } = 5.0;
+
+    // -- đọc chữ số --
+    public double DigitNccMin { get; set; } = 0.80;
+    /// <summary>Cách biệt tối thiểu giữa chữ số nhất và nhì. Sát nhau = đoán mò, thà báo hỏng.</summary>
+    public double DigitMarginMin { get; set; } = 0.08;
+    /// <summary>Chỉ so hai glyph khi bề rộng lệch trong ngần này px — "1" và "8" nhờ vậy không lẫn.</summary>
+    public int DigitWidthTolPx { get; set; } = 1;
+    public int DigitMinGlyphW { get; set; } = 2;
+    public int DigitMinGlyphInk { get; set; } = 6;
+    /// <summary>Hai cụm cách nhau dưới ngần này px thì gộp — khử khe hở trong nét đứt.</summary>
+    public int DigitMergeGapPx { get; set; } = 1;
+    /// <summary>Sàn cứng cho ngưỡng Otsu: nền panel tối nên đừng để ngưỡng tụt xuống nhiễu.</summary>
+    public int DigitInkMinGray { get; set; } = 90;
+
+    // -- menu radial --
+    public int MenuColorTol { get; set; } = 22;
+    public double MenuDensityMin { get; set; } = 0.50;
+    public double MenuNccMin { get; set; } = 0.70;
+    /// <summary>"Cốp xe" phải hơn "Bơm nhiên liệu" ngần này mới dám click — so sánh, không phải ngưỡng.</summary>
+    public double MenuNccMargin { get; set; } = 0.06;
+    public int MenuHoverMs { get; set; } = 200;
+    public int MenuMoveSteps { get; set; } = 12;
+    public int MenuClickRetries { get; set; } = 2;
+    public int AltMenuAppearMs { get; set; } = 250;
+    public int AltMenuWaitMs { get; set; } = 1_500;
+    public int AltRetries { get; set; } = 2;
+    public int AltRetryGapMs { get; set; } = 400;
+    /// <summary>
+    /// Trần cứng cho thời gian giữ Alt. Trong lúc Alt còn xuống thì phím tắt dừng bot (đăng ký
+    /// không modifier) KHÔNG nổ, nên phải có đồng hồ tự nhả kể cả khi luồng bot treo.
+    /// </summary>
+    public int AltMaxHoldMs { get; set; } = 4_000;
+
+    // -- thời gian màn hình --
+    public int TabToggleMs { get; set; } = 900;
+    public int TabWaitMs { get; set; } = 2_500;
+    public int TrunkOpenMs { get; set; } = 3_000;
+    public int EscCloseMs { get; set; } = 1_500;
+    public int AfterEscMs { get; set; } = 300;
+    public int AfterDumpMs { get; set; } = 600;
+    public int DumpRetryGapMs { get; set; } = 1_500;
+    public int MaxDumpMs { get; set; } = 60_000;
+
+    // -- kéo thả --
+    public int DragGrabMs { get; set; } = 140;
+    public int DragMoveSteps { get; set; } = 20;
+    public int DragStepMs { get; set; } = 10;
+    public int DragDropHoverMs { get; set; } = 180;
+    public int DragSettleMs { get; set; } = 350;
+    public int DragRetries { get; set; } = 2;
+    public int MaxDragsPerDump { get; set; } = 12;
+
+    // -- ô lưới --
+    public double CellInsetFrac { get; set; } = 0.15;
+    /// <summary>Phần góc dưới-phải bị cắt bỏ: chỗ game vẽ số lượng, mồi tụt số sẽ làm lệch so khớp.</summary>
+    public double BadgeFrac { get; set; } = 0.42;
+    public double ItemNccMin { get; set; } = 0.75;
+    /// <summary>Tỉ lệ pixel có màu tối đa để coi là ô trống. Hiệu chỉnh được, không đoán.</summary>
+    public double CellEmptyChroma01 { get; set; } = 0.06;
+    /// <summary>Độ lệch chuẩn xám tối đa để coi là ô trống.</summary>
+    public double CellEmptyStdMax { get; set; } = 12.0;
+    public double HeaderNccMin { get; set; } = 0.70;
+    public int ShotCountdownSec { get; set; } = 5;
+
     /// <summary>Json cũ thiếu field thì về 0 — khôi phục mặc định, không đoán timeout = 0.</summary>
     public void Normalize()
     {
+        Profiles ??= new Dictionary<string, FishingProfile>(StringComparer.OrdinalIgnoreCase);
         if (FishNccMin <= 0) FishNccMin = 0.75;
         if (RejectNccMin <= 0) RejectNccMin = 0.75;
         if (KeepColorTol <= 0) KeepColorTol = 20;
@@ -137,6 +373,63 @@ internal sealed class FishingConfig
         if (KeepHoverMs <= 0) KeepHoverMs = 320;
         if (KeepMoveSteps <= 0) KeepMoveSteps = 8;
         if (string.IsNullOrWhiteSpace(WindowMatch)) WindowMatch = "PlayXGTA";
+
+        if (WeightCheckEveryCatches <= 0) WeightCheckEveryCatches = 5;
+        if (BagCapKg <= 0) BagCapKg = 30.0;
+        if (TrunkCapKg <= 0) TrunkCapKg = 60.0;
+        if (DumpMarginKg <= 0) DumpMarginKg = 3.0;
+        if (CatchesPerDumpFallback <= 0) CatchesPerDumpFallback = 20;
+        if (MinDropKg <= 0) MinDropKg = 0.5;
+        if (WeightOcrFailMax <= 0) WeightOcrFailMax = 3;
+        if (MaxWeightJumpKg <= 0) MaxWeightJumpKg = 5.0;
+
+        if (DigitNccMin is <= 0 or > 1) DigitNccMin = 0.80;
+        if (DigitMarginMin is < 0 or > 1) DigitMarginMin = 0.08;
+        if (DigitWidthTolPx < 0) DigitWidthTolPx = 1;
+        if (DigitMinGlyphW <= 0) DigitMinGlyphW = 2;
+        if (DigitMinGlyphInk <= 0) DigitMinGlyphInk = 6;
+        if (DigitMergeGapPx < 0) DigitMergeGapPx = 1;
+        if (DigitInkMinGray is <= 0 or > 250) DigitInkMinGray = 90;
+
+        if (MenuColorTol <= 0) MenuColorTol = 22;
+        if (MenuDensityMin is <= 0 or > 1) MenuDensityMin = 0.50;
+        if (MenuNccMin is <= 0 or > 1) MenuNccMin = 0.70;
+        if (MenuNccMargin is < 0 or > 1) MenuNccMargin = 0.06;
+        if (MenuHoverMs <= 0) MenuHoverMs = 200;
+        if (MenuMoveSteps <= 0) MenuMoveSteps = 12;
+        if (MenuClickRetries < 0) MenuClickRetries = 2;
+        if (AltMenuAppearMs < 0) AltMenuAppearMs = 250;
+        if (AltMenuWaitMs <= 0) AltMenuWaitMs = 1_500;
+        if (AltRetries < 0) AltRetries = 2;
+        if (AltRetryGapMs < 0) AltRetryGapMs = 400;
+        if (AltMaxHoldMs <= 0) AltMaxHoldMs = 4_000;
+
+        if (TabToggleMs <= 0) TabToggleMs = 900;
+        if (TabWaitMs <= 0) TabWaitMs = 2_500;
+        if (TrunkOpenMs <= 0) TrunkOpenMs = 3_000;
+        if (EscCloseMs <= 0) EscCloseMs = 1_500;
+        if (AfterEscMs < 0) AfterEscMs = 300;
+        if (AfterDumpMs < 0) AfterDumpMs = 600;
+        if (DumpRetryGapMs < 0) DumpRetryGapMs = 1_500;
+        if (MaxDumpMs <= 0) MaxDumpMs = 60_000;
+
+        if (DragGrabMs <= 0) DragGrabMs = 140;
+        if (DragMoveSteps <= 0) DragMoveSteps = 20;
+        if (DragStepMs <= 0) DragStepMs = 10;
+        if (DragDropHoverMs <= 0) DragDropHoverMs = 180;
+        if (DragSettleMs <= 0) DragSettleMs = 350;
+        if (DragRetries < 0) DragRetries = 2;
+        if (MaxDragsPerDump <= 0) MaxDragsPerDump = 12;
+
+        if (CellInsetFrac is < 0 or > 0.4) CellInsetFrac = 0.15;
+        if (BadgeFrac is <= 0 or >= 0.9) BadgeFrac = 0.42;
+        if (ItemNccMin is <= 0 or > 1) ItemNccMin = 0.75;
+        if (CellEmptyChroma01 is <= 0 or > 1) CellEmptyChroma01 = 0.06;
+        if (CellEmptyStdMax <= 0) CellEmptyStdMax = 12.0;
+        if (HeaderNccMin is <= 0 or > 1) HeaderNccMin = 0.70;
+        if (ShotCountdownSec <= 0) ShotCountdownSec = 5;
+
+        foreach (var p in Profiles.Values) p?.Normalize();
     }
 
     private static readonly JsonSerializerOptions Opts = new()
@@ -156,6 +449,47 @@ internal sealed class FishingConfig
     public static string RejectTemplatePath(string key) => Path.Combine(ProfileDir(key), "reject.png");
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
     public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");
+
+    // ---------------- đổ cá vào cốp xe ----------------
+
+    /// <summary>
+    /// Ảnh tĩnh chụp cả màn game. Phải chụp tĩnh rồi khoanh trên ảnh, không khoanh trực tiếp
+    /// được: menu radial cần giữ Alt và tắt ngay khi game mất focus.
+    /// </summary>
+    public static string ShotDir(string key) => Path.Combine(ProfileDir(key), "shots");
+    public static string ShotPath(string key, string name) => Path.Combine(ShotDir(key), name + ".png");
+
+    /// <summary>Mẫu NCC cắt ra từ ảnh tĩnh: nhãn nút menu, chữ tiêu đề cột.</summary>
+    public static string TrunkTemplatePath(string key, string name) =>
+        Path.Combine(ProfileDir(key), "trunk", name + ".png");
+
+    public static string DigitDir(string key) => Path.Combine(ProfileDir(key), "digits");
+    public static string DigitPath(string key, string cls) => Path.Combine(DigitDir(key), cls + ".png");
+    public static string DigitUnknownDir(string key) => Path.Combine(DigitDir(key), "unknown");
+
+    /// <summary>Mẫu icon vật phẩm: giữ lại (cần câu, katana, mồi) và cá.</summary>
+    public static string ItemDir(string key, bool fish) =>
+        Path.Combine(ProfileDir(key), fish ? "items-fish" : "items-keep");
+
+    public static string OcrDebugDir(string key) => Path.Combine(ProfileDir(key), "debug-ocr");
+    public static string InvDebugDir(string key) => Path.Combine(ProfileDir(key), "debug-inv");
+
+    /// <summary>Tên file cho một ký tự — '.' và '/' không đặt tên file được.</summary>
+    public static string DigitClassName(char c) => c switch
+    {
+        '.' => "dot",
+        '/' => "slash",
+        >= '0' and <= '9' => "d" + c,
+        _ => null
+    };
+
+    public static char DigitClassChar(string cls) => cls switch
+    {
+        "dot" => '.',
+        "slash" => '/',
+        { Length: 2 } s when s[0] == 'd' && s[1] is >= '0' and <= '9' => s[1],
+        _ => '\0'
+    };
 
     public void Save(string path = null)
     {

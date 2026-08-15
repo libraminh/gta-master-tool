@@ -24,6 +24,10 @@ internal sealed class FishingPanel : UserControl
     private readonly Button _btnKeep = new();
     private readonly Button _btnKeepBand = new();
     private readonly Button _btnAltProbe = new();
+    private readonly Button _btnTrunkSetup = new();
+    private readonly CheckBox _dumpEnabled = new();
+    private readonly NumericUpDown _everyN = new();
+    private readonly Label _dumpStatus = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
     private readonly PictureBox _thumbReject = new();
@@ -32,6 +36,7 @@ internal sealed class FishingPanel : UserControl
     private readonly TextBox _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _jobKey = HotkeyText.Job();
+    private bool _syncingDumpUi;
 
     public FishingPanel()
     {
@@ -43,6 +48,7 @@ internal sealed class FishingPanel : UserControl
         BuildUi();
         FillScreens();
         RefreshProfileLabel();
+        RefreshDumpStatus();
         LoadThumbs();
 
         _timer.Interval = 100;
@@ -195,11 +201,42 @@ internal sealed class FishingPanel : UserControl
         AddThumb(_thumbKeepBand, 652, y, "Vùng quét");
         y += 130;
 
-        _btnAltProbe.SetBounds(12, y, 230, 32);
+        var dump = new GroupBox
+        {
+            Text = "Đổ cá vào cốp xe",
+            Location = new Point(12, y),
+            Size = new Size(w, 104)
+        };
+        Controls.Add(dump);
+
+        _dumpEnabled.SetBounds(16, 24, 330, 22);
+        _dumpEnabled.Text = "Tự đổ cá vào cốp khi ba lô gần đầy";
+        _dumpEnabled.CheckedChanged += (_, _) => OnDumpEnabledChanged();
+        dump.Controls.Add(_dumpEnabled);
+
+        dump.Controls.Add(new Label { Text = "Kiểm tra KG mỗi", Location = new Point(360, 26), AutoSize = true });
+        _everyN.SetBounds(468, 22, 60, 24);
+        _everyN.Minimum = 1;
+        _everyN.Maximum = 50;
+        _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, 1, 50);
+        _everyN.ValueChanged += (_, _) => OnEveryNChanged();
+        dump.Controls.Add(_everyN);
+        dump.Controls.Add(new Label { Text = "con cá", Location = new Point(534, 26), AutoSize = true });
+
+        _dumpStatus.SetBounds(16, 52, 760, 18);
+        _dumpStatus.Font = new Font("Consolas", 9F);
+        dump.Controls.Add(_dumpStatus);
+
+        _btnTrunkSetup.SetBounds(16, 72, 190, 26);
+        _btnTrunkSetup.Text = "Cấu hình đổ cốp…";
+        _btnTrunkSetup.Click += (_, _) => OpenTrunkSetup();
+        dump.Controls.Add(_btnTrunkSetup);
+
+        _btnAltProbe.SetBounds(214, 72, 210, 26);
         _btnAltProbe.Text = "Test giữ Alt (menu xe)";
         _btnAltProbe.Click += (_, _) => DoAltProbe();
-        Controls.Add(_btnAltProbe);
-        y += 40;
+        dump.Controls.Add(_btnAltProbe);
+        y += 116;
 
         _log.SetBounds(12, y, w, 760 - y - 12);
         _log.Multiline = true;
@@ -254,8 +291,80 @@ internal sealed class FishingPanel : UserControl
         _reader?.Dispose();
         _reader = null;
         RefreshProfileLabel();
+        RefreshDumpStatus();
         LoadThumbs();
         ClearLive();
+    }
+
+    // ------------------------------------------------- đổ cá vào cốp
+
+    private void RefreshDumpStatus()
+    {
+        var screen = SelectedScreen;
+        var p = screen is null ? null : _cfg.TryGet(screen);
+
+        _syncingDumpUi = true;
+        try
+        {
+            _dumpEnabled.Checked = p?.TrunkDumpEnabled == true;
+            _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, (int)_everyN.Minimum, (int)_everyN.Maximum);
+        }
+        finally { _syncingDumpUi = false; }
+
+        if (p is null)
+        {
+            _dumpStatus.Text = "chưa có hồ sơ cho màn hình này";
+            _dumpStatus.ForeColor = Color.DimGray;
+            return;
+        }
+
+        string gaps = p.DescribeTrunkGaps();
+        _dumpStatus.Text = gaps;
+        _dumpStatus.ForeColor = gaps.StartsWith("đủ") ? Color.DarkGreen : Color.DimGray;
+    }
+
+    private void OnDumpEnabledChanged()
+    {
+        if (_syncingDumpUi) return;
+        var screen = SelectedScreen;
+        if (screen is null) return;
+
+        var p = _cfg.GetOrCreate(screen);
+        // Bat khi chua khoanh du thi bot se chet giua chung — chan ngay tai day cho de hieu.
+        if (_dumpEnabled.Checked && !p.DescribeTrunkGaps().StartsWith("đủ"))
+        {
+            Append("chưa bật được: " + p.DescribeTrunkGaps());
+            _syncingDumpUi = true;
+            try { _dumpEnabled.Checked = false; }
+            finally { _syncingDumpUi = false; }
+            return;
+        }
+
+        p.TrunkDumpEnabled = _dumpEnabled.Checked;
+        try { _cfg.Save(); } catch (Exception ex) { Append("lưu cấu hình lỗi: " + ex.Message); }
+        Append(p.TrunkDumpEnabled ? "bật tự đổ cốp" : "tắt tự đổ cốp");
+    }
+
+    private void OnEveryNChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.WeightCheckEveryCatches = (int)_everyN.Value;
+        try { _cfg.Save(); } catch { }
+    }
+
+    private void OpenTrunkSetup()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi cấu hình"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var p = _cfg.GetOrCreate(screen);
+        using (var f = new TrunkSetupForm(_cfg, screen, p))
+            f.ShowDialog(FindForm());
+
+        _cfg = FishingConfig.Load();
+        RefreshProfileLabel();
+        RefreshDumpStatus();
     }
 
     private void RefreshProfileLabel()
@@ -594,6 +703,9 @@ internal sealed class FishingPanel : UserControl
         _btnKeep.Enabled = !running;
         _btnKeepBand.Enabled = !running;
         _btnAltProbe.Enabled = !running;
+        _btnTrunkSetup.Enabled = !running;
+        _dumpEnabled.Enabled = !running;
+        _everyN.Enabled = !running;
         _screens.Enabled = !running;
         RunningChanged?.Invoke(running);
     }
