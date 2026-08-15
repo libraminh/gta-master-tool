@@ -43,6 +43,8 @@ internal static class Program
             return rc;
         }
 
+        AppPaths.MigrateFromExeFolder();
+
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.Run(new HomeForm());

@@ -261,7 +261,7 @@ internal sealed class BotConfig
     private static readonly JsonSerializerOptions Opts = new() { WriteIndented = true };
 
     public static string DefaultPath =>
-        Path.Combine(AppContext.BaseDirectory, "config.json");
+        Path.Combine(AppPaths.Root, "config.json");
 
     public void Save(string path = null)
     {

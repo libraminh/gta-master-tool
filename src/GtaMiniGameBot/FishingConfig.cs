@@ -35,8 +35,34 @@ internal sealed class FishingProfile
     public FishingRect Reject { get; set; } = new();
     public FishingRect Keep { get; set; } = new();
 
+    /// <summary>
+    /// Vùng quét cao trùm mọi vị trí nút CẤT VÀO có thể trượt tới. Chưa khoanh thì
+    /// suy từ <see cref="Keep"/> — xem <see cref="KeepSearchBand"/>.
+    /// </summary>
+    public FishingRect KeepBand { get; set; } = new();
+
     [JsonIgnore]
     public string Key => $"{Width}x{Height}";
+
+    /// <summary>
+    /// Vùng quét thật dùng khi dò nút. Ô người dùng khoanh được ưu tiên; không có thì
+    /// nới ô Keep xuống ~4 dòng chữ (tên cá dài đẩy hàng nút xuống, không đẩy lên).
+    /// </summary>
+    public FishingRect KeepSearchBand()
+    {
+        if (KeepBand.IsSet) return KeepBand;
+        if (!Keep.IsSet) return new FishingRect();
+
+        int side = Math.Max(12, (int)Math.Round(Width * 0.02));
+        int up = Math.Max(16, (int)Math.Round(Height * 0.03));
+        int down = Math.Max(80, (int)Math.Round(Height * 0.16));
+
+        int x = Math.Max(0, Keep.X - side);
+        int y = Math.Max(0, Keep.Y - up);
+        int w = Math.Min(Width - x, Keep.W + side * 2);
+        int h = Math.Min(Height - y, Keep.H + up + down);
+        return new FishingRect { X = x, Y = y, W = w, H = h };
+    }
 
     public string DescribeGaps()
     {
@@ -45,7 +71,8 @@ internal sealed class FishingProfile
         if (!Fish.IsSet) missing.Add("cá");
         if (!Reject.IsSet) missing.Add("thông báo");
         if (!Keep.IsSet) missing.Add("CẤT VÀO");
-        if (missing.Count == 0) return $"{Key} — đủ 4 ô";
+        if (missing.Count == 0)
+            return KeepBand.IsSet ? $"{Key} — đủ 4 ô + vùng quét" : $"{Key} — đủ 4 ô, vùng quét tự suy";
         if (missing.Count == 4) return $"{Key} — chưa khoanh";
         return $"{Key} — thiếu {string.Join(", ", missing)}";
     }
@@ -56,7 +83,18 @@ internal sealed class FishingConfig
     public Dictionary<string, FishingProfile> Profiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public double FishNccMin { get; set; } = 0.75;
     public double RejectNccMin { get; set; } = 0.75;
-    public double KeepNccMin { get; set; } = 0.75;
+
+    /// <summary>
+    /// Sai lệch cho phép mỗi kênh màu khi dò nền nút CẤT VÀO. Đo trên 3 ảnh panel thật
+    /// (nền nút ≈ #223D41): 16–26 đều dò đúng, dưới 14 thì cắt mất phần dưới nút vì nền
+    /// nút có gradient nhẹ, từ 28 thì mask lan sang nền panel — chỉ cách nút ~27 mỗi
+    /// kênh — làm dải hàng dính liền rồi bắt sai khối.
+    /// </summary>
+    public int KeepColorTol { get; set; } = 20;
+    /// <summary>Tỉ lệ pixel đúng màu tối thiểu trong ô nút vừa dò được.</summary>
+    public double KeepDensityMin { get; set; } = 0.55;
+    /// <summary>Click lại tối đa mấy lần nếu nút vẫn còn sau <see cref="KeepGoneMs"/>.</summary>
+    public int KeepClickRetries { get; set; } = 2;
 
     public int WaitBiteMs { get; set; } = 25_000;
     public int FightTimeoutMs { get; set; } = 40_000;
@@ -81,7 +119,9 @@ internal sealed class FishingConfig
     {
         if (FishNccMin <= 0) FishNccMin = 0.75;
         if (RejectNccMin <= 0) RejectNccMin = 0.75;
-        if (KeepNccMin <= 0) KeepNccMin = 0.75;
+        if (KeepColorTol <= 0) KeepColorTol = 20;
+        if (KeepDensityMin <= 0 || KeepDensityMin > 1) KeepDensityMin = 0.55;
+        if (KeepClickRetries < 0) KeepClickRetries = 2;
         if (WaitBiteMs <= 0) WaitBiteMs = 25_000;
         if (FightTimeoutMs <= 0) FightTimeoutMs = 40_000;
         if (AfterReleaseMs <= 0) AfterReleaseMs = 1_200;
@@ -106,15 +146,16 @@ internal sealed class FishingConfig
     };
 
     public static string DefaultPath =>
-        Path.Combine(AppContext.BaseDirectory, "fishing.json");
+        Path.Combine(AppPaths.Root, "fishing.json");
 
     public static string ProfileDir(string key) =>
-        Path.Combine(AppContext.BaseDirectory, "fishing", key);
+        Path.Combine(AppPaths.Root, "fishing", key);
 
     public static string BarPreviewPath(string key) => Path.Combine(ProfileDir(key), "bar.png");
     public static string FishTemplatePath(string key) => Path.Combine(ProfileDir(key), "fish.png");
     public static string RejectTemplatePath(string key) => Path.Combine(ProfileDir(key), "reject.png");
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
+    public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");
 
     public void Save(string path = null)
     {

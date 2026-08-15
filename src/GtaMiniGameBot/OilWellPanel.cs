@@ -28,8 +28,11 @@ internal sealed class OilWellPanel : UserControl
     private readonly Button _btnToggle = new();
     private readonly Button _btnDebug = new();
     private readonly System.Windows.Forms.Timer _timer = new();
+    private string _jobKey = HotkeyText.Job();
 
     public bool IsRunning => _bot is { Running: true };
+
+    public event Action<bool> RunningChanged;
 
     public OilWellPanel()
     {
@@ -46,7 +49,7 @@ internal sealed class OilWellPanel : UserControl
         Append($"cấu hình: thanh x = {string.Join(", ", _cfg.BarX)}   |   thân thanh y = {_cfg.BarYTop}…{_cfg.BarYBottom}");
         Append($"ngưỡng: đầy ≥ {_cfg.FullThreshold}   |   coi là đã reset < {_cfg.ResetThreshold}   |   " +
                $"panel mở khi nổi lên ≥ {_cfg.PanelBarProminenceMin}");
-        Append("F9 = bật/tắt cày.");
+        Append($"{_jobKey} = bật/tắt cày.");
         Append("Ở giàn khoan mới: bấm “Hiệu chỉnh” một lần để kiểm — phải ra 4 toạ độ với độ nổi ≥ 30.");
     }
 
@@ -174,7 +177,7 @@ internal sealed class OilWellPanel : UserControl
         Controls.Add(_btnOneCycle);
 
         _btnToggle.SetBounds(460, y, 276, 32);
-        _btnToggle.Text = "Bật  (F9)";
+        _btnToggle.Text = $"Bật  ({_jobKey})";
         _btnToggle.Click += (_, _) => Toggle();
         Controls.Add(_btnToggle);
 
@@ -339,12 +342,20 @@ internal sealed class OilWellPanel : UserControl
         _bot.Start();
     }
 
+    /// <summary>Nguoi dung doi phim bat/tat job trong tab Tiện ích.</summary>
+    public void SetJobHotkeyText(string text)
+    {
+        _jobKey = text;
+        _btnToggle.Text = IsRunning ? $"Tắt  ({_jobKey})" : $"Bật  ({_jobKey})";
+    }
+
     private void SetRunningUi(bool running)
     {
-        _btnToggle.Text = running ? "Tắt  (F9)" : "Bật  (F9)";
+        _btnToggle.Text = running ? $"Tắt  ({_jobKey})" : $"Bật  ({_jobKey})";
         _btnOneCycle.Enabled = !running;
         _btnCalibrate.Enabled = !running;
         _btnCarTemplate.Enabled = !running;
+        RunningChanged?.Invoke(running);
     }
 
     private void Tick()

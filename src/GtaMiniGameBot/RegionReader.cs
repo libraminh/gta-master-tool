@@ -161,6 +161,27 @@ internal sealed class RegionReader : IDisposable
         return filled / (double)h;
     }
 
+    /// <summary>
+    /// Mask 1/0 cua ca vung theo <paramref name="match"/>, row-major - dung de do
+    /// khoi mau (vi du nen nut CAT VAO) khi khong biet truoc no nam o dau.
+    /// </summary>
+    public byte[] MaskBuffer(Func<int, int, int, bool> match)
+    {
+        int w = Region.Width, h = Region.Height;
+        var outp = new byte[w * h];
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * _stride;
+            int k = y * w;
+            for (int x = 0; x < w; x++)
+            {
+                int i = row + x * 4;
+                if (match(_buf[i], _buf[i + 1], _buf[i + 2])) outp[k + x] = 1;
+            }
+        }
+        return outp;
+    }
+
     public int CountMatch(Func<int, int, int, bool> match)
     {
         int n = 0;
