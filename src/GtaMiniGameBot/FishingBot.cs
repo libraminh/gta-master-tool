@@ -78,6 +78,12 @@ internal sealed class FishingBot
 
             if (!_profile.Keep.IsSet)
                 Emit("cảnh báo: chưa khoanh CẤT VÀO — sau khi câu được sẽ chỉ bấm 4, không nhận cá");
+            else if (reader.KeepTemplateProblem is { } kp)
+                Emit("cảnh báo: CẤT VÀO — sẽ click ô cố định, không dò được (" + kp + ")");
+            else
+                Emit($"dò CẤT VÀO trong vùng {reader.KeepBandRegion.Width}×{reader.KeepBandRegion.Height} " +
+                     $"@ {reader.KeepBandRegion.X},{reader.KeepBandRegion.Y}, màu nền nút " +
+                     $"#{reader.KeepColor.R:X2}{reader.KeepColor.G:X2}{reader.KeepColor.B:X2} ±{_cfg.KeepColorTol}");
 
             Emit($"bắt đầu. chờ cắn {_cfg.WaitBiteMs} ms, giữ S tối đa {_cfg.FightTimeoutMs} ms, " +
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
@@ -208,20 +214,88 @@ internal sealed class FishingBot
             return;
         }
 
-        var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
-        int cx = abs.Left + abs.Width / 2;
-        int cy = abs.Top + abs.Height / 2;
+        var found = WaitForKeep(reader, ct);
+        if (found is null)
+        {
+            // Không dò được: về cách cũ, click ô đã khoanh. Đúng với con cá tên ngắn.
+            var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
+            Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — click ô đã khoanh");
+            ClickKeep(new Point(abs.Left + abs.Width / 2, abs.Top + abs.Height / 2), ct);
+        }
+        else
+        {
+            Emit($"thấy nút {found.KeepRect.Width}×{found.KeepRect.Height} @ {found.KeepRect.X},{found.KeepRect.Y}" +
+                 $"  dens={found.KeepDensity:F2}  ncc={found.KeepScore:F3}");
+            ClickKeep(found.KeepClick, ct);
 
+            for (int i = 0; i < _cfg.KeepClickRetries; i++)
+            {
+                var still = WaitForKeepGone(reader, ct);
+                if (still is null) break;
+                Emit($"nút vẫn còn sau {_cfg.KeepGoneMs} ms — click lại (lần {i + 1}/{_cfg.KeepClickRetries})");
+                ClickKeep(still.KeepClick, ct);
+            }
+        }
+
+        try { SnapshotReady?.Invoke(reader.Read()); } catch { }
+        Cast(ct, "thả câu", waitRelease: false);
+    }
+
+    /// <summary>
+    /// Chờ dò được nút, tối đa <see cref="FishingConfig.WaitKeepMs"/>. Null = không thấy.
+    /// Panel hiện chậm hay nhanh tùy con cá nên không thể click theo một mốc thời gian cố định.
+    /// </summary>
+    private FishingSnapshot WaitForKeep(FishingReader reader, CancellationToken ct)
+    {
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            WaitWindow(ct);
+
+            var snap = reader.Read();
+            SnapshotReady?.Invoke(snap);
+
+            if (snap.KeepVisible) return snap;
+            if (!snap.KeepConfigured) return null;      // thiếu mẫu/vùng — poll thêm cũng vô ích
+            if (sw.ElapsedMilliseconds >= _cfg.WaitKeepMs) return null;
+
+            Sleep(ct, _cfg.PollMs);
+        }
+    }
+
+    /// <summary>
+    /// Chờ nút tắt sau khi click, tối đa <see cref="FishingConfig.KeepGoneMs"/>.
+    /// Null = đã tắt; khác null = vẫn còn, kèm toạ độ mới để click lại.
+    /// </summary>
+    private FishingSnapshot WaitForKeepGone(FishingReader reader, CancellationToken ct)
+    {
+        if (_cfg.KeepGoneMs <= 0) return null;
+
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var snap = reader.Read();
+            SnapshotReady?.Invoke(snap);
+
+            if (!snap.KeepVisible) return null;
+            if (sw.ElapsedMilliseconds >= _cfg.KeepGoneMs) return snap;
+
+            Sleep(ct, _cfg.PollMs);
+        }
+    }
+
+    private void ClickKeep(Point p, CancellationToken ct)
+    {
         WaitWindow(ct);
-        Emit($"click CẤT VÀO @ {cx},{cy}");
-        InputSender.MoveSmooth(cx, cy, _cfg.KeepMoveSteps);
+        Emit($"click CẤT VÀO @ {p.X},{p.Y}");
+        InputSender.MoveSmooth(p.X, p.Y, _cfg.KeepMoveSteps);
         Sleep(ct, _cfg.KeepHoverMs);
         InputSender.LeftDown();
         Sleep(ct, 60);
         InputSender.LeftUp();
-
-        try { SnapshotReady?.Invoke(reader.Read()); } catch { }
-        Cast(ct, "thả câu", waitRelease: false);
     }
 
     private void Cast(CancellationToken ct, string why, bool waitRelease = true)

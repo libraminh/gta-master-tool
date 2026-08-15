@@ -22,10 +22,12 @@ internal sealed class FishingPanel : UserControl
     private readonly Button _btnFish = new();
     private readonly Button _btnReject = new();
     private readonly Button _btnKeep = new();
+    private readonly Button _btnKeepBand = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
     private readonly PictureBox _thumbReject = new();
     private readonly PictureBox _thumbKeep = new();
+    private readonly PictureBox _thumbKeepBand = new();
     private readonly TextBox _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _jobKey = HotkeyText.Job();
@@ -47,7 +49,8 @@ internal sealed class FishingPanel : UserControl
         _timer.Start();
 
         Append($"Khoanh thanh + cá rồi {_jobKey} để bật/tắt câu.");
-        Append("CẤT VÀO: khoanh nút trái lúc vừa câu được cá — bot click rồi mới bấm 4.");
+        Append("CẤT VÀO: ôm trọn khối nền màu của nút trái — bot lấy màu và kích thước nút từ ô này.");
+        Append("Vùng quét: khoanh cả khoảng nút trượt lên/xuống — tên cá dài đẩy hàng nút xuống.");
         Append("Game nên cửa sổ không viền / fullscreen windowed — exclusive có thể che overlay.");
     }
 
@@ -89,6 +92,7 @@ internal sealed class FishingPanel : UserControl
         DisposeThumb(_thumbFish);
         DisposeThumb(_thumbReject);
         DisposeThumb(_thumbKeep);
+        DisposeThumb(_thumbKeepBand);
     }
 
     private void BuildUi()
@@ -159,31 +163,37 @@ internal sealed class FishingPanel : UserControl
         box.Controls.Add(_keep);
         y += 134;
 
-        _btnBar.SetBounds(12, y, 140, 32);
+        _btnBar.SetBounds(12, y, 130, 32);
         _btnBar.Text = "Khoanh thanh";
         _btnBar.Click += (_, _) => Pick(FishingSlot.Bar);
         Controls.Add(_btnBar);
 
-        _btnFish.SetBounds(160, y, 140, 32);
+        _btnFish.SetBounds(150, y, 120, 32);
         _btnFish.Text = "Khoanh cá";
         _btnFish.Click += (_, _) => Pick(FishingSlot.Fish);
         Controls.Add(_btnFish);
 
-        _btnReject.SetBounds(308, y, 160, 32);
+        _btnReject.SetBounds(278, y, 150, 32);
         _btnReject.Text = "Khoanh thông báo";
         _btnReject.Click += (_, _) => Pick(FishingSlot.Reject);
         Controls.Add(_btnReject);
 
-        _btnKeep.SetBounds(476, y, 170, 32);
+        _btnKeep.SetBounds(436, y, 160, 32);
         _btnKeep.Text = "Khoanh CẤT VÀO";
         _btnKeep.Click += (_, _) => Pick(FishingSlot.Keep);
         Controls.Add(_btnKeep);
+
+        _btnKeepBand.SetBounds(604, y, 190, 32);
+        _btnKeepBand.Text = "Khoanh vùng quét nút";
+        _btnKeepBand.Click += (_, _) => Pick(FishingSlot.KeepBand);
+        Controls.Add(_btnKeepBand);
         y += 44;
 
         AddThumb(_thumbBar, 12, y, "Thanh");
-        AddThumb(_thumbFish, 210, y, "Cá");
-        AddThumb(_thumbReject, 408, y, "Thông báo");
-        AddThumb(_thumbKeep, 606, y, "CẤT VÀO");
+        AddThumb(_thumbFish, 172, y, "Cá");
+        AddThumb(_thumbReject, 332, y, "Thông báo");
+        AddThumb(_thumbKeep, 492, y, "CẤT VÀO");
+        AddThumb(_thumbKeepBand, 652, y, "Vùng quét");
         y += 130;
 
         _log.SetBounds(12, y, w, 760 - y - 12);
@@ -198,7 +208,7 @@ internal sealed class FishingPanel : UserControl
     private void AddThumb(PictureBox box, int x, int y, string caption)
     {
         Controls.Add(new Label { Text = caption, Location = new Point(x, y), AutoSize = true });
-        box.SetBounds(x, y + 18, 186, 96);
+        box.SetBounds(x, y + 18, 148, 96);
         box.BorderStyle = BorderStyle.FixedSingle;
         box.SizeMode = PictureBoxSizeMode.Zoom;
         box.BackColor = Color.FromArgb(245, 245, 245);
@@ -255,7 +265,7 @@ internal sealed class FishingPanel : UserControl
             ? Color.DarkGreen : Color.DimGray;
     }
 
-    private enum FishingSlot { Bar, Fish, Reject, Keep }
+    private enum FishingSlot { Bar, Fish, Reject, Keep, KeepBand }
 
     private void Pick(FishingSlot slot)
     {
@@ -270,7 +280,9 @@ internal sealed class FishingPanel : UserControl
             FishingSlot.Fish => ("Khoanh icon cá",
                 "Kéo ôm icon cá phía trên thanh — phải đang hiện lúc cá cắn."),
             FishingSlot.Keep => ("Khoanh CẤT VÀO",
-                "Kéo ôm nút CẤT VÀO (trái) lúc panel nhận cá đang hiện. Đừng khoanh tiêu đề."),
+                "Ôm TRỌN khối nền màu của nút CẤT VÀO (trái), không ôm sát chữ — bot lấy màu và kích thước nút từ ô này."),
+            FishingSlot.KeepBand => ("Khoanh vùng quét nút",
+                "Kéo ôm cả khoảng nút CẤT VÀO có thể trượt tới — từ mức cao nhất tới mức thấp nhất ở mọi loại cá."),
             _ => ("Khoanh thông báo",
                 "Kéo ôm hộp đỏ CÂU CÁ + chữ “Cá chê mồi của bạn”. Đừng kéo xuống minimap.")
         };
@@ -290,6 +302,7 @@ internal sealed class FishingPanel : UserControl
             FishingSlot.Bar => FishingConfig.BarPreviewPath(key),
             FishingSlot.Fish => FishingConfig.FishTemplatePath(key),
             FishingSlot.Keep => FishingConfig.KeepTemplatePath(key),
+            FishingSlot.KeepBand => FishingConfig.KeepBandPreviewPath(key),
             _ => FishingConfig.RejectTemplatePath(key)
         };
 
@@ -306,6 +319,9 @@ internal sealed class FishingPanel : UserControl
                     break;
                 case FishingSlot.Keep:
                     profile.Keep = FishingRect.FromRelative(result.Relative);
+                    break;
+                case FishingSlot.KeepBand:
+                    profile.KeepBand = FishingRect.FromRelative(result.Relative);
                     break;
                 default:
                     profile.Reject = FishingRect.FromRelative(result.Relative);
@@ -325,6 +341,17 @@ internal sealed class FishingPanel : UserControl
         _reader = null;
         RefreshProfileLabel();
         Append($"đã khoanh {SlotName(slot)}  {result.Relative.Width}×{result.Relative.Height}  @ {result.Relative.X},{result.Relative.Y}  → {key}");
+
+        if (slot is FishingSlot.Keep or FishingSlot.KeepBand)
+            WarnBandFit(profile);
+    }
+
+    /// <summary>Bot chỉ dò nút bên trong vùng quét, nên ô CẤT VÀO phải nằm trong đó.</summary>
+    private void WarnBandFit(FishingProfile profile)
+    {
+        if (!profile.Keep.IsSet || !profile.KeepBand.IsSet) return;
+        if (profile.KeepBand.ToRectangle().Contains(profile.Keep.ToRectangle())) return;
+        Append("cảnh báo: ô CẤT VÀO nằm ngoài vùng quét — khoanh lại vùng quét trùm cả ô nút");
     }
 
     private static string SlotName(FishingSlot s) => s switch
@@ -332,6 +359,7 @@ internal sealed class FishingPanel : UserControl
         FishingSlot.Bar => "thanh",
         FishingSlot.Fish => "cá",
         FishingSlot.Keep => "CẤT VÀO",
+        FishingSlot.KeepBand => "vùng quét",
         _ => "thông báo"
     };
 
@@ -345,6 +373,7 @@ internal sealed class FishingPanel : UserControl
         LoadThumb(_thumbFish, FishingConfig.FishTemplatePath(key));
         LoadThumb(_thumbReject, FishingConfig.RejectTemplatePath(key));
         LoadThumb(_thumbKeep, FishingConfig.KeepTemplatePath(key));
+        LoadThumb(_thumbKeepBand, FishingConfig.KeepBandPreviewPath(key));
     }
 
     private static void LoadThumb(PictureBox box, string path)
@@ -366,6 +395,7 @@ internal sealed class FishingPanel : UserControl
             FishingSlot.Bar => _thumbBar,
             FishingSlot.Fish => _thumbFish,
             FishingSlot.Keep => _thumbKeep,
+            FishingSlot.KeepBand => _thumbKeepBand,
             _ => _thumbReject
         };
         DisposeThumb(box);
@@ -434,6 +464,7 @@ internal sealed class FishingPanel : UserControl
         _btnFish.Enabled = !running;
         _btnReject.Enabled = !running;
         _btnKeep.Enabled = !running;
+        _btnKeepBand.Enabled = !running;
         _screens.Enabled = !running;
         RunningChanged?.Invoke(running);
     }
@@ -466,6 +497,13 @@ internal sealed class FishingPanel : UserControl
                 if (_reader.FishTemplateProblem is { } fp) Append("mẫu cá: " + fp);
                 if (_reader.RejectTemplateProblem is { } rp) Append("mẫu thông báo: " + rp);
                 if (_reader.KeepTemplateProblem is { } kp) Append("mẫu CẤT VÀO: " + kp);
+                else
+                {
+                    var band = _reader.KeepBandRegion;
+                    var c = _reader.KeepColor;
+                    Append($"dò CẤT VÀO: vùng {band.Width}×{band.Height} @ {band.X},{band.Y}, " +
+                           $"màu nền nút #{c.R:X2}{c.G:X2}{c.B:X2} ±{_cfg.KeepColorTol}");
+                }
             }
             ShowSnapshot(_reader.Read());
         }
@@ -523,7 +561,10 @@ internal sealed class FishingPanel : UserControl
         }
         else
         {
-            _keep.Text = $"cất vào : {(s.KeepVisible ? "CÓ" : "không")}   ncc={s.KeepScore:F3}";
+            _keep.Text = s.KeepVisible
+                ? $"cất vào : CÓ @ {s.KeepClick.X},{s.KeepClick.Y}  {s.KeepRect.Width}×{s.KeepRect.Height}" +
+                  $"  dens={s.KeepDensity:F2}  ncc={s.KeepScore:F3}"
+                : "cất vào : không";
             _keep.ForeColor = s.KeepVisible ? Color.DarkGreen : Color.DimGray;
         }
     }
