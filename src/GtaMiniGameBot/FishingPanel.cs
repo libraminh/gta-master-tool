@@ -23,6 +23,13 @@ internal sealed class FishingPanel : UserControl
     private readonly Button _btnReject = new();
     private readonly Button _btnKeep = new();
     private readonly Button _btnKeepBand = new();
+    private readonly Button _btnAltProbe = new();
+    private readonly Button _btnTrunkSetup = new();
+    private readonly CheckBox _dumpEnabled = new();
+    private readonly NumericUpDown _everyN = new();
+    private readonly NumericUpDown _dumpEvery = new();
+    private readonly NumericUpDown _turnMs = new();
+    private readonly Label _dumpStatus = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
     private readonly PictureBox _thumbReject = new();
@@ -31,6 +38,7 @@ internal sealed class FishingPanel : UserControl
     private readonly TextBox _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _jobKey = HotkeyText.Job();
+    private bool _syncingDumpUi;
 
     public FishingPanel()
     {
@@ -42,6 +50,7 @@ internal sealed class FishingPanel : UserControl
         BuildUi();
         FillScreens();
         RefreshProfileLabel();
+        RefreshDumpStatus();
         LoadThumbs();
 
         _timer.Interval = 100;
@@ -73,9 +82,8 @@ internal sealed class FishingPanel : UserControl
 
     public void StopWork()
     {
-        _bot?.Stop();
-        try { InputSender.KeyUp(0x53); } catch { }
-        try { InputSender.LeftUp(); } catch { }
+        _bot?.StopAndWait();
+        HeldKeys.ReleaseAll();
         _reader?.Dispose();
         _reader = null;
     }
@@ -83,9 +91,8 @@ internal sealed class FishingPanel : UserControl
     public void Shutdown()
     {
         _timer.Stop();
-        _bot?.Stop();
-        try { InputSender.KeyUp(0x53); } catch { }
-        try { InputSender.LeftUp(); } catch { }
+        _bot?.StopAndWait();
+        HeldKeys.ReleaseAll();
         _reader?.Dispose();
         _reader = null;
         DisposeThumb(_thumbBar);
@@ -196,6 +203,67 @@ internal sealed class FishingPanel : UserControl
         AddThumb(_thumbKeepBand, 652, y, "Vùng quét");
         y += 130;
 
+        var dump = new GroupBox
+        {
+            Text = "Đổ cá vào cốp xe",
+            Location = new Point(12, y),
+            Size = new Size(w, 104)
+        };
+        Controls.Add(dump);
+
+        _dumpEnabled.SetBounds(16, 24, 330, 22);
+        _dumpEnabled.Text = "Tự đổ cá vào cốp khi ba lô gần đầy";
+        _dumpEnabled.CheckedChanged += (_, _) => OnDumpEnabledChanged();
+        dump.Controls.Add(_dumpEnabled);
+
+        dump.Controls.Add(new Label { Text = "Kiểm tra KG mỗi", Location = new Point(360, 26), AutoSize = true });
+        _everyN.SetBounds(468, 22, 60, 24);
+        _everyN.Minimum = 1;
+        _everyN.Maximum = 50;
+        _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, 1, 50);
+        _everyN.ValueChanged += (_, _) => OnEveryNChanged();
+        dump.Controls.Add(_everyN);
+        dump.Controls.Add(new Label { Text = "con cá", Location = new Point(534, 26), AutoSize = true });
+
+        dump.Controls.Add(new Label { Text = "· đổ mỗi", Location = new Point(596, 26), AutoSize = true });
+        _dumpEvery.SetBounds(654, 22, 56, 24);
+        _dumpEvery.Minimum = 0;
+        _dumpEvery.Maximum = 50;
+        _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, 0, 50);
+        _dumpEvery.ValueChanged += (_, _) => OnDumpEveryChanged();
+        dump.Controls.Add(_dumpEvery);
+        dump.Controls.Add(new Label { Text = "con (0=tắt)", Location = new Point(716, 26), AutoSize = true });
+
+        _dumpStatus.SetBounds(16, 52, 760, 18);
+        _dumpStatus.Font = new Font("Consolas", 9F);
+        dump.Controls.Add(_dumpStatus);
+
+        _btnTrunkSetup.SetBounds(16, 72, 190, 26);
+        _btnTrunkSetup.Text = "Cấu hình đổ cốp…";
+        _btnTrunkSetup.Click += (_, _) => OpenTrunkSetup();
+        dump.Controls.Add(_btnTrunkSetup);
+
+        _btnAltProbe.SetBounds(214, 72, 210, 26);
+        _btnAltProbe.Text = "Test giữ Alt (menu xe)";
+        _btnAltProbe.Click += (_, _) => DoAltProbe();
+        dump.Controls.Add(_btnAltProbe);
+
+        dump.Controls.Add(new Label
+        {
+            Text = "Quay mặt sau khi đổ: giữ S",
+            Location = new Point(444, 76),
+            AutoSize = true
+        });
+        _turnMs.SetBounds(600, 72, 70, 24);
+        _turnMs.Minimum = 0;
+        _turnMs.Maximum = 3000;
+        _turnMs.Increment = 50;
+        _turnMs.Value = Math.Clamp(_cfg.AfterDumpTurnMs, 0, 3000);
+        _turnMs.ValueChanged += (_, _) => OnTurnMsChanged();
+        dump.Controls.Add(_turnMs);
+        dump.Controls.Add(new Label { Text = "ms (0=tắt)", Location = new Point(676, 76), AutoSize = true });
+        y += 116;
+
         _log.SetBounds(12, y, w, 760 - y - 12);
         _log.Multiline = true;
         _log.ReadOnly = true;
@@ -249,8 +317,102 @@ internal sealed class FishingPanel : UserControl
         _reader?.Dispose();
         _reader = null;
         RefreshProfileLabel();
+        RefreshDumpStatus();
         LoadThumbs();
         ClearLive();
+    }
+
+    // ------------------------------------------------- đổ cá vào cốp
+
+    private void RefreshDumpStatus()
+    {
+        var screen = SelectedScreen;
+        var p = screen is null ? null : _cfg.TryGet(screen);
+
+        _syncingDumpUi = true;
+        try
+        {
+            _dumpEnabled.Checked = p?.TrunkDumpEnabled == true;
+            _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, (int)_everyN.Minimum, (int)_everyN.Maximum);
+            _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, (int)_dumpEvery.Minimum, (int)_dumpEvery.Maximum);
+            _turnMs.Value = Math.Clamp(_cfg.AfterDumpTurnMs, (int)_turnMs.Minimum, (int)_turnMs.Maximum);
+        }
+        finally { _syncingDumpUi = false; }
+
+        if (p is null)
+        {
+            _dumpStatus.Text = "chưa có hồ sơ cho màn hình này";
+            _dumpStatus.ForeColor = Color.DimGray;
+            return;
+        }
+
+        string gaps = p.DescribeTrunkGaps();
+        _dumpStatus.Text = gaps;
+        _dumpStatus.ForeColor = gaps.StartsWith("đủ") ? Color.DarkGreen : Color.DimGray;
+    }
+
+    private void OnDumpEnabledChanged()
+    {
+        if (_syncingDumpUi) return;
+        var screen = SelectedScreen;
+        if (screen is null) return;
+
+        var p = _cfg.GetOrCreate(screen);
+        // Bat khi chua khoanh du thi bot se chet giua chung — chan ngay tai day cho de hieu.
+        if (_dumpEnabled.Checked && !p.DescribeTrunkGaps().StartsWith("đủ"))
+        {
+            Append("chưa bật được: " + p.DescribeTrunkGaps());
+            _syncingDumpUi = true;
+            try { _dumpEnabled.Checked = false; }
+            finally { _syncingDumpUi = false; }
+            return;
+        }
+
+        p.TrunkDumpEnabled = _dumpEnabled.Checked;
+        try { _cfg.Save(); } catch (Exception ex) { Append("lưu cấu hình lỗi: " + ex.Message); }
+        Append(p.TrunkDumpEnabled ? "bật tự đổ cốp" : "tắt tự đổ cốp");
+    }
+
+    private void OnEveryNChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.WeightCheckEveryCatches = (int)_everyN.Value;
+        try { _cfg.Save(); } catch { }
+    }
+
+    private void OnDumpEveryChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.DumpEveryCatches = (int)_dumpEvery.Value;
+        try { _cfg.Save(); } catch { }
+        Append(_cfg.DumpEveryCatches == 0
+            ? "trần cứng theo số con: tắt — chỉ đổ theo cân nặng"
+            : $"trần cứng: đổ cốp mỗi {_cfg.DumpEveryCatches} con");
+    }
+
+    private void OnTurnMsChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.AfterDumpTurnMs = (int)_turnMs.Value;
+        try { _cfg.Save(); } catch { }
+        Append(_cfg.AfterDumpTurnMs == 0
+            ? "quay mặt sau khi đổ: tắt"
+            : $"quay mặt sau khi đổ: giữ S {_cfg.AfterDumpTurnMs} ms");
+    }
+
+    private void OpenTrunkSetup()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi cấu hình"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var p = _cfg.GetOrCreate(screen);
+        using (var f = new TrunkSetupForm(_cfg, screen, p))
+            f.ShowDialog(FindForm());
+
+        _cfg = FishingConfig.Load();
+        RefreshProfileLabel();
+        RefreshDumpStatus();
     }
 
     private void RefreshProfileLabel()
@@ -450,6 +612,188 @@ internal sealed class FishingPanel : UserControl
         _bot.Start();
     }
 
+    // ------------------------------------------------- test giữ Alt (menu xe)
+
+    /// <summary>
+    /// Tìm cách rê con trỏ tới nút mà KHÔNG làm tắt menu radial.
+    ///
+    /// Lần chạy đầu cho thấy <see cref="InputSender.MoveSmooth"/> vừa làm camera xoay vừa làm
+    /// menu tắt: nó bắn kèm MOUSEEVENTF_MOVE, mà GTA đọc raw input để xoay camera. Nên probe
+    /// này thử ba kiểu trong một lần bấm — đứng yên, SetCursorPos, SendInput — rồi chụp lại
+    /// từng bước để so bằng mắt xem kiểu nào giữ được menu.
+    /// </summary>
+    private void DoAltProbe()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi test"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var ok = MessageBox.Show(this,
+            "Test này chạy thử cả chuỗi mở cốp bằng toạ độ hai ô nút bạn đã khoanh:\r\n" +
+            "giữ Alt → click Tương tác → click Cốp xe → Esc đóng lại.\r\n\r\n" +
+            "LƯU Ý: bot sẽ click thật. Nếu menu không hiện (xe quá xa, camera không hướng vào xe) " +
+            "thì cú click đó rơi vào thế giới game — hãy đứng sát xe, tay không cầm súng.\r\n\r\n" +
+            "Bấm OK rồi có 5 giây để click vào cửa sổ game.",
+            "Test giữ Alt", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+        if (ok != DialogResult.OK) return;
+
+        _btnAltProbe.Enabled = false;
+        Append("--- test giữ Alt ---");
+        new Thread(() => AltProbeWorker(screen)) { IsBackground = true, Name = "AltProbe" }.Start();
+    }
+
+    private void AltProbeWorker(Screen screen)
+    {
+        void Log(string s) => Post(() => Append(s));
+
+        try
+        {
+            for (int i = 5; i >= 1; i--)
+            {
+                int n = i;
+                Log($"...{n}");
+                Thread.Sleep(1000);
+            }
+
+            string title = Native.ForegroundTitle();
+            Log($"cửa sổ đang focus: “{title}”");
+            if (!title.Contains(_cfg.WindowMatch, StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"KHÔNG phải cửa sổ game (“{_cfg.WindowMatch}”) — huỷ test");
+                return;
+            }
+
+            // Nguoi dung dang giu Alt that thi khong gianh quyen so huu phim: cu Alt-up cua
+            // minh se lam phim cua ho "dinh len" cho toi khi ho bam lai.
+            if (Native.IsKeyDown(HeldKeys.VK_ALT))
+            {
+                Log("Alt đang được giữ sẵn — huỷ test, nhả Alt ra rồi thử lại");
+                return;
+            }
+
+            string dir = Path.Combine(AppPaths.Root, "debug-alt");
+            Directory.CreateDirectory(dir);
+
+            var b = screen.Bounds;
+            var target = AltProbeTarget(screen, out string how);
+            var trunk = AltProbeTrunk(screen);
+            Native.GetCursorPos(out var before);
+            Log($"chuột trước khi bấm Alt: {before.x},{before.y}");
+            Log($"Tương tác: {target.X},{target.Y} ({how})");
+            Log(trunk is null ? "Cốp xe: chưa khoanh" : $"Cốp xe: {trunk.Value.X},{trunk.Value.Y}");
+
+            InputSender.AltDown();
+            try
+            {
+                Thread.Sleep(500);
+                Log($"IsKeyDown(Alt) sau khi bấm = {Native.IsKeyDown(HeldKeys.VK_ALT)}");
+                SaveProbeShot(dir, "alt-1-menu", b, Log);
+
+                InputSender.MoveCursorOnlySmooth(target.X, target.Y, 12);
+                Thread.Sleep(400);
+                SaveProbeShot(dir, "alt-2-hover-tuongtac", b, Log);
+
+                Log("click Tương tác");
+                ProbeClick();
+                Thread.Sleep(700);
+                SaveProbeShot(dir, "alt-3-sau-click", b, Log);
+
+                if (trunk is null)
+                {
+                    Log("chưa khoanh Nút Cốp xe — dừng ở đây");
+                }
+                else
+                {
+                    InputSender.MoveCursorOnlySmooth(trunk.Value.X, trunk.Value.Y, 12);
+                    Thread.Sleep(400);
+                    SaveProbeShot(dir, "alt-4-hover-copxe", b, Log);
+
+                    Log("click Cốp xe");
+                    ProbeClick();
+                    Thread.Sleep(1200);
+                }
+            }
+            finally
+            {
+                InputSender.AltUp();
+            }
+
+            Thread.Sleep(150);
+            bool stillDown = Native.IsKeyDown(HeldKeys.VK_ALT);
+            Log($"IsKeyDown(Alt) sau khi nhả = {stillDown}" + (stillDown ? "  ← ALT ĐANG KẸT" : ""));
+
+            SaveProbeShot(dir, "alt-5-sau-copxe", b, Log);
+
+            // Dong lai de khong bo man hinh kho do dang mo.
+            InputSender.TapKey(0x1B);
+            Thread.Sleep(700);
+            SaveProbeShot(dir, "alt-6-sau-esc", b, Log);
+
+            Log("xong — mở 6 ảnh trong " + dir);
+            Log("ảnh 3 hiện menu 4 nút = click ăn. Ảnh 5 hiện cốp xe = đi hết được chuỗi.");
+        }
+        catch (Exception ex)
+        {
+            Log("lỗi test: " + ex.Message);
+        }
+        finally
+        {
+            HeldKeys.ReleaseAll();
+            Post(() => _btnAltProbe.Enabled = !IsRunning);
+        }
+    }
+
+    /// <summary>
+    /// Đích rê tới. Ưu tiên tâm ô "Nút Tương tác" đã khoanh — lần trước tôi đoán một offset
+    /// theo phần trăm bề rộng màn và trượt nút cả trăm pixel, nên có nhìn ảnh cũng không kết
+    /// luận được là menu tắt hay chỉ là rê hụt.
+    /// </summary>
+    private Point AltProbeTarget(Screen screen, out string how)
+    {
+        var p = _cfg.TryGet(screen);
+        if (p?.AltInteract.IsSet == true)
+        {
+            var r = FishingConfig.ToAbsolute(screen, p.AltInteract);
+            how = "tâm ô Nút Tương tác đã khoanh";
+            return new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+        }
+
+        var b = screen.Bounds;
+        how = "đoán bên trái tâm màn — chưa khoanh Nút Tương tác";
+        return new Point(b.Left + b.Width / 2 - (int)(b.Width * 0.04), b.Top + b.Height / 2);
+    }
+
+    private Point? AltProbeTrunk(Screen screen)
+    {
+        var p = _cfg.TryGet(screen);
+        if (p?.AltTrunk.IsSet != true) return null;
+        var r = FishingConfig.ToAbsolute(screen, p.AltTrunk);
+        return new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+    }
+
+    /// <summary>Click tại chỗ — KHÔNG rê, vì cú rê mới là thứ làm tắt menu.</summary>
+    private static void ProbeClick()
+    {
+        InputSender.LeftDown();
+        Thread.Sleep(60);
+        InputSender.LeftUp();
+    }
+
+    private static void SaveProbeShot(string dir, string name, Rectangle bounds, Action<string> log)
+    {
+        string path = Path.Combine(dir, name + ".png");
+        try
+        {
+            using var bmp = RegionPicker.Capture(bounds);
+            RegionPicker.SavePng(bmp, path);
+            log($"đã chụp {name}.png");
+        }
+        catch (Exception ex)
+        {
+            log($"chụp {name} lỗi: {ex.Message}");
+        }
+    }
+
     /// <summary>Nguoi dung doi phim bat/tat job trong tab Tiện ích.</summary>
     public void SetJobHotkeyText(string text)
     {
@@ -465,6 +809,12 @@ internal sealed class FishingPanel : UserControl
         _btnReject.Enabled = !running;
         _btnKeep.Enabled = !running;
         _btnKeepBand.Enabled = !running;
+        _btnAltProbe.Enabled = !running;
+        _btnTrunkSetup.Enabled = !running;
+        _dumpEnabled.Enabled = !running;
+        _everyN.Enabled = !running;
+        _dumpEvery.Enabled = !running;
+        _turnMs.Enabled = !running;
         _screens.Enabled = !running;
         RunningChanged?.Invoke(running);
     }

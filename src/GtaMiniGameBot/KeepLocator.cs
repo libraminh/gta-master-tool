@@ -57,6 +57,12 @@ internal sealed class KeepLocator
     public static Color DominantColor(string pngPath)
     {
         using var bmp = new Bitmap(pngPath);
+        return DominantColor(bmp);
+    }
+
+    /// <summary>Cung phep do nhung tren anh dang co san trong bo nho.</summary>
+    public static Color DominantColor(Bitmap bmp)
+    {
         int w = bmp.Width, h = bmp.Height;
         var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         try

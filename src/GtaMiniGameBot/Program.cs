@@ -28,6 +28,21 @@ internal static class Program
             return rc;
         }
 
+        if (args.Length > 0 && args[0].Equals("--verify-ocr", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifyOcr.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-ocr.txt"), report.ToString());
+            return rc;
+        }
+
         if (args.Length > 0 && args[0].Equals("--pick-car-template", StringComparison.OrdinalIgnoreCase))
         {
             Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
@@ -47,8 +62,29 @@ internal static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        InstallSafetyNets();
         Application.Run(new HomeForm());
         return 0;
+    }
+
+    /// <summary>
+    /// Ngoai le khong bat duoc lam app chet ma OnFormClosing KHONG chay - phim S, chuot trai,
+    /// Alt se ket xuong trong game va nguoi choi phai tu bam lai de go. Ba moc nay la lop cuoi
+    /// cung nha chung ra. Van hien loi len de khong nuot mat, dung nhu hop thoai mac dinh.
+    /// </summary>
+    private static void InstallSafetyNets()
+    {
+        Application.ThreadException += (_, e) =>
+        {
+            HeldKeys.ReleaseAll();
+            try
+            {
+                MessageBox.Show(e.Exception.ToString(), "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch { }
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => HeldKeys.ReleaseAll();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => HeldKeys.ReleaseAll();
     }
 
     /// <summary>De console hien duoc tieng Viet co dau thay vi ky tu la.</summary>

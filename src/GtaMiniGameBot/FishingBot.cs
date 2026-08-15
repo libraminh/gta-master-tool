@@ -6,6 +6,7 @@ internal enum FishingStopReason
 {
     UserStopped,
     MissingRegions,
+    TrunkDump,
     Error
 }
 
@@ -26,6 +27,10 @@ internal sealed class FishingBot
     private Thread _thread;
     private bool _holdingS;
     private bool _windowWarned;
+
+    private TrunkDumper _dumper;
+    private int _catches;
+    private int _catchesSinceDump;
 
     public FishingBot(FishingConfig cfg, Screen screen, FishingProfile profile)
     {
@@ -50,10 +55,24 @@ internal sealed class FishingBot
 
     public void Stop() => _cts?.Cancel();
 
+    /// <summary>
+    /// Huỷ rồi CHỜ luồng bot chết hẳn. <see cref="Stop"/> chỉ báo CTS và trả về ngay, nên nếu
+    /// người gọi nhả phím ngay sau đó thì luồng bot còn sống vẫn kịp bấm lại — phím kẹt xuống
+    /// dù panel đã báo "đã dừng". Hết thời gian chờ thì thôi, không treo UI.
+    /// </summary>
+    public void StopAndWait(int ms = 1500)
+    {
+        _cts?.Cancel();
+        var t = _thread;
+        if (t is null || !t.IsAlive) return;
+        try { t.Join(ms); } catch { }
+    }
+
     public static string TenLyDo(FishingStopReason r) => r switch
     {
         FishingStopReason.UserStopped => "người dùng bấm dừng",
         FishingStopReason.MissingRegions => "chưa khoanh thanh / cá",
+        FishingStopReason.TrunkDump => "đổ cốp thất bại",
         _ => "lỗi"
     };
 
@@ -89,6 +108,8 @@ internal sealed class FishingBot
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
             Emit($"{HotkeyText.Job()} = bật/tắt. Cửa sổ game phải đang focus (" + _cfg.WindowMatch + ").");
             Emit($"mỗi lần 4 sẽ bấm Space sau {_cfg.CastSpaceDelayMs} ms — tắt hotkey 4 trong AutoHotkey.");
+
+            SetUpDumper();
 
             Cast(ct, "thả câu");
 
@@ -189,6 +210,12 @@ internal sealed class FishingBot
             message = ex.Message;
             Emit(message);
         }
+        catch (TrunkStepException ex)
+        {
+            reason = FishingStopReason.TrunkDump;
+            message = ex.Message;
+            Emit("dừng vì đổ cốp: " + ex.Message);
+        }
         catch (Exception ex)
         {
             reason = FishingStopReason.Error;
@@ -198,7 +225,9 @@ internal sealed class FishingBot
         finally
         {
             ReleaseS();
-            try { InputSender.LeftUp(); } catch { }
+            HeldKeys.ReleaseAll();
+            _dumper?.Dispose();
+            _dumper = null;
             Stopped?.Invoke(reason, message);
         }
     }
@@ -238,7 +267,97 @@ internal sealed class FishingBot
         }
 
         try { SnapshotReady?.Invoke(reader.Read()); } catch { }
+        MaybeDump(ct);
         Cast(ct, "thả câu", waitRelease: false);
+    }
+
+    private void SetUpDumper()
+    {
+        if (!_profile.TrunkDumpEnabled) return;
+
+        _dumper = TrunkDumper.Create(_cfg, _screen, _profile, Emit, out string problem);
+        if (_dumper is null)
+        {
+            Emit("KHÔNG bật được đổ cốp: " + problem + " — vẫn câu bình thường");
+            return;
+        }
+
+        string missing = _dumper.AtlasMissing;
+        Emit(missing.Length == 0
+            ? $"đổ cốp: bật. Kiểm tra KG mỗi {_cfg.WeightCheckEveryCatches} con, " +
+              $"đổ khi ≥ {_cfg.BagCapKg - _cfg.DumpMarginKg:F1} kg hoặc khi chỗ cá sắp không lọt cốp"
+            : $"đổ cốp: bật, nhưng thiếu mẫu chữ số {missing} — chạy theo đếm cá " +
+              $"(mỗi {_cfg.CatchesPerDumpFallback} con)");
+
+        if (_cfg.DumpEveryCatches > 0)
+            Emit($"đổ cốp: trần cứng mỗi {_cfg.DumpEveryCatches} con, dù ba lô còn nhẹ");
+    }
+
+    /// <summary>
+    /// Chỗ DUY NHẤT được phép đổ cốp: sau khi nút CẤT VÀO đã tắt và trước cú thả câu kế tiếp.
+    /// Không bao giờ chen vào lúc đang giữ S kéo cá — mất cá là nhẹ, giữ S suốt cả lượt đổ cốp
+    /// mới là hỏng.
+    /// </summary>
+    private void MaybeDump(CancellationToken ct)
+    {
+        if (_dumper is null) return;
+
+        _catches++;
+        _catchesSinceDump++;
+
+        // Tran cung theo so con: cat nho moi luot keo. Thu lam hong khong phai cop day ma la
+        // MOT CUM qua nang — cum 13 con nang 22.7 kg thi cop con 9.9 kg la chac chan khong lot.
+        bool byCount = _cfg.DumpEveryCatches > 0 && _catchesSinceDump >= _cfg.DumpEveryCatches;
+
+        int every = Math.Max(1, _cfg.WeightCheckEveryCatches);
+        if (!byCount && _catches % every != 0) return;
+
+        if (_dumper.OcrHealthy)
+        {
+            var w = _dumper.PeekBagWeight(ct);
+            if (w.Ok)
+            {
+                double full = _cfg.BagCapKg - _cfg.DumpMarginKg;
+                double fishKg = _dumper.PendingFishKg(w.Value);
+                double free = _dumper.TrunkFreeKg;
+
+                bool bagFull = w.Value >= full;
+                // Do TRUOC khi cho ca vuot qua cho trong cua cop: qua roi thi cum ca khong con
+                // lot vao dau duoc nua va chuyen di ban ca la bat buoc.
+                bool wontFit = fishKg >= 0 && free >= 0 && fishKg >= free - _cfg.DumpMarginKg;
+
+                Emit($"ba lô {w.Value:F1}/{w.Cap:F0} kg" +
+                     (fishKg >= 0 ? $", chỗ cá ≈ {fishKg:F1} kg" : "") +
+                     (free >= 0 ? $", cốp còn {free:F1} kg" : "") +
+                     $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") + ")");
+
+                if (!bagFull && !wontFit && !byCount) return;
+            }
+            else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
+            {
+                return;   // doc hong nhung chua toi nguong dem ca — cau tiep
+            }
+        }
+        else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
+        {
+            return;
+        }
+
+        Emit("--- đổ cá vào cốp ---");
+        var r = _dumper.Dump(ct);
+        if (r == DumpResult.Ok)
+        {
+            _catchesSinceDump = 0;
+            Emit("--- đổ xong, câu tiếp ---");
+            return;
+        }
+
+        // Khong thay o ca nao ma ba lo van bao gan day: khong the cau tiep, se cau vao cai
+        // ba lo day ma log van trong binh thuong.
+        _catchesSinceDump = 0;
+        throw new TrunkStepException(
+            "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
+            "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
     }
 
     /// <summary>

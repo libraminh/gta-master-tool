@@ -70,7 +70,7 @@ internal sealed class OilWellPanel : UserControl
     public void StopWork()
     {
         _bot?.Stop();
-        try { InputSender.LeftUp(); } catch { }
+        HeldKeys.ReleaseAll();
     }
 
     /// <summary>Dọn hết khi đóng app.</summary>
@@ -78,7 +78,7 @@ internal sealed class OilWellPanel : UserControl
     {
         _timer.Stop();
         _bot?.Stop();
-        try { InputSender.LeftUp(); } catch { }
+        HeldKeys.ReleaseAll();
         _monitor?.Dispose();
         _monitor = null;
     }
