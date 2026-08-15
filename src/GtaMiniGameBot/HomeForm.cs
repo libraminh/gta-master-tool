@@ -2,7 +2,7 @@ namespace GtaMiniGameBot;
 
 internal sealed class HomeForm : Form
 {
-    private enum TabKind { Oil, Fish, Utils }
+    private enum TabKind { Oil, Fish, Mine, Utils }
 
     private const int HOTKEY_TOGGLE = 1;
     private const int HOTKEY_UTILS = 2;
@@ -10,10 +10,12 @@ internal sealed class HomeForm : Form
 
     private readonly Button _btnOil = new();
     private readonly Button _btnFish = new();
+    private readonly Button _btnMine = new();
     private readonly Button _btnUtils = new();
     private readonly Panel _host = new();
     private readonly OilWellPanel _oil = new();
     private readonly FishingPanel _fish = new();
+    private readonly MinerPanel _mine = new();
     private readonly UtilsPanel _utils = new();
     private readonly StatusOverlay _overlay = new();
     private readonly System.Windows.Forms.Timer _overlayTest = new();
@@ -35,6 +37,7 @@ internal sealed class HomeForm : Form
 
         _oil.RunningChanged += OnJobRunning;
         _fish.RunningChanged += OnJobRunning;
+        _mine.RunningChanged += OnJobRunning;
         _utils.TestOverlayRequested += OnTestOverlay;
         _utils.HotkeysSuspend += UnregisterHotkeys;
         _utils.HotkeysApplied += OnHotkeysApplied;
@@ -67,7 +70,7 @@ internal sealed class HomeForm : Form
     private void StopOverlayTest()
     {
         _overlayTest.Stop();
-        if (!_oil.IsRunning && !_fish.IsRunning)
+        if (!_oil.IsRunning && !_fish.IsRunning && !_mine.IsRunning)
             _overlay.Hide();
     }
 
@@ -98,7 +101,12 @@ internal sealed class HomeForm : Form
         _btnFish.Click += (_, _) => ShowFishing();
         side.Controls.Add(_btnFish);
 
-        StyleNav(_btnUtils, "Tiện ích", 160);
+        // Ba job dung lien nhau, Tiện ích xuong duoi cung — no khong phai job.
+        StyleNav(_btnMine, "Thợ mỏ", 160);
+        _btnMine.Click += (_, _) => ShowMining();
+        side.Controls.Add(_btnMine);
+
+        StyleNav(_btnUtils, "Tiện ích", 202);
         _btnUtils.Click += (_, _) => ShowUtils();
         side.Controls.Add(_btnUtils);
     }
@@ -127,6 +135,9 @@ internal sealed class HomeForm : Form
         _fish.Dock = DockStyle.Fill;
         _host.Controls.Add(_fish);
 
+        _mine.Dock = DockStyle.Fill;
+        _host.Controls.Add(_mine);
+
         _utils.Dock = DockStyle.Fill;
         _host.Controls.Add(_utils);
     }
@@ -134,7 +145,9 @@ internal sealed class HomeForm : Form
     private void ShowOil()
     {
         _fish.StopWork();
+        _mine.StopWork();
         _fish.Hide();
+        _mine.Hide();
         _utils.Hide();
         _oil.Show();
         _oil.BringToFront();
@@ -146,12 +159,29 @@ internal sealed class HomeForm : Form
     {
         if (_oil.IsRunning)
             _oil.StopWork();
+        _mine.StopWork();
 
         _oil.Hide();
+        _mine.Hide();
         _utils.Hide();
         _fish.Show();
         _fish.BringToFront();
         _tab = TabKind.Fish;
+        HighlightNav();
+    }
+
+    private void ShowMining()
+    {
+        if (_oil.IsRunning)
+            _oil.StopWork();
+        _fish.StopWork();
+
+        _oil.Hide();
+        _fish.Hide();
+        _utils.Hide();
+        _mine.Show();
+        _mine.BringToFront();
+        _tab = TabKind.Mine;
         HighlightNav();
     }
 
@@ -160,9 +190,11 @@ internal sealed class HomeForm : Form
         if (_oil.IsRunning)
             _oil.StopWork();
         _fish.StopWork();
+        _mine.StopWork();
 
         _oil.Hide();
         _fish.Hide();
+        _mine.Hide();
         _utils.Show();
         _utils.BringToFront();
         _tab = TabKind.Utils;
@@ -173,6 +205,7 @@ internal sealed class HomeForm : Form
     {
         PaintNav(_btnOil, _tab == TabKind.Oil);
         PaintNav(_btnFish, _tab == TabKind.Fish);
+        PaintNav(_btnMine, _tab == TabKind.Mine);
         PaintNav(_btnUtils, _tab == TabKind.Utils);
     }
 
@@ -197,6 +230,7 @@ internal sealed class HomeForm : Form
         string jobKey = HotkeyConfig.Describe(_keys.JobToggleVk, _keys.JobToggleMods);
         _oil.SetJobHotkeyText(jobKey);
         _fish.SetJobHotkeyText(jobKey);
+        _mine.SetJobHotkeyText(jobKey);
     }
 
     /// <summary>
@@ -253,6 +287,11 @@ internal sealed class HomeForm : Form
                     if (_fish.IsRunning) _fish.StopFromHotkey();
                     else _fish.StartFromHotkey();
                 }
+                else if (_tab == TabKind.Mine)
+                {
+                    if (_mine.IsRunning) _mine.StopFromHotkey();
+                    else _mine.StartFromHotkey();
+                }
             }
         }
         base.WndProc(ref m);
@@ -263,6 +302,7 @@ internal sealed class HomeForm : Form
         UnregisterHotkeys();
         _oil.RunningChanged -= OnJobRunning;
         _fish.RunningChanged -= OnJobRunning;
+        _mine.RunningChanged -= OnJobRunning;
         _utils.TestOverlayRequested -= OnTestOverlay;
         _utils.HotkeysSuspend -= UnregisterHotkeys;
         _utils.HotkeysApplied -= OnHotkeysApplied;
@@ -272,6 +312,7 @@ internal sealed class HomeForm : Form
         _overlay.Dispose();
         _oil.Shutdown();
         _fish.Shutdown();
+        _mine.Shutdown();
         _utils.Shutdown();
         base.OnFormClosing(e);
     }

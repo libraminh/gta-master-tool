@@ -10,16 +10,23 @@ namespace GtaMiniGameBot;
 internal static class HeldKeys
 {
     public const ushort VK_S = 0x53;
+    public const ushort VK_W = 0x57;
     public const ushort VK_ALT = 0x12;
 
     /// <summary>
     /// An toàn khi gọi nhiều lần và khi chưa giữ gì. Mỗi thứ một try riêng: một cái ném lỗi
     /// không được phép chặn cái sau — đó đúng là ca mình cần nhả nhất.
+    ///
+    /// W và Left Shift là của job Thợ mỏ (MinerBot). Nhả ở đây cũng đồng thời nhả W mà tiện ích
+    /// CapsLock đang giữ, nhưng UtilityService tick 50 ms với keep-alive 400 ms sẽ tự giữ lại —
+    /// đổi một khoảng hụt dưới nửa giây lấy bảo đảm "dừng job là chắc chắn không kẹt phím".
     /// </summary>
     public static void ReleaseAll()
     {
         try { InputSender.AltUp(); } catch { }
+        try { InputSender.ShiftUp(); } catch { }
         try { InputSender.KeyUp(VK_S); } catch { }
+        try { InputSender.KeyUp(VK_W); } catch { }
         try { InputSender.LeftUp(); } catch { }
     }
 }

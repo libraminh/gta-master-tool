@@ -114,7 +114,7 @@ internal sealed class UtilsPanel : UserControl
         var box = new GroupBox { Text = "Phím tắt", Location = new Point(12, y), Size = new Size(w, 216) };
         Controls.Add(box);
 
-        AddHotkeyRow(box, 26, Hk.Job, "Bật/tắt job (Dầu khí, Câu cá)");
+        AddHotkeyRow(box, 26, Hk.Job, "Bật/tắt job (Dầu khí, Câu cá, Thợ mỏ)");
         AddHotkeyRow(box, 64, Hk.Utils, "Bật/tắt tiện ích");
         AddHotkeyRow(box, 102, Hk.AutoRun, "Tự chạy — giữ W");
         AddHotkeyRow(box, 140, Hk.HoldCtrl, "Giữ lâu để thêm Left Ctrl");
@@ -265,7 +265,7 @@ internal sealed class UtilsPanel : UserControl
             $"{KeyText(Hk.AutoRun)} — bật/tắt tự chạy (giữ W). Chỉ khi tiện ích đang bật và game đang focus.\r\n" +
             $"Giữ {KeyText(Hk.HoldCtrl)} hơn 200 ms — vừa phím đó vừa Left Ctrl. Nhấn thả nhanh thì chỉ phím đó.\r\n" +
             "\r\n" +
-            $"{KeyText(Hk.Job)} không dùng ở tab này ({KeyText(Hk.Job)} vẫn bật/tắt job Dầu khí / Câu cá).\r\n" +
+            $"{KeyText(Hk.Job)} không dùng ở tab này ({KeyText(Hk.Job)} vẫn bật/tắt job Dầu khí / Câu cá / Thợ mỏ).\r\n" +
             "Mất focus game thì tạm nhả W/Ctrl; auto-run vẫn nhớ, quay lại game sẽ giữ W tiếp.";
 
         RefreshUi();
