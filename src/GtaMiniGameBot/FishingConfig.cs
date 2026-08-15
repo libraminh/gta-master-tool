@@ -368,6 +368,12 @@ internal sealed class FishingConfig
     public int EscCloseMs { get; set; } = 1_500;
     public int AfterEscMs { get; set; } = 300;
     public int AfterDumpMs { get; set; } = 600;
+    /// <summary>
+    /// Giữ S bao lâu sau khi đóng cốp, để nhân vật quay mặt lại. Tương tác với xe làm nhân vật
+    /// xoay về phía xe, mà thả câu thì phải hướng ra hồ — không quay lại thì phím 4 vô tác dụng
+    /// và bot câu hụt cả phiên mà log vẫn trông bình thường. 0 = tắt.
+    /// </summary>
+    public int AfterDumpTurnMs { get; set; } = 400;
     public int DumpRetryGapMs { get; set; } = 1_500;
     public int MaxDumpMs { get; set; } = 60_000;
 
@@ -463,6 +469,7 @@ internal sealed class FishingConfig
         if (EscCloseMs <= 0) EscCloseMs = 1_500;
         if (AfterEscMs < 0) AfterEscMs = 300;
         if (AfterDumpMs < 0) AfterDumpMs = 600;
+        if (AfterDumpTurnMs < 0) AfterDumpTurnMs = 400;
         if (DumpRetryGapMs < 0) DumpRetryGapMs = 1_500;
         if (MaxDumpMs <= 0) MaxDumpMs = 60_000;
 

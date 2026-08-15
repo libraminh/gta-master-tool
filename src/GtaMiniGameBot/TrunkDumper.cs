@@ -233,6 +233,7 @@ internal sealed class TrunkDumper : IDisposable
         {
             _log("mọi ô chứa cá đã khai báo đều đang trống");
             _opener.CloseAll(ct);
+            TurnBack(ct);
             return DumpResult.NothingToMove;
         }
 
@@ -253,8 +254,33 @@ internal sealed class TrunkDumper : IDisposable
 
         _opener.CloseAll(ct);
         Sleep(ct, _cfg.AfterDumpMs);
+        TurnBack(ct);
         _bagWeight.ResetHistory();
         return DumpResult.Ok;
+    }
+
+    /// <summary>
+    /// Giữ S một nhịp cho nhân vật quay mặt lại về phía hồ.
+    ///
+    /// Tương tác với xe làm nhân vật xoay về phía xe. Thả câu thì phải hướng ra hồ, nên không
+    /// quay lại là phím 4 rơi vào hư không — mà bot không có cách nào tự thấy điều đó: HUD câu
+    /// không mở, không có cá cắn, và nó chỉ lặng lẽ câu hụt hết lượt này tới lượt khác.
+    /// </summary>
+    private void TurnBack(CancellationToken ct)
+    {
+        if (_cfg.AfterDumpTurnMs <= 0) return;
+
+        try
+        {
+            InputSender.KeyDown(HeldKeys.VK_S);
+            Sleep(ct, _cfg.AfterDumpTurnMs);
+        }
+        finally
+        {
+            try { InputSender.KeyUp(HeldKeys.VK_S); } catch { }
+        }
+        _log($"giữ S {_cfg.AfterDumpTurnMs} ms để quay mặt khỏi xe");
+        Sleep(ct, 250);
     }
 
     /// <summary>KG ba lô đọc ngay trên màn cốp — ô số nằm đúng chỗ cũ. -1 nếu không đọc được.</summary>

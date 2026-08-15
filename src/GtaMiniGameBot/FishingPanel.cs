@@ -28,6 +28,7 @@ internal sealed class FishingPanel : UserControl
     private readonly CheckBox _dumpEnabled = new();
     private readonly NumericUpDown _everyN = new();
     private readonly NumericUpDown _dumpEvery = new();
+    private readonly NumericUpDown _turnMs = new();
     private readonly Label _dumpStatus = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
@@ -246,6 +247,21 @@ internal sealed class FishingPanel : UserControl
         _btnAltProbe.Text = "Test giữ Alt (menu xe)";
         _btnAltProbe.Click += (_, _) => DoAltProbe();
         dump.Controls.Add(_btnAltProbe);
+
+        dump.Controls.Add(new Label
+        {
+            Text = "Quay mặt sau khi đổ: giữ S",
+            Location = new Point(444, 76),
+            AutoSize = true
+        });
+        _turnMs.SetBounds(600, 72, 70, 24);
+        _turnMs.Minimum = 0;
+        _turnMs.Maximum = 3000;
+        _turnMs.Increment = 50;
+        _turnMs.Value = Math.Clamp(_cfg.AfterDumpTurnMs, 0, 3000);
+        _turnMs.ValueChanged += (_, _) => OnTurnMsChanged();
+        dump.Controls.Add(_turnMs);
+        dump.Controls.Add(new Label { Text = "ms (0=tắt)", Location = new Point(676, 76), AutoSize = true });
         y += 116;
 
         _log.SetBounds(12, y, w, 760 - y - 12);
@@ -319,6 +335,7 @@ internal sealed class FishingPanel : UserControl
             _dumpEnabled.Checked = p?.TrunkDumpEnabled == true;
             _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, (int)_everyN.Minimum, (int)_everyN.Maximum);
             _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, (int)_dumpEvery.Minimum, (int)_dumpEvery.Maximum);
+            _turnMs.Value = Math.Clamp(_cfg.AfterDumpTurnMs, (int)_turnMs.Minimum, (int)_turnMs.Maximum);
         }
         finally { _syncingDumpUi = false; }
 
@@ -371,6 +388,16 @@ internal sealed class FishingPanel : UserControl
         Append(_cfg.DumpEveryCatches == 0
             ? "trần cứng theo số con: tắt — chỉ đổ theo cân nặng"
             : $"trần cứng: đổ cốp mỗi {_cfg.DumpEveryCatches} con");
+    }
+
+    private void OnTurnMsChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.AfterDumpTurnMs = (int)_turnMs.Value;
+        try { _cfg.Save(); } catch { }
+        Append(_cfg.AfterDumpTurnMs == 0
+            ? "quay mặt sau khi đổ: tắt"
+            : $"quay mặt sau khi đổ: giữ S {_cfg.AfterDumpTurnMs} ms");
     }
 
     private void OpenTrunkSetup()
@@ -787,6 +814,7 @@ internal sealed class FishingPanel : UserControl
         _dumpEnabled.Enabled = !running;
         _everyN.Enabled = !running;
         _dumpEvery.Enabled = !running;
+        _turnMs.Enabled = !running;
         _screens.Enabled = !running;
         RunningChanged?.Invoke(running);
     }
