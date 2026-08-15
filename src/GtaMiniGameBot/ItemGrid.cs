@@ -144,7 +144,12 @@ internal sealed class GridScanner : IDisposable
 
         var sig = CellSignature.Build(gray, w, h, _cfg.BadgeFrac);
         double std = CellSignature.StdDev(sig);
-        bool empty = chroma < _cfg.CellEmptyChroma01 && std < _cfg.CellEmptyStdMax;
+
+        // CHI dua vao do lech chuan. Do tren anh that: o trong 0.5-1.7, o co do 10.7-55.4 —
+        // tach sach gap 6 lan. Ti le pixel co mau tung duoc dung kem nhung phai bo: icon can
+        // cau gan nhu xam han, do duoc 0.008, sat ngay o trong 0.000, nen no khong phan biet
+        // duoc gi ma chi lam nguong them mot con so de dat sai. Van do va ghi lai de chan doan.
+        bool empty = std < _cfg.CellEmptyStdMax;
 
         return new CellInfo
         {

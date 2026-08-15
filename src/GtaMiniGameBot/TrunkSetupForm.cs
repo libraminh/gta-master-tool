@@ -498,8 +498,8 @@ internal sealed class TrunkSetupForm : Form
     /// </summary>
     private void CalibrateEmpty()
     {
-        var chroma = new List<double>();
         var std = new List<double>();
+        var chroma = new List<double>();
 
         foreach (var (label, shot, _, grid) in Grids())
         {
@@ -510,34 +510,33 @@ internal sealed class TrunkSetupForm : Form
             using var scanner = new GridScanner(_cfg, _screen, grid);
             foreach (var c in scanner.ScanStill(still))
             {
-                chroma.Add(c.Chroma);
                 std.Add(c.Std);
+                chroma.Add(c.Chroma);
             }
             Append($"{label}: đã đo {grid.Count} ô");
         }
 
-        if (chroma.Count < 6) { Append("chưa đủ ô để hiệu chỉnh — khoanh lưới và chụp ảnh trước"); return; }
+        if (std.Count < 6) { Append("chưa đủ ô để hiệu chỉnh — khoanh lưới và chụp ảnh trước"); return; }
 
-        double? cut1 = BiggestGap(chroma, 0.02, out string t1);
-        double? cut2 = BiggestGap(std, 3.0, out string t2);
-        Append("màu  : " + t1);
-        Append("lệch : " + t2);
+        double? cut = BiggestGap(std, 3.0, out string trace);
+        Append("độ lệch : " + trace);
+        // Chi ghi ra de doi chieu — ti le mau khong tham gia quyet dinh, xem GridScanner.Classify.
+        BiggestGap(chroma, 0.02, out string chromaTrace);
+        Append("màu     : " + chromaTrace + "   (chỉ để tham khảo)");
 
-        if (cut1 is null || cut2 is null)
+        if (cut is null)
         {
-            Append("không thấy khe hở rõ ràng — giữ nguyên ngưỡng cũ " +
-                   $"(màu {_cfg.CellEmptyChroma01:F3}, lệch {_cfg.CellEmptyStdMax:F1})");
+            Append($"không thấy khe hở rõ ràng — giữ nguyên ngưỡng cũ ({_cfg.CellEmptyStdMax:F1})");
             return;
         }
 
         if (MessageBox.Show(this,
-                $"Đặt ngưỡng ô trống thành:\r\n\r\nmàu < {cut1:F3}\r\nđộ lệch < {cut2:F1}\r\n\r\n" +
-                $"(đang là {_cfg.CellEmptyChroma01:F3} và {_cfg.CellEmptyStdMax:F1})",
+                $"Đặt ngưỡng ô trống thành: độ lệch < {cut:F1}\r\n\r\n" +
+                $"(đang là {_cfg.CellEmptyStdMax:F1})",
                 "Hiệu chỉnh ô trống", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
             return;
 
-        _cfg.CellEmptyChroma01 = cut1.Value;
-        _cfg.CellEmptyStdMax = cut2.Value;
+        _cfg.CellEmptyStdMax = cut.Value;
         try { _cfg.Save(); Append("đã lưu ngưỡng mới"); }
         catch (Exception ex) { Append("lưu lỗi: " + ex.Message); }
         RefreshAll();
@@ -755,7 +754,7 @@ internal sealed class TrunkSetupForm : Form
 
         var slots = _profile.FishSlots;
         _itemStatus.Text = (slots.Count == 0 ? "chưa chọn ô chứa cá" : "ô cá: " + string.Join(", ", slots.Select(s => s.Label))) +
-                           $"  ·  ô trống: màu<{_cfg.CellEmptyChroma01:F3} lệch<{_cfg.CellEmptyStdMax:F1}";
+                           $"  ·  ô trống khi độ lệch < {_cfg.CellEmptyStdMax:F1}";
         _itemStatus.ForeColor = slots.Count > 0 ? Color.DarkGreen : Color.DimGray;
     }
 

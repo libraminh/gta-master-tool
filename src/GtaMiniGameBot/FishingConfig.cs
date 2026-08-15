@@ -384,10 +384,12 @@ internal sealed class FishingConfig
     public double CellInsetFrac { get; set; } = 0.15;
     /// <summary>Phần góc dưới-phải bị bỏ khỏi phép đo: chỗ game vẽ số lượng.</summary>
     public double BadgeFrac { get; set; } = 0.42;
-    /// <summary>Tỉ lệ pixel có màu tối đa để coi là ô trống. Hiệu chỉnh được, không đoán.</summary>
-    public double CellEmptyChroma01 { get; set; } = 0.06;
-    /// <summary>Độ lệch chuẩn xám tối đa để coi là ô trống.</summary>
-    public double CellEmptyStdMax { get; set; } = 12.0;
+    /// <summary>
+    /// Độ lệch chuẩn xám tối đa để coi là ô trống. Hiệu chỉnh được, không đoán.
+    /// Ô trống là mảng phẳng; icon thì lắm chi tiết. Đo trên ảnh thật: trống 0.5–1.7,
+    /// có đồ 10.7–55.4.
+    /// </summary>
+    public double CellEmptyStdMax { get; set; } = 6.0;
     public double HeaderNccMin { get; set; } = 0.70;
     public int ShotCountdownSec { get; set; } = 5;
 
@@ -467,8 +469,9 @@ internal sealed class FishingConfig
 
         if (CellInsetFrac is < 0 or > 0.4) CellInsetFrac = 0.15;
         if (BadgeFrac is <= 0 or >= 0.9) BadgeFrac = 0.42;
-        if (CellEmptyChroma01 is <= 0 or > 1) CellEmptyChroma01 = 0.06;
-        if (CellEmptyStdMax <= 0) CellEmptyStdMax = 12.0;
+        // Chan tren 8: json cu co the dang giu 12.0 cua ban truoc, ma o co do thap nhat do duoc
+        // la 10.7 — de nguyen 12 la o do bi doc thanh o trong roi tha ca de len, tuc HOAN DOI.
+        if (CellEmptyStdMax is <= 0 or > 8) CellEmptyStdMax = 6.0;
         if (HeaderNccMin is <= 0 or > 1) HeaderNccMin = 0.70;
         if (ShotCountdownSec <= 0) ShotCountdownSec = 5;
 
