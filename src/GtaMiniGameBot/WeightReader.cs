@@ -31,7 +31,13 @@ internal sealed class WeightRead
 /// </summary>
 internal sealed class WeightReader : IDisposable
 {
-    private static readonly Regex Pattern = new(@"^(\d{1,3})(?:\.(\d))?/(\d{1,3})", RegexOptions.Compiled);
+    /// <summary>
+    /// Phải khớp TRỌN chuỗi, chỉ cho phép '?' phía sau (ký tự không đọc được, ví dụ chữ KG lỡ
+    /// lọt vào ô). Nếu chỉ khớp phần đầu thì một ký tự lạ bị nhận nhầm thành chữ số sẽ dính
+    /// luôn vào mẫu số — "/60" hoá "/600" — mà vẫn coi là đọc được.
+    /// </summary>
+    private static readonly Regex Pattern =
+        new(@"^(\d{1,3})(?:\.(\d))?/(\d{1,3})\?*$", RegexOptions.Compiled);
 
     private readonly FishingConfig _cfg;
     private readonly DigitAtlas _atlas;
@@ -104,7 +110,7 @@ internal sealed class WeightReader : IDisposable
 
         var m = Pattern.Match(text);
         if (!m.Success)
-            return Fail("chuỗi không đúng dạng số/số", text, trace);
+            return Fail("chuỗi không đúng dạng số.số/số", text, trace);
 
         // Dung MOT dau cham: mat dau cham thi "27.4" doc ra "274", va do dung la kieu doc sai
         // nguy hiem nhat — van hop le ve moi mat khac.

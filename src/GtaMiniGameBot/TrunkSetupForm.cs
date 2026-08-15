@@ -40,10 +40,12 @@ internal sealed class TrunkSetupForm : Form
     private static readonly Dictionary<Slot, SlotInfo> Slots = new()
     {
         [Slot.BagWeight] = new("Số KG ba lô", "bag",
-            "Khoanh trùm CẢ chuỗi “27.4/30 KG”, chừa mỗi bên vài pixel. " +
-            "Phải có cả mẫu số vì bot lấy “/30” làm neo chống đọc sai.", false, null),
+            "Khoanh từ chữ số đầu tới HẾT MẪU SỐ: “27.4/30”. " +
+            "KHÔNG lấy chữ “KG” — hai chữ đó không lưu thành mẫu được, chỉ tổ bị nhận nhầm " +
+            "thành chữ số và dính vào mẫu số. Phải có “/30” vì bot lấy nó làm neo chống đọc sai.",
+            false, null),
         [Slot.TrunkWeight] = new("Số KG cốp", "trunk",
-            "Khoanh trùm cả chuỗi “9.7/60 KG” ở cột cốp phương tiện.", false, null),
+            "Khoanh “9.7/60” ở cột cốp phương tiện. Cũng KHÔNG lấy chữ “KG”.", false, null),
         [Slot.BagHeader] = new("Chữ BA LÔ", "bag",
             "Khoanh sát chữ “BA LÔ”. Bot dùng nó để biết kho đồ đã mở hay chưa.", false, "hdr-bag"),
         [Slot.TrunkHeader] = new("Chữ CỐP PHƯƠNG TIỆN", "trunk",

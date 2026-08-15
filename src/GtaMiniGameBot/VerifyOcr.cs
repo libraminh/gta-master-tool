@@ -50,6 +50,9 @@ internal static class VerifyOcr
         fail += Expect(cfg, atlas, "274/30 KG", 30, ok: false) ? 0 : 1;    // mat dau cham
         fail += Expect(cfg, atlas, "27.4/50 KG", 30, ok: false) ? 0 : 1;   // mau so khac cau hinh
         fail += Expect(cfg, atlas, "", 30, ok: false) ? 0 : 1;             // o trong
+        // Chu so lac sau mau so, cach boi mot ky tu khong doc duoc. Khop-phan-dau se nuot
+        // truot ca nay va tra ve 27.4 nhu that — day dung la ca da lam hong lan doc that.
+        fail += Expect(cfg, atlas, "27.4/30K5", 30, ok: false) ? 0 : 1;
 
         try { Directory.Delete(Path.Combine(AppPaths.Root, "fishing", Key), recursive: true); } catch { }
 

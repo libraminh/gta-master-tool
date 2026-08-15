@@ -224,6 +224,10 @@ internal sealed class DigitAtlas
     public int MinWidth => _entries.Count == 0 ? 0 : _entries.Min(e => e.Tpl.Width);
     public int MaxWidth => _entries.Count == 0 ? 0 : _entries.Max(e => e.Tpl.Width);
 
+    /// <summary>Kích thước các mẫu đã có của một ký tự — để phát hiện mẫu mới bị gán nhầm nhãn.</summary>
+    public IReadOnlyList<(int W, int H)> SizesOf(char ch) =>
+        _entries.Where(e => e.Ch == ch).Select(e => (e.Tpl.Width, e.Tpl.Height)).ToList();
+
     public static DigitAtlas Load(string profileKey)
     {
         var atlas = new DigitAtlas();

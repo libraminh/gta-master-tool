@@ -67,6 +67,11 @@ internal sealed class LearnDigitsForm : Form
         reload.SetBounds(406, y - 1, 100, 26);
         reload.Click += (_, _) => LoadSource();
         Controls.Add(reload);
+
+        var wipe = new Button { Text = "Xoá hết mẫu, dạy lại" };
+        wipe.SetBounds(514, y - 1, 170, 26);
+        wipe.Click += (_, _) => WipeAtlas();
+        Controls.Add(wipe);
         y += 34;
 
         _canvas.SetBounds(12, y, 836, 190);
@@ -98,7 +103,8 @@ internal sealed class LearnDigitsForm : Form
 
         Controls.Add(new Label
         {
-            Text = "Gõ đúng các ký tự thấy trong khung, trái sang phải (kể cả KG nếu có):",
+            Text = "Gõ đúng các ký tự trong khung, trái sang phải. Ký tự bạn gõ hiện dưới từng khung — " +
+                   "đối chiếu cho khớp 1:1 trước khi lưu.",
             Location = new Point(12, y),
             AutoSize = true
         });
@@ -240,13 +246,17 @@ internal sealed class LearnDigitsForm : Form
             return;
         }
 
-        int saved = 0, skipped = 0;
+        var existing = DigitAtlas.Load(_key);
+        int tallest = _boxes.Max(b => b.Box.Height);
+
+        int saved = 0, skipped = 0, warned = 0;
         for (int i = 0; i < _boxes.Count; i++)
         {
             char c = text[i];
             if (FishingConfig.DigitClassName(c) is null) { skipped++; continue; }
 
             var b = _boxes[i].Box;
+            warned += WarnIfOdd(c, b, tallest, existing) ? 1 : 0;
             var crop = GlyphSeg.Crop(_gray, _gw, _gh, b.X, b.Y, b.Width, b.Height);
             try
             {
@@ -261,6 +271,57 @@ internal sealed class LearnDigitsForm : Form
         }
 
         Append($"đã lưu {saved} mẫu" + (skipped > 0 ? $", bỏ qua {skipped} ký tự không phải số" : ""));
+        if (warned > 0)
+            Append($"CÓ {warned} MẪU ĐÁNG NGỜ ở trên — nên xoá thư mục digits rồi dạy lại, " +
+                   "một mẫu gán nhầm nhãn làm hỏng mọi lần đọc sau");
+        RefreshInventory();
+    }
+
+    /// <summary>
+    /// Bắt ca gán nhầm nhãn ngay lúc dạy. Một mẫu sai âm thầm phá mọi lần đọc về sau và rất khó
+    /// lần ra từ log — ví dụ chữ "KG" lỡ lọt vào ô rồi được dạy thành '0' sẽ biến "/60" thành
+    /// "/600". Hai dấu hiệu rẻ mà chắc: dấu chấm phải thấp hơn hẳn chữ số, và mẫu mới của một
+    /// ký tự phải cùng cỡ với mẫu cũ của chính ký tự đó.
+    /// </summary>
+    private bool WarnIfOdd(char c, Rectangle box, int tallest, DigitAtlas existing)
+    {
+        if (c == '.' && box.Height > tallest * 0.6)
+        {
+            Append($"cảnh báo: '.' cao {box.Height} px, gần bằng chữ số ({tallest}) — " +
+                   "khung không khớp ký tự bạn gõ?");
+            return true;
+        }
+
+        var sizes = existing.SizesOf(c);
+        if (sizes.Count > 0 && sizes.All(s => Math.Abs(s.W - box.Width) > 2 || Math.Abs(s.H - box.Height) > 2))
+        {
+            string old = string.Join(", ", sizes.Select(s => $"{s.W}×{s.H}"));
+            Append($"cảnh báo: '{c}' mới {box.Width}×{box.Height} lệch hẳn mẫu đã có ({old})");
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Một mẫu gán nhầm nhãn không sửa lẻ được — nó vẫn thắng điểm ở những khối lẽ ra phải bị
+    /// từ chối. Xoá sạch rồi dạy lại rẻ hơn là đi tìm mẫu nào hỏng.
+    /// </summary>
+    private void WipeAtlas()
+    {
+        string dir = FishingConfig.DigitDir(_key);
+        if (!Directory.Exists(dir)) { Append("chưa có mẫu nào để xoá"); return; }
+
+        if (MessageBox.Show(this,
+                $"Xoá toàn bộ mẫu chữ số của {_key}?\r\n\r\n{dir}",
+                "Xoá mẫu chữ số", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            return;
+
+        try
+        {
+            foreach (string f in Directory.GetFiles(dir, "*.png")) File.Delete(f);
+            Append("đã xoá hết mẫu chữ số — dạy lại từ đầu");
+        }
+        catch (Exception ex) { Append("xoá lỗi: " + ex.Message); }
         RefreshInventory();
     }
 
