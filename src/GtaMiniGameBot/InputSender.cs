@@ -153,6 +153,9 @@ internal static class InputSender
     /// <summary>Scancode Alt TRAI. Xem <see cref="AltDown"/> de biet vi sao khong dung VK.</summary>
     private const ushort SCAN_LALT = 0x38;
 
+    /// <summary>Scancode Shift TRAI. Cung ly do voi <see cref="SCAN_LALT"/>.</summary>
+    private const ushort SCAN_LSHIFT = 0x2A;
+
     /// <summary>
     /// Giu/nha Alt TRAI bang scancode thang, KHONG extended.
     /// Di qua MapVirtualKey nhu cac phim khac co the ra E0 38 - tren nhieu layout do la AltGr
@@ -161,6 +164,14 @@ internal static class InputSender
     /// </summary>
     public static void AltDown() => ScanKey(SCAN_LALT, extended: false, up: false);
     public static void AltUp() => ScanKey(SCAN_LALT, extended: false, up: true);
+
+    /// <summary>
+    /// Giu/nha Shift TRAI. Di thang scancode chu khong qua KeyDown(0xA0): VK_LSHIFT la mot
+    /// trong nhung VK ma MapVirtualKey hay tra ve 0 - dung y het ca Ctrl (UtilityService.CtrlVk)
+    /// lan Alt o tren, va o day ket qua 0 nghia la ban ra scancode 0, tuc phim khong bao gio xuong.
+    /// </summary>
+    public static void ShiftDown() => ScanKey(SCAN_LSHIFT, extended: false, up: false);
+    public static void ShiftUp() => ScanKey(SCAN_LSHIFT, extended: false, up: true);
 
     private static void Key(ushort vk, bool up)
     {
