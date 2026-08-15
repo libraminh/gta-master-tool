@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace GtaMiniGameBot;
 
 internal enum MinerStopReason
@@ -6,13 +8,26 @@ internal enum MinerStopReason
     InputFailed
 }
 
+/// <summary>Số liệu một phiên cày, panel hiện lên và ghi log.</summary>
+internal sealed class MinerStats
+{
+    public int Mined { get; init; }
+    public int Trips { get; init; }
+    public int LastMineMs { get; init; }
+}
+
 /// <summary>
-/// Job Thợ mỏ: giữ W + Left Shift để chạy tới, và bấm E đều đặn theo nhịp đặt trong panel.
+/// Job Thợ mỏ: giữ W + Left Shift để chạy tới, bấm E đều đặn, và — khi đã khoanh vùng HUD —
+/// đọc màn hình để biết mình đang ở pha nào.
 ///
 /// Không dùng SendInput một phát rồi ngủ trọn nhịp E: vòng lặp phải tick nhanh để (1) ping lại
-/// W/Shift trước khi game bỏ rơi phím giữ lâu, và (2) nhả phím ngay khi người chơi alt-tab.
-/// Đây đúng là hình dạng tick của <see cref="UtilityService"/>, chỉ khác là đặt trên một luồng
-/// huỷ được thay vì Timer, để khớp khuôn bot của các job khác (Start/Stop/StopAndWait/Stopped).
+/// W/Shift trước khi game bỏ rơi phím giữ lâu, (2) nhả phím ngay khi người chơi alt-tab, và
+/// (3) đọc HUD đủ dày để không bỏ lỡ toast tiền chỉ sống vài giây. Đây đúng là hình dạng tick
+/// của <see cref="UtilityService"/>, chỉ khác là đặt trên một luồng huỷ được thay vì Timer, để
+/// khớp khuôn bot của các job khác (Start/Stop/StopAndWait/Stopped).
+///
+/// Chưa khoanh vùng thì bot chạy y hệt bản đầu — giữ phím và gõ E mù. Đó là chủ ý: người dùng
+/// phải cày được ngay từ trước khi ngồi hiệu chỉnh.
 /// </summary>
 internal sealed class MinerBot
 {
@@ -22,19 +37,37 @@ internal sealed class MinerBot
     private const int KeepAliveMs = 400;
 
     private readonly MinerConfig _cfg;
+    private readonly Screen _screen;
+    private readonly MinerProfile _profile;
+
     private CancellationTokenSource _cts;
     private Thread _thread;
 
     private bool _held;
     private long _lastPing;
     private long _lastTap;
+    private long _lastLift;
     private bool _windowWarned;
 
-    public MinerBot(MinerConfig cfg) => _cfg = cfg;
+    private bool _wasMining;
+    private bool _cashLatched;
+    private readonly Stopwatch _mineSw = new();
+    private int _mined;
+    private int _trips;
+    private int _lastMineMs;
+
+    public MinerBot(MinerConfig cfg, Screen screen, MinerProfile profile)
+    {
+        _cfg = cfg;
+        _screen = screen;
+        _profile = profile;
+    }
 
     public bool Running => _thread is { IsAlive: true };
 
     public event Action<string> Log;
+    public event Action<MinerSnapshot> SnapshotReady;
+    public event Action<MinerStats> StatsChanged;
     public event Action<MinerStopReason, string> Stopped;
 
     public void Start()
@@ -70,11 +103,15 @@ internal sealed class MinerBot
     {
         var reason = MinerStopReason.UserStopped;
         string message = "người dùng bấm dừng";
+        MinerReader reader = null;
 
         try
         {
-            Emit($"bắt đầu. giữ W{(_cfg.HoldShift ? " + Left Shift" : "")}, bấm E mỗi {_cfg.TapEveryMs} ms " +
-                 $"(giữ {_cfg.TapHoldMs} ms).");
+            reader = new MinerReader(_cfg, _screen, _profile);
+            ReportSetup(reader);
+
+            Emit($"bắt đầu. {(_cfg.HoldRun ? "giữ W" + (_cfg.HoldShift ? " + Left Shift" : "") : "KHÔNG giữ W — bạn tự lái")}, " +
+                 $"bấm E mỗi {_cfg.TapEveryMs} ms (giữ {_cfg.TapHoldMs} ms).");
             Emit($"{HotkeyText.Job()} = bật/tắt. Cửa sổ game phải đang focus ({_cfg.WindowMatch}).");
 
             while (true)
@@ -90,7 +127,15 @@ internal sealed class MinerBot
                     continue;
                 }
 
-                EnsureHeld();
+                var snap = reader.Read();
+                SnapshotReady?.Invoke(snap);
+
+                if (HandleMining(snap)) continue;
+                HandleCash(snap);
+                if (HandleLift(snap)) continue;
+
+                if (_cfg.HoldRun) EnsureHeld();
+                else ReleaseHeld();
 
                 long now = Environment.TickCount64;
                 if (_lastTap != 0 && now - _lastTap < _cfg.TapEveryMs) continue;
@@ -124,8 +169,90 @@ internal sealed class MinerBot
         {
             ReleaseHeld();
             HeldKeys.ReleaseAll();
+            reader?.Dispose();
+            Emit($"tổng kết: {_mined} lượt đào, {_trips} chuyến giao.");
             Stopped?.Invoke(reason, message);
         }
+    }
+
+    private void ReportSetup(MinerReader reader)
+    {
+        foreach (var p in new[] { reader.MiningProblem, reader.LiftProblem, reader.CashProblem })
+            if (p is not null) Emit("cảnh báo: " + p);
+
+        if (reader.MiningProblem is not null)
+            Emit("chưa đọc được ô đào — sẽ gõ E mù suốt, kể cả trong lúc đang đào. " +
+                 "Bấm “Khoanh vùng HUD” để sửa.");
+    }
+
+    /// <summary>
+    /// Đang đào thì phải ĐỨNG YÊN và ngừng gõ E: gõ thêm chỉ tổ huỷ tiến trình hoặc mở nhầm
+    /// thứ khác, còn giữ W thì đi lệch khỏi cục quặng giữa chừng.
+    /// Trả true nghĩa là vòng này xử lý xong, đừng làm gì nữa.
+    /// </summary>
+    private bool HandleMining(MinerSnapshot snap)
+    {
+        if (!snap.MiningConfigured) return false;
+
+        if (snap.Mining)
+        {
+            ReleaseHeld();
+            if (!_wasMining)
+            {
+                _wasMining = true;
+                _mineSw.Restart();
+                Emit("đang đào — đứng yên, ngừng gõ E");
+            }
+            return true;
+        }
+
+        if (!_wasMining) return false;
+
+        _wasMining = false;
+        _mineSw.Stop();
+        _lastMineMs = (int)_mineSw.ElapsedMilliseconds;
+        _mined++;
+        // Nhip E lui lai mot nhip de cu E dau tien sau khi dao khong ban ra giua animation.
+        _lastTap = Environment.TickCount64;
+        Emit($"đào xong sau {_lastMineMs} ms — lượt {_mined}");
+        RaiseStats();
+        return true;
+    }
+
+    /// <summary>
+    /// Toast tiền sống vài giây nên sẽ đọc ra true nhiều vòng liền; chốt cạnh lên để mỗi lần
+    /// hiện chỉ đếm một chuyến.
+    /// </summary>
+    private void HandleCash(MinerSnapshot snap)
+    {
+        if (!snap.CashConfigured) return;
+
+        if (!snap.CashToast) { _cashLatched = false; return; }
+        if (_cashLatched) return;
+
+        _cashLatched = true;
+        _trips++;
+        Emit($"giao hàng xong — chuyến {_trips}");
+        RaiseStats();
+    }
+
+    /// <summary>
+    /// Đứng đúng giếng thang thì bấm E một lần rồi khoá lại: bấm phát thứ hai lúc màn hình còn
+    /// đen là gọi thang đi ngược xuống. Trả true để vòng này không gõ E theo nhịp nữa.
+    /// </summary>
+    private bool HandleLift(MinerSnapshot snap)
+    {
+        if (!snap.LiftConfigured || !snap.LiftPrompt) return false;
+
+        long now = Environment.TickCount64;
+        if (now - _lastLift < _cfg.LiftCooldownMs) return true;
+
+        ReleaseHeld();
+        _lastLift = now;
+        _lastTap = now;
+        InputSender.TapKey(VK_E, _cfg.TapHoldMs);
+        Emit("thấy gợi ý thang máy — bấm E");
+        return true;
     }
 
     /// <summary>
@@ -177,6 +304,9 @@ internal sealed class MinerBot
         }
         return false;
     }
+
+    private void RaiseStats() =>
+        StatsChanged?.Invoke(new MinerStats { Mined = _mined, Trips = _trips, LastMineMs = _lastMineMs });
 
     private static void Sleep(CancellationToken ct, int ms)
     {
