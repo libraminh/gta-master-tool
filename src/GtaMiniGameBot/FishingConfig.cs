@@ -344,6 +344,12 @@ internal sealed class FishingConfig
     public int DragSettleMs { get; set; } = 350;
     public int DragRetries { get; set; } = 2;
     public int MaxDragsPerDump { get; set; } = 12;
+    /// <summary>
+    /// Kéo bằng SetCursorPos thay vì SendInput. Mặc định bật: SendInput bị game đọc thành lệnh
+    /// xoay camera, mà lần đổ cốp sau còn cần camera hướng đúng vào xe. Bật tắt được phòng khi
+    /// UI kho đồ không nhận ra cú kéo nếu thiếu sự kiện chuột.
+    /// </summary>
+    public bool DragCursorOnly { get; set; } = true;
 
     // -- ô lưới --
     public double CellInsetFrac { get; set; } = 0.15;

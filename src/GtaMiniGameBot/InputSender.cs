@@ -84,6 +84,49 @@ internal static class InputSender
     public static void LeftDown() => MouseButton(Native.MOUSEEVENTF_LEFTDOWN);
     public static void LeftUp() => MouseButton(Native.MOUSEEVENTF_LEFTUP);
 
+    /// <summary>
+    /// Keo tha mot o kho do.
+    ///
+    /// <paramref name="cursorOnly"/> mac dinh true: di chuot bang SetCursorPos, KHONG ban
+    /// MOUSEEVENTF_MOVE. Do duoc trong game: cu SendInput move bi doc thanh lenh xoay camera.
+    /// O man kho do thi camera khong xoay duoc, nhung goc camera VAN bi doi, ma lan do cop sau
+    /// lai can camera huong dung vao xe — de no xoay la lan sau mo menu khong ra.
+    ///
+    /// Trinh tu bam theo bai hoc da tra gia o OilWellBot: game chi ghi nhan cu nhan sau khi
+    /// thay chuot NHA TREN muc tieu, nen phai nha mot lan tai cho truoc khi nhan xuong.
+    /// </summary>
+    public static void DragSmooth(Point from, Point to, int steps, int stepDelayMs,
+                                  int grabMs, int dropHoverMs, bool cursorOnly = true)
+    {
+        void Move(int x, int y, int n)
+        {
+            if (cursorOnly) MoveCursorOnlySmooth(x, y, n, stepDelayMs);
+            else MoveSmooth(x, y, n, stepDelayMs);
+        }
+
+        try { LeftUp(); } catch { }
+        Thread.Sleep(80);
+
+        Move(from.X, from.Y, Math.Max(4, steps / 2));
+        Thread.Sleep(grabMs);
+        try { LeftUp(); } catch { }      // nha tai cho de UI chot trang thai hover
+        Thread.Sleep(grabMs);
+
+        LeftDown();
+        try
+        {
+            Thread.Sleep(grabMs);
+            // Nhich vai pixel de UI nhan ra "dang keo" truoc khi di xa.
+            Move(from.X + 3, from.Y + 3, 2);
+            Move(to.X, to.Y, Math.Max(8, steps));
+            Thread.Sleep(dropHoverMs);
+        }
+        finally
+        {
+            LeftUp();
+        }
+    }
+
     private static void MouseButton(uint flag)
     {
         Send(new Native.INPUT

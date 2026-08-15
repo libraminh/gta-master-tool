@@ -84,6 +84,7 @@ internal sealed class TrunkSetupForm : Form
     private readonly Label _itemStatus = new();
     private readonly Button _btnDiagnose = new();
     private readonly Button _btnOpenTrunk = new();
+    private readonly Button _btnDumpNow = new();
     private readonly TextBox _log = new();
     private CancellationTokenSource _cts;
 
@@ -224,11 +225,15 @@ internal sealed class TrunkSetupForm : Form
         _btnOpenTrunk.Click += (_, _) => RunMenuTest(clickThrough: true);
         boxMenu.Controls.Add(_btnOpenTrunk);
 
+        _btnDumpNow.SetBounds(370, 26, 200, 30);
+        _btnDumpNow.Text = "Test đọc KG + đổ cốp";
+        _btnDumpNow.Click += (_, _) => RunDumpTest();
+        boxMenu.Controls.Add(_btnDumpNow);
+
         boxMenu.Controls.Add(new Label
         {
-            Text = "Đứng cạnh xe, camera hướng vào xe. Bấm xong có " + _cfg.ShotCountdownSec +
-                   " giây để click vào game.",
-            Location = new Point(374, 33),
+            Text = "Đứng cạnh xe, camera hướng vào xe. Bấm xong có " + _cfg.ShotCountdownSec + " giây.",
+            Location = new Point(580, 33),
             AutoSize = true,
             ForeColor = Color.DimGray
         });
@@ -573,8 +578,7 @@ internal sealed class TrunkSetupForm : Form
             if (ok != DialogResult.OK) return;
         }
 
-        _btnDiagnose.Enabled = false;
-        _btnOpenTrunk.Enabled = false;
+        SetTestUi(false);
         _cts = new CancellationTokenSource();
 
         var ct = _cts.Token;
@@ -583,6 +587,73 @@ internal sealed class TrunkSetupForm : Form
             IsBackground = true,
             Name = "TrunkTest"
         }.Start();
+    }
+
+    /// <summary>
+    /// Chạy trọn một lượt như lúc bot tự làm: mở Tab đọc KG, đóng lại, rồi mở cốp và kéo cá
+    /// sang. Khác một điểm — không xét ngưỡng KG, cứ đổ, vì đây là lượt chạy thử.
+    /// </summary>
+    private void RunDumpTest()
+    {
+        var ok = MessageBox.Show(this,
+            "Chạy trọn một lượt: mở Tab đọc KG → đóng → mở cốp → kéo hết cá sang → Esc.\r\n\r\n" +
+            "Bot CLICK và KÉO thật. Đứng sát xe, camera hướng vào xe, tay không cầm súng.\r\n" +
+            "Nên câu sẵn vài con cá để có cái mà kéo.",
+            "Test đọc KG + đổ cốp", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+        if (ok != DialogResult.OK) return;
+
+        SetTestUi(false);
+        _cts = new CancellationTokenSource();
+
+        var ct = _cts.Token;
+        new Thread(() => DumpTestWorker(ct)) { IsBackground = true, Name = "DumpTest" }.Start();
+    }
+
+    private void DumpTestWorker(CancellationToken ct)
+    {
+        void Log(string s) => Post(() => Append(s));
+
+        TrunkDumper dumper = null;
+        try
+        {
+            for (int i = _cfg.ShotCountdownSec; i >= 1; i--)
+            {
+                int n = i;
+                Log($"...{n}");
+                Thread.Sleep(1000);
+            }
+
+            dumper = TrunkDumper.Create(_cfg, _screen, _profile, Log, out string problem);
+            if (dumper is null) { Log("chưa chạy được: " + problem); return; }
+
+            string missing = dumper.AtlasMissing;
+            if (missing.Length > 0) Log($"thiếu mẫu chữ số {missing} — đọc KG có thể hỏng");
+
+            var w = dumper.PeekBagWeight(ct);
+            Log("đọc KG: " + w);
+            if (w.Ok) Log($"   ngưỡng đổ là ≥ {_cfg.BagCapKg - _cfg.DumpMarginKg:F1} kg");
+
+            Thread.Sleep(400);
+            Log("--- đổ cốp ---");
+            var r = dumper.Dump(ct);
+            Log(r == DumpResult.Ok ? "XONG — đã kéo cá sang cốp" : "không thấy ô cá nào để kéo");
+        }
+        catch (OperationCanceledException) { Log("đã huỷ"); }
+        catch (TrunkStepException ex) { Log("DỪNG: " + ex.Message); }
+        catch (Exception ex) { Log("lỗi: " + ex.Message); }
+        finally
+        {
+            dumper?.Dispose();
+            HeldKeys.ReleaseAll();
+            Post(() => SetTestUi(true));
+        }
+    }
+
+    private void SetTestUi(bool on)
+    {
+        _btnDiagnose.Enabled = on;
+        _btnOpenTrunk.Enabled = on;
+        _btnDumpNow.Enabled = on;
     }
 
     private void MenuTestWorker(bool clickThrough, CancellationToken ct)
@@ -623,11 +694,7 @@ internal sealed class TrunkSetupForm : Form
                 Log("→ đồng hồ an toàn đã phải ra tay, xem lại timeout");
             opener?.Dispose();
             HeldKeys.ReleaseAll();
-            Post(() =>
-            {
-                _btnDiagnose.Enabled = true;
-                _btnOpenTrunk.Enabled = true;
-            });
+            Post(() => SetTestUi(true));
         }
     }
 
