@@ -28,6 +28,21 @@ internal static class Program
             return rc;
         }
 
+        if (args.Length > 0 && args[0].Equals("--verify-ocr", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifyOcr.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-ocr.txt"), report.ToString());
+            return rc;
+        }
+
         if (args.Length > 0 && args[0].Equals("--pick-car-template", StringComparison.OrdinalIgnoreCase))
         {
             Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);

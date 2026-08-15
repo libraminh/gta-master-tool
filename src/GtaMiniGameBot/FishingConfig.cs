@@ -294,8 +294,12 @@ internal sealed class FishingConfig
     public int DigitWidthTolPx { get; set; } = 1;
     public int DigitMinGlyphW { get; set; } = 2;
     public int DigitMinGlyphInk { get; set; } = 6;
-    /// <summary>Hai cụm cách nhau dưới ngần này px thì gộp — khử khe hở trong nét đứt.</summary>
-    public int DigitMergeGapPx { get; set; } = 1;
+    /// <summary>
+    /// Hai cụm cách nhau không quá ngần này cột trống thì gộp làm một glyph.
+    /// Mặc định 0 (không gộp): ở cỡ chữ này khe giữa hai chữ số cũng chỉ 1–2 px, gộp bừa là
+    /// "27" dính thành một khối. Chỉ nâng lên khi thấy một chữ số bị tách đôi.
+    /// </summary>
+    public int DigitMergeGapPx { get; set; }
     /// <summary>Sàn cứng cho ngưỡng Otsu: nền panel tối nên đừng để ngưỡng tụt xuống nhiễu.</summary>
     public int DigitInkMinGray { get; set; } = 90;
 
@@ -388,7 +392,7 @@ internal sealed class FishingConfig
         if (DigitWidthTolPx < 0) DigitWidthTolPx = 1;
         if (DigitMinGlyphW <= 0) DigitMinGlyphW = 2;
         if (DigitMinGlyphInk <= 0) DigitMinGlyphInk = 6;
-        if (DigitMergeGapPx < 0) DigitMergeGapPx = 1;
+        if (DigitMergeGapPx < 0) DigitMergeGapPx = 0;
         if (DigitInkMinGray is <= 0 or > 250) DigitInkMinGray = 90;
 
         if (MenuColorTol <= 0) MenuColorTol = 22;

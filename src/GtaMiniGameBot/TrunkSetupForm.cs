@@ -78,6 +78,7 @@ internal sealed class TrunkSetupForm : Form
     private readonly Dictionary<string, Label> _shotLabels = new();
     private readonly Dictionary<Slot, Label> _slotLabels = new();
     private readonly Label _summary = new();
+    private readonly Label _ocrStatus = new();
     private readonly TextBox _log = new();
 
     public TrunkSetupForm(FishingConfig cfg, Screen screen, FishingProfile profile)
@@ -92,7 +93,7 @@ internal sealed class TrunkSetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(940, 720);
+        ClientSize = new Size(940, 786);
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.White;
 
@@ -176,7 +177,30 @@ internal sealed class TrunkSetupForm : Form
         }
         y += 298;
 
-        _log.SetBounds(12, y, 916, 720 - y - 12);
+        var boxOcr = new GroupBox
+        {
+            Text = "3 · Đọc chữ số KG",
+            Location = new Point(12, y),
+            Size = new Size(916, 70)
+        };
+        Controls.Add(boxOcr);
+
+        var btnLearn = new Button { Text = "Học chữ số…" };
+        btnLearn.SetBounds(14, 26, 150, 30);
+        btnLearn.Click += (_, _) => OpenLearnDigits();
+        boxOcr.Controls.Add(btnLearn);
+
+        var btnTestOcr = new Button { Text = "Thử đọc KG từ ảnh" };
+        btnTestOcr.SetBounds(172, 26, 170, 30);
+        btnTestOcr.Click += (_, _) => TestOcrFromStills();
+        boxOcr.Controls.Add(btnTestOcr);
+
+        _ocrStatus.SetBounds(352, 33, 550, 20);
+        _ocrStatus.Font = new Font("Consolas", 9F);
+        boxOcr.Controls.Add(_ocrStatus);
+        y += 82;
+
+        _log.SetBounds(12, y, 916, 786 - y - 12);
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
@@ -307,6 +331,43 @@ internal sealed class TrunkSetupForm : Form
     private static GridSpec Grid(StillCropResult r) =>
         new() { Area = FishingRect.FromRelative(r.Rect), Cols = r.Cols, Rows = r.Rows };
 
+    // ---------------------------------------------------------------- đọc chữ số
+
+    private void OpenLearnDigits()
+    {
+        using var f = new LearnDigitsForm(_cfg, _profile);
+        f.ShowDialog(this);
+        RefreshAll();
+    }
+
+    /// <summary>
+    /// Thử đọc trên ẢNH TĨNH đã chụp — lặp lại được bao nhiêu lần cũng được, không cần đứng
+    /// trong game, nên tinh chỉnh ngưỡng ở đây rẻ hơn hẳn so với thử trực tiếp.
+    /// </summary>
+    private void TestOcrFromStills()
+    {
+        var atlas = DigitAtlas.Load(_key);
+        string missing = atlas.MissingText();
+        if (atlas.Count == 0) { Append("chưa có mẫu chữ số nào — bấm “Học chữ số…” trước"); return; }
+        if (missing.Length > 0) Append($"cảnh báo: còn thiếu mẫu {missing} — kết quả có thể ra '?'");
+
+        TryOne("bag", "ba lô", _profile.BagWeight, _cfg.BagCapKg, atlas);
+        TryOne("trunk", "cốp", _profile.TrunkWeight, _cfg.TrunkCapKg, atlas);
+        RefreshAll();
+    }
+
+    private void TryOne(string shot, string label, FishingRect roi, double cap, DigitAtlas atlas)
+    {
+        if (!roi.IsSet) { Append($"{label}: chưa khoanh ô số KG"); return; }
+
+        using var still = StillPicker.Load(FishingConfig.ShotPath(_key, shot));
+        if (still is null) { Append($"{label}: chưa có ảnh “{shot}”"); return; }
+
+        var r = WeightReader.ReadStill(still, roi, atlas, _cfg, cap);
+        Append($"{label}: {r}");
+        Append("   " + r.Trace);
+    }
+
     // ---------------------------------------------------------------- trạng thái
 
     private void RefreshAll()
@@ -339,6 +400,15 @@ internal sealed class TrunkSetupForm : Form
         string gaps = _profile.DescribeTrunkGaps();
         _summary.Text = gaps;
         _summary.ForeColor = gaps.StartsWith("đủ") ? Color.DarkGreen : Color.Firebrick;
+
+        var atlas = DigitAtlas.Load(_key);
+        string missing = atlas.MissingText();
+        _ocrStatus.Text = atlas.Count == 0
+            ? "chưa có mẫu chữ số nào"
+            : missing.Length == 0
+                ? $"đủ 12 ký tự ({atlas.Count} mẫu)"
+                : $"còn thiếu: {missing}";
+        _ocrStatus.ForeColor = atlas.Count > 0 && missing.Length == 0 ? Color.DarkGreen : Color.DimGray;
     }
 
     private void Append(string line)
