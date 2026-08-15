@@ -212,7 +212,11 @@ internal sealed class DigitAtlas
 {
     private sealed record Entry(char Ch, GrayTemplate Tpl);
 
-    public const string Classes = "0123456789./";
+    /// <summary>
+    /// Dấu chấm KHÔNG nằm đây: nó được nhận theo kích thước (ký tự thấp duy nhất trong chuỗi),
+    /// xem WeightReader.IsDot. Vài pixel thì không đủ cấu trúc để so mẫu.
+    /// </summary>
+    public const string Classes = "0123456789/";
 
     private readonly List<Entry> _entries = new();
 

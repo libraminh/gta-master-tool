@@ -56,8 +56,51 @@ internal static class VerifyOcr
 
         try { Directory.Delete(Path.Combine(AppPaths.Root, "fishing", Key), recursive: true); } catch { }
 
-        Console.WriteLine(fail == 0 ? "TẤT CẢ ĐẠT" : $"HỎNG {fail} ca");
+        Console.WriteLine(fail == 0 ? "TẤT CẢ ĐẠT (ảnh tự vẽ)" : $"HỎNG {fail} ca (ảnh tự vẽ)");
+
+        RealShots();
         return fail == 0 ? 0 : 2;
+    }
+
+    /// <summary>
+    /// Đọc thử trên ảnh chụp THẬT nếu đã có. Không tính vào đạt/hỏng — bộ mẫu của người dùng có
+    /// thể còn thiếu chữ số — nhưng đây mới là dữ liệu duy nhất có phông thật của game, nên là
+    /// chỗ nhanh nhất để đối chiếu sau mỗi lần sửa bộ đọc.
+    /// </summary>
+    private static void RealShots()
+    {
+        var cfg = FishingConfig.Load();
+        if (cfg.Profiles.Count == 0) return;
+
+        Console.WriteLine();
+        Console.WriteLine("== đọc thử trên ảnh chụp thật ==");
+
+        foreach (var (key, p) in cfg.Profiles)
+        {
+            if (p is null) continue;
+            var atlas = DigitAtlas.Load(key);
+            if (atlas.Count == 0) { Console.WriteLine($"{key}: chưa có mẫu chữ số"); continue; }
+
+            string missing = atlas.MissingText();
+            Console.WriteLine($"{key}: {atlas.Count} mẫu" +
+                              (missing.Length > 0 ? $", còn thiếu {missing}" : ", đủ 12 ký tự"));
+
+            One(key, "bag", "ba lô", p.BagWeight, cfg.BagCapKg, atlas, cfg);
+            One(key, "trunk", "cốp  ", p.TrunkWeight, cfg.TrunkCapKg, atlas, cfg);
+        }
+    }
+
+    private static void One(string key, string shot, string label, FishingRect roi,
+                            double cap, DigitAtlas atlas, FishingConfig cfg)
+    {
+        if (!roi.IsSet) { Console.WriteLine($"  {label}: chưa khoanh"); return; }
+
+        using var still = StillPicker.Load(FishingConfig.ShotPath(key, shot));
+        if (still is null) { Console.WriteLine($"  {label}: chưa có ảnh"); return; }
+
+        var r = WeightReader.ReadStill(still, roi, atlas, cfg, cap);
+        Console.WriteLine($"  {label}: {r}");
+        Console.WriteLine($"      {r.Trace}");
     }
 
     /// <summary>Vẽ đủ 12 ký tự một hàng rồi lưu từng cái làm mẫu.</summary>

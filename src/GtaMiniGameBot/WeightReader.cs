@@ -88,7 +88,9 @@ internal sealed class WeightReader : IDisposable
 
         var bin = GlyphSeg.Binarize(gray, cfg.DigitInkMinGray, out int thr);
         var boxes = GlyphSeg.Segment(bin, w, h, cfg.DigitMinGlyphW, cfg.DigitMinGlyphInk, cfg.DigitMergeGapPx);
-        boxes = SplitTouching(boxes, bin, gray, w, h, atlas, cfg);
+        boxes = MergeDotPieces(boxes);
+        int tallest = boxes.Count == 0 ? 0 : boxes.Max(b => b.Box.Height);
+        boxes = SplitTouching(boxes, bin, gray, w, h, atlas, cfg, tallest);
 
         var sb = new StringBuilder();
         var trace = new StringBuilder($"ngưỡng={thr} khối={boxes.Count}");
@@ -96,7 +98,7 @@ internal sealed class WeightReader : IDisposable
 
         foreach (var b in boxes)
         {
-            var g = atlas.Classify(gray, w, h, b.Box, cfg);
+            var g = ClassifyBox(gray, w, h, b.Box, tallest, atlas, cfg);
             sb.Append(g.Ch);
             if (g.Ch == '.') dots++;
             trace.Append($" | '{g.Ch}' {g.Best:F2}/{(g.Second <= -1 ? "–" : g.Second.ToString("F2"))}" +
@@ -149,6 +151,54 @@ internal sealed class WeightReader : IDisposable
         };
     }
 
+    /// <summary>Cao không quá ngần này so với chữ số cao nhất thì coi là dấu chấm.</summary>
+    private const double DotMaxHeightFrac = 0.45;
+
+    /// <summary>
+    /// Dấu chấm nhận theo KÍCH THƯỚC, không so mẫu. Nó chỉ vài pixel nên gần như không có cấu
+    /// trúc nét để NCC bám vào, và bề rộng đo được nhảy giữa 2 và 5 px tuỳ ngưỡng Otsu của
+    /// từng ảnh — dạy mẫu cho nó là dạy một con số ngẫu nhiên. Trong khi đó nó là ký tự thấp
+    /// duy nhất trong chuỗi: mọi chữ số và dấu gạch chéo đều cao hết dòng.
+    /// </summary>
+    private static bool IsDot(Rectangle box, int tallest) =>
+        tallest > 0
+        && box.Height <= tallest * DotMaxHeightFrac
+        && box.Width <= Math.Max(3, tallest * 0.5);
+
+    private static GlyphGuess ClassifyBox(byte[] gray, int w, int h, Rectangle box, int tallest,
+                                          DigitAtlas atlas, FishingConfig cfg)
+        => IsDot(box, tallest)
+            ? new GlyphGuess('.', 1.0, -2, box.Width, box.Height)
+            : atlas.Classify(gray, w, h, box, cfg);
+
+    /// <summary>
+    /// Gộp các mảnh thấp nằm sát nhau. Khử răng cưa để lại một cột lõm ngay giữa dấu chấm là
+    /// đủ tách nó thành hai khối, thành ra chuỗi có hai dấu chấm và bị từ chối.
+    /// Chỉ gộp khối THẤP với khối THẤP nên không thể vô tình dính hai chữ số vào nhau.
+    /// </summary>
+    private static List<GlyphBox> MergeDotPieces(List<GlyphBox> boxes)
+    {
+        if (boxes.Count < 2) return boxes;
+
+        int tallest = boxes.Max(b => b.Box.Height);
+        var outp = new List<GlyphBox>();
+
+        foreach (var b in boxes)
+        {
+            if (outp.Count > 0
+                && IsDot(b.Box, tallest)
+                && IsDot(outp[^1].Box, tallest)
+                && b.Box.Left - outp[^1].Box.Right <= 2)
+            {
+                var prev = outp[^1];
+                outp[^1] = new GlyphBox(Rectangle.Union(prev.Box, b.Box), prev.Ink + b.Ink);
+                continue;
+            }
+            outp.Add(b);
+        }
+        return outp;
+    }
+
     /// <summary>
     /// Khử ca hai chữ dính liền: khử răng cưa và kerning làm "0/" thành một khối duy nhất, và
     /// chiếu theo cột không thể tự thấy điều đó — profile không hề chạm đáy giữa hai chữ.
@@ -158,13 +208,13 @@ internal sealed class WeightReader : IDisposable
     /// thì nhát cắt bị loại, khối giữ nguyên và cả lần đọc bị từ chối như cũ.
     /// </summary>
     private static List<GlyphBox> SplitTouching(List<GlyphBox> boxes, byte[] bin, byte[] gray,
-                                                int w, int h, DigitAtlas atlas, FishingConfig cfg)
+                                                int w, int h, DigitAtlas atlas, FishingConfig cfg,
+                                                int tallest)
     {
         if (atlas.Count == 0) return boxes;
 
         int maxW = atlas.MaxWidth + cfg.DigitWidthTolPx;
         int minW = Math.Max(1, atlas.MinWidth - cfg.DigitWidthTolPx);
-        if (maxW <= 0 || !boxes.Any(b => b.Box.Width > maxW)) return boxes;
 
         var todo = new Queue<GlyphBox>(boxes);
         var done = new List<GlyphBox>();
@@ -173,9 +223,19 @@ internal sealed class WeightReader : IDisposable
         while (todo.Count > 0 && guard-- > 0)
         {
             var b = todo.Dequeue();
-            if (b.Box.Width <= maxW) { done.Add(b); continue; }
 
-            var cut = BestCut(b, bin, gray, w, h, atlas, cfg, minW);
+            // Thu cat khi khoi RONG hon moi mau, HOAC khi khong nhan ra duoc.
+            // Chi dua vao be rong thi hut ca dinh nhau kieu ".1": dau cham cong chu so ben canh
+            // van hep hon chu so rong nhat nen khong co khoi nao trong "rong bat thuong" —
+            // nhung no khong nhan ra duoc, va do moi la dau hieu that.
+            bool tooWide = b.Box.Width > maxW;
+            if (!tooWide && ClassifyBox(gray, w, h, b.Box, tallest, atlas, cfg).Ch != '?')
+            {
+                done.Add(b);
+                continue;
+            }
+
+            var cut = BestCut(b, bin, gray, w, h, atlas, cfg, minW, tallest);
             if (cut is null) { done.Add(b); continue; }
 
             todo.Enqueue(cut.Value.Left);
@@ -189,27 +249,27 @@ internal sealed class WeightReader : IDisposable
 
     private static (GlyphBox Left, GlyphBox Right)? BestCut(GlyphBox b, byte[] bin, byte[] gray,
                                                             int w, int h, DigitAtlas atlas,
-                                                            FishingConfig cfg, int minW)
+                                                            FishingConfig cfg, int minW, int tallest)
     {
         int lo = b.Box.Left, hi = b.Box.Right - 1;
-        var ink = GlyphSeg.ColumnInk(bin, w, h, lo, hi);
+        int width = hi - lo + 1;
 
         (GlyphBox L, GlyphBox R)? best = null;
         double bestScore = -2;
 
-        for (int i = minW; i <= ink.Length - minW; i++)
+        // Thu MOI cot cat duoc, khong loc truoc theo "cho lom nhat" cua profile. Cho noi dau
+        // cham beo dinh vao net dung cua so 1, profile NHAY VOT LEN tai ranh gioi (4 -> 19) chu
+        // khong lom xuong, nen bo loc lom bo qua dung nhat cat can tim. Khoi hong nhat cung chi
+        // rong vai chuc pixel, ma nhanh nay chi chay khi khoi da khong nhan ra duoc.
+        for (int i = minW; i <= width - minW; i++)
         {
-            // Chi thu tai cho tham cuc bo: cat giua than mot chu so thi hai nua deu khong nhan ra,
-            // thu het moi cot chi ton thoi gian.
-            if (i > 0 && i < ink.Length - 1 && (ink[i] > ink[i - 1] || ink[i] > ink[i + 1])) continue;
-
             var left = GlyphSeg.TightBox(bin, w, h, lo, lo + i - 1);
             var right = GlyphSeg.TightBox(bin, w, h, lo + i, hi);
             if (left is null || right is null) continue;
 
-            var gl = atlas.Classify(gray, w, h, left.Box, cfg);
+            var gl = ClassifyBox(gray, w, h, left.Box, tallest, atlas, cfg);
             if (gl.Ch == '?') continue;
-            var gr = atlas.Classify(gray, w, h, right.Box, cfg);
+            var gr = ClassifyBox(gray, w, h, right.Box, tallest, atlas, cfg);
             if (gr.Ch == '?') continue;
 
             double s = Math.Min(gl.Best, gr.Best);

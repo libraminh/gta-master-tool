@@ -290,8 +290,12 @@ internal sealed class FishingConfig
     public double DigitNccMin { get; set; } = 0.80;
     /// <summary>Cách biệt tối thiểu giữa chữ số nhất và nhì. Sát nhau = đoán mò, thà báo hỏng.</summary>
     public double DigitMarginMin { get; set; } = 0.08;
-    /// <summary>Chỉ so hai glyph khi bề rộng lệch trong ngần này px — "1" và "8" nhờ vậy không lẫn.</summary>
-    public int DigitWidthTolPx { get; set; } = 1;
+    /// <summary>
+    /// Chỉ so hai glyph khi bề rộng lệch trong ngần này px — "1" và "8" nhờ vậy không lẫn.
+    /// 1 px là quá chặt: chính bề rộng khối cũng nhích một pixel khi ngưỡng Otsu đổi giữa hai
+    /// lần chụp, nên mẫu "3" học ở lần này trượt mất chữ 3 ở lần sau.
+    /// </summary>
+    public int DigitWidthTolPx { get; set; } = 2;
     public int DigitMinGlyphW { get; set; } = 2;
     public int DigitMinGlyphInk { get; set; } = 6;
     /// <summary>
@@ -389,7 +393,9 @@ internal sealed class FishingConfig
 
         if (DigitNccMin is <= 0 or > 1) DigitNccMin = 0.80;
         if (DigitMarginMin is < 0 or > 1) DigitMarginMin = 0.08;
-        if (DigitWidthTolPx < 0) DigitWidthTolPx = 1;
+        // San cung 2, khong phai 0: khong co UI nao chinh so nay nen json cu chi co the la mac
+        // dinh cu (1) — ma 1 la qua chat, xem chu thich o khai bao.
+        if (DigitWidthTolPx < 2) DigitWidthTolPx = 2;
         if (DigitMinGlyphW <= 0) DigitMinGlyphW = 2;
         if (DigitMinGlyphInk <= 0) DigitMinGlyphInk = 6;
         if (DigitMergeGapPx < 0) DigitMergeGapPx = 0;

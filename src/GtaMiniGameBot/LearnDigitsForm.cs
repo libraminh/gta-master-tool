@@ -253,6 +253,7 @@ internal sealed class LearnDigitsForm : Form
         for (int i = 0; i < _boxes.Count; i++)
         {
             char c = text[i];
+            if (c == '.') { skipped++; continue; }   // nhận theo kích thước, không cần mẫu
             if (FishingConfig.DigitClassName(c) is null) { skipped++; continue; }
 
             var b = _boxes[i].Box;
@@ -270,7 +271,8 @@ internal sealed class LearnDigitsForm : Form
             }
         }
 
-        Append($"đã lưu {saved} mẫu" + (skipped > 0 ? $", bỏ qua {skipped} ký tự không phải số" : ""));
+        Append($"đã lưu {saved} mẫu" +
+               (skipped > 0 ? $", bỏ qua {skipped} ký tự không cần mẫu (dấu chấm, chữ cái)" : ""));
         if (warned > 0)
             Append($"CÓ {warned} MẪU ĐÁNG NGỜ ở trên — nên xoá thư mục digits rồi dạy lại, " +
                    "một mẫu gán nhầm nhãn làm hỏng mọi lần đọc sau");
