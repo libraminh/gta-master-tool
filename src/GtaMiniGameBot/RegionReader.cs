@@ -182,6 +182,19 @@ internal sealed class RegionReader : IDisposable
         return outp;
     }
 
+    /// <summary>Dem pixel thoa <paramref name="match"/> trong MOT o con (toa do man hinh that).</summary>
+    public int CountMatch(Rectangle screenRect, Func<int, int, int, bool> match)
+    {
+        int n = 0;
+        for (int y = screenRect.Top; y < screenRect.Bottom; y++)
+        for (int x = screenRect.Left; x < screenRect.Right; x++)
+        {
+            if (!TryIndex(x, y, out int i)) continue;
+            if (match(_buf[i], _buf[i + 1], _buf[i + 2])) n++;
+        }
+        return n;
+    }
+
     public int CountMatch(Func<int, int, int, bool> match)
     {
         int n = 0;

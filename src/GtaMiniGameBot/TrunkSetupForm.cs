@@ -81,6 +81,7 @@ internal sealed class TrunkSetupForm : Form
     private readonly Dictionary<Slot, Label> _slotLabels = new();
     private readonly Label _summary = new();
     private readonly Label _ocrStatus = new();
+    private readonly Label _itemStatus = new();
     private readonly Button _btnDiagnose = new();
     private readonly Button _btnOpenTrunk = new();
     private readonly TextBox _log = new();
@@ -98,7 +99,7 @@ internal sealed class TrunkSetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(940, 856);
+        ClientSize = new Size(940, 920);
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.White;
 
@@ -233,7 +234,35 @@ internal sealed class TrunkSetupForm : Form
         });
         y += 82;
 
-        _log.SetBounds(12, y, 916, 856 - y - 12);
+        var boxItems = new GroupBox
+        {
+            Text = "5 · Nhận diện ô kho đồ",
+            Location = new Point(12, y),
+            Size = new Size(916, 70)
+        };
+        Controls.Add(boxItems);
+
+        var btnLearnItems = new Button { Text = "Học vật phẩm…" };
+        btnLearnItems.SetBounds(14, 26, 150, 30);
+        btnLearnItems.Click += (_, _) => OpenLearnItems();
+        boxItems.Controls.Add(btnLearnItems);
+
+        var btnCal = new Button { Text = "Hiệu chỉnh ô trống" };
+        btnCal.SetBounds(172, 26, 160, 30);
+        btnCal.Click += (_, _) => CalibrateEmpty();
+        boxItems.Controls.Add(btnCal);
+
+        var btnScan = new Button { Text = "Test dò ô (từ ảnh)" };
+        btnScan.SetBounds(340, 26, 160, 30);
+        btnScan.Click += (_, _) => ScanAllGrids();
+        boxItems.Controls.Add(btnScan);
+
+        _itemStatus.SetBounds(510, 33, 392, 20);
+        _itemStatus.Font = new Font("Consolas", 9F);
+        boxItems.Controls.Add(_itemStatus);
+        y += 82;
+
+        _log.SetBounds(12, y, 916, 920 - y - 12);
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
@@ -415,6 +444,121 @@ internal sealed class TrunkSetupForm : Form
         Append("   " + r.Trace);
     }
 
+    // ---------------------------------------------------------------- nhận diện ô
+
+    private void OpenLearnItems()
+    {
+        using var f = new LearnItemsForm(_cfg, _screen, _profile);
+        f.ShowDialog(this);
+        RefreshAll();
+    }
+
+    private IEnumerable<(string Label, string Shot, GridSpec Grid)> Grids()
+    {
+        yield return ("phím nhanh", "bag", _profile.Hotbar);
+        yield return ("ba lô     ", "bag", _profile.Bag);
+        yield return ("cốp       ", "trunk", _profile.Trunk);
+    }
+
+    private void ScanAllGrids()
+    {
+        foreach (var (label, shot, grid) in Grids())
+        {
+            if (!grid.IsSet) { Append($"{label}: chưa khoanh lưới"); continue; }
+
+            using var still = StillPicker.Load(FishingConfig.ShotPath(_key, shot));
+            if (still is null) { Append($"{label}: chưa có ảnh “{shot}”"); continue; }
+
+            using var probe = new GridScanner(_cfg, _screen, grid, new ItemAtlas());
+            var size = probe.CellSize;
+            var notes = new List<string>();
+            var atlas = ItemAtlas.Load(_key, size, _cfg.BadgeFrac, notes);
+            foreach (string n in notes) Append("   " + n);
+
+            using var scanner = new GridScanner(_cfg, _screen, grid, atlas);
+            var cells = scanner.ScanStill(still);
+            Append($"{label}: ô {size.Width}×{size.Height}, mẫu giữ {atlas.KeepCount} / cá {atlas.FishCount}");
+            foreach (var c in cells.Where(c => c.State != CellState.Empty))
+                Append("   " + c);
+            Append($"   trống {cells.Count(c => c.State == CellState.Empty)}/{cells.Count}");
+        }
+        RefreshAll();
+    }
+
+    /// <summary>
+    /// Đặt ngưỡng "ô trống" từ số đo thật thay vì hardcode — đúng cách repo đã làm với
+    /// KeepColorTol. Đo cả ba lưới, xếp giá trị tăng dần rồi cắt ở KHE HỞ LỚN NHẤT: ô trống và
+    /// ô có đồ tách nhau rất xa, nên nếu không tìm ra khe rõ ràng thì nghĩa là phép đo chưa
+    /// phân biệt được và thà không đổi gì còn hơn đặt bừa một con số.
+    /// </summary>
+    private void CalibrateEmpty()
+    {
+        var chroma = new List<double>();
+        var std = new List<double>();
+
+        foreach (var (label, shot, grid) in Grids())
+        {
+            if (!grid.IsSet) continue;
+            using var still = StillPicker.Load(FishingConfig.ShotPath(_key, shot));
+            if (still is null) continue;
+
+            using var scanner = new GridScanner(_cfg, _screen, grid, new ItemAtlas());
+            foreach (var c in scanner.ScanStill(still))
+            {
+                chroma.Add(c.Chroma);
+                std.Add(c.Std);
+            }
+            Append($"{label}: đã đo {grid.Count} ô");
+        }
+
+        if (chroma.Count < 6) { Append("chưa đủ ô để hiệu chỉnh — khoanh lưới và chụp ảnh trước"); return; }
+
+        double? cut1 = BiggestGap(chroma, 0.02, out string t1);
+        double? cut2 = BiggestGap(std, 3.0, out string t2);
+        Append("màu  : " + t1);
+        Append("lệch : " + t2);
+
+        if (cut1 is null || cut2 is null)
+        {
+            Append("không thấy khe hở rõ ràng — giữ nguyên ngưỡng cũ " +
+                   $"(màu {_cfg.CellEmptyChroma01:F3}, lệch {_cfg.CellEmptyStdMax:F1})");
+            return;
+        }
+
+        if (MessageBox.Show(this,
+                $"Đặt ngưỡng ô trống thành:\r\n\r\nmàu < {cut1:F3}\r\nđộ lệch < {cut2:F1}\r\n\r\n" +
+                $"(đang là {_cfg.CellEmptyChroma01:F3} và {_cfg.CellEmptyStdMax:F1})",
+                "Hiệu chỉnh ô trống", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
+            return;
+
+        _cfg.CellEmptyChroma01 = cut1.Value;
+        _cfg.CellEmptyStdMax = cut2.Value;
+        try { _cfg.Save(); Append("đã lưu ngưỡng mới"); }
+        catch (Exception ex) { Append("lưu lỗi: " + ex.Message); }
+        RefreshAll();
+    }
+
+    private static double? BiggestGap(List<double> values, double minGap, out string trace)
+    {
+        var v = values.OrderBy(x => x).ToList();
+        double bestGap = 0;
+        int bestAt = -1;
+        for (int i = 1; i < v.Count; i++)
+        {
+            double gap = v[i] - v[i - 1];
+            if (gap <= bestGap) continue;
+            bestGap = gap;
+            bestAt = i;
+        }
+
+        trace = $"nhỏ nhất {v[0]:F3}, lớn nhất {v[^1]:F3}, khe lớn nhất {bestGap:F3}";
+        if (bestAt < 0 || bestGap < minGap) return null;
+
+        double cut = (v[bestAt] + v[bestAt - 1]) / 2;
+        trace += $" → cắt ở {cut:F3} ({bestAt} ô dưới ngưỡng)";
+        return cut;
+    }
+
     // ---------------------------------------------------------------- mở cốp
 
     private void RunMenuTest(bool clickThrough)
@@ -541,6 +685,19 @@ internal sealed class TrunkSetupForm : Form
                 ? $"đủ 12 ký tự ({atlas.Count} mẫu)"
                 : $"còn thiếu: {missing}";
         _ocrStatus.ForeColor = atlas.Count > 0 && missing.Length == 0 ? Color.DarkGreen : Color.DimGray;
+
+        int keep = 0, fish = 0;
+        foreach (var (_, _, grid) in Grids())
+        {
+            if (!grid.IsSet) continue;
+            using var probe = new GridScanner(_cfg, _screen, grid, new ItemAtlas());
+            var a = ItemAtlas.Load(_key, probe.CellSize, _cfg.BadgeFrac, null);
+            keep += a.KeepCount;
+            fish += a.FishCount;
+        }
+        _itemStatus.Text = $"mẫu giữ lại {keep}, mẫu cá {fish}" +
+                           $"  ·  ô trống: màu<{_cfg.CellEmptyChroma01:F3} lệch<{_cfg.CellEmptyStdMax:F1}";
+        _itemStatus.ForeColor = fish > 0 ? Color.DarkGreen : Color.DimGray;
     }
 
     private void Append(string line)

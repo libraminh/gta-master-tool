@@ -477,9 +477,14 @@ internal sealed class FishingConfig
     public static string DigitPath(string key, string cls) => Path.Combine(DigitDir(key), cls + ".png");
     public static string DigitUnknownDir(string key) => Path.Combine(DigitDir(key), "unknown");
 
-    /// <summary>Mẫu icon vật phẩm: giữ lại (cần câu, katana, mồi) và cá.</summary>
-    public static string ItemDir(string key, bool fish) =>
-        Path.Combine(ProfileDir(key), fish ? "items-fish" : "items-keep");
+    /// <summary>
+    /// Mẫu icon vật phẩm: giữ lại (cần câu, katana, mồi) và cá.
+    /// Chia thêm theo KÍCH THƯỚC Ô vì icon co giãn theo ô: ô hotbar và ô ba lô lệch nhau vài
+    /// pixel nên mẫu của lưới này không so được với lưới kia.
+    /// </summary>
+    public static string ItemDir(string key, bool fish, Size cell) =>
+        Path.Combine(ProfileDir(key), fish ? "items-fish" : "items-keep",
+                     $"{cell.Width}x{cell.Height}");
 
     public static string OcrDebugDir(string key) => Path.Combine(ProfileDir(key), "debug-ocr");
     public static string InvDebugDir(string key) => Path.Combine(ProfileDir(key), "debug-inv");
