@@ -567,10 +567,12 @@ internal sealed class FishingPanel : UserControl
     // ------------------------------------------------- test giữ Alt (menu xe)
 
     /// <summary>
-    /// Trả lời câu hỏi phải biết trước khi viết phần đổ cốp: menu radial của xe có ăn theo
-    /// TOẠ ĐỘ CHUỘT TUYỆT ĐỐI không. Nếu nó đọc delta chuột (kiểu bánh xe theo hướng) thì mọi
-    /// cú click bằng InputSender.MoveTo đều rơi vào khoảng trống và phải làm cách khác hẳn.
-    /// Test cũng đo luôn: Alt có xuống thật không, và có nhả ra được không.
+    /// Tìm cách rê con trỏ tới nút mà KHÔNG làm tắt menu radial.
+    ///
+    /// Lần chạy đầu cho thấy <see cref="InputSender.MoveSmooth"/> vừa làm camera xoay vừa làm
+    /// menu tắt: nó bắn kèm MOUSEEVENTF_MOVE, mà GTA đọc raw input để xoay camera. Nên probe
+    /// này thử ba kiểu trong một lần bấm — đứng yên, SetCursorPos, SendInput — rồi chụp lại
+    /// từng bước để so bằng mắt xem kiểu nào giữ được menu.
     /// </summary>
     private void DoAltProbe()
     {
@@ -579,10 +581,10 @@ internal sealed class FishingPanel : UserControl
         if (screen is null) { Append("không chọn được màn hình"); return; }
 
         var ok = MessageBox.Show(this,
-            "Test này kiểm tra menu Alt của xe có ăn theo vị trí chuột tuyệt đối không.\r\n\r\n" +
+            "Test này tìm cách rê chuột mà KHÔNG làm tắt menu Alt của xe.\r\n\r\n" +
             "Đứng cạnh xe, camera hướng vào xe. Bấm OK rồi có 5 giây để click vào cửa sổ game.\r\n\r\n" +
-            "Bot sẽ giữ Alt ~1,5 giây, chụp 2 ảnh (lúc menu vừa mở và sau khi rê chuột sang trái), " +
-            "rồi nhả Alt. Bạn mở 2 ảnh xem nút bên trái có sáng lên ở ảnh thứ 2 không.",
+            "Bot giữ Alt rồi chụp 4 ảnh: lúc menu vừa mở, sau khi đứng yên, sau khi rê bằng " +
+            "SetCursorPos, và sau khi rê bằng SendInput.",
             "Test giữ Alt", MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
         if (ok != DialogResult.OK) return;
 
@@ -624,31 +626,34 @@ internal sealed class FishingPanel : UserControl
             Directory.CreateDirectory(dir);
 
             var b = screen.Bounds;
-            int cx = b.Left + b.Width / 2;
-            int cy = b.Top + b.Height / 2;
+            var target = AltProbeTarget(screen, out string how);
             Native.GetCursorPos(out var before);
-            Log($"chuột trước khi bấm Alt: {before.x},{before.y}  (tâm màn game: {cx},{cy})");
+            Log($"chuột trước khi bấm Alt: {before.x},{before.y}");
+            Log($"đích rê tới: {target.X},{target.Y} ({how})");
 
             InputSender.AltDown();
             try
             {
                 Thread.Sleep(500);
                 Log($"IsKeyDown(Alt) sau khi bấm = {Native.IsKeyDown(HeldKeys.VK_ALT)}");
-                Native.GetCursorPos(out var atMenu);
-                Log($"chuột lúc menu vừa mở: {atMenu.x},{atMenu.y}");
                 SaveProbeShot(dir, "alt-1-menu", b, Log);
 
-                // Le ra day la cho nut ben trai ("Tuong tac"/"Cop xe") nam.
-                int tx = cx - (int)(b.Width * 0.12);
-                int ty = cy;
-                InputSender.MoveSmooth(tx, ty, 12);
+                // Moc so sanh: menu co tu tat khi chi dung yen khong? Khong co moc nay thi
+                // khong biet menu tat vi CACH re chuot hay vi CO re chuot.
+                Thread.Sleep(700);
+                SaveProbeShot(dir, "alt-2-dung-yen", b, Log);
+
+                InputSender.MoveCursorOnlySmooth(target.X, target.Y, 12);
                 Thread.Sleep(500);
-                Native.GetCursorPos(out var after);
-                Log($"rê tới {tx},{ty} — chuột thực tế: {after.x},{after.y}");
-                if (Math.Abs(after.x - tx) > 4 || Math.Abs(after.y - ty) > 4)
-                    Log("CHUỘT BỊ ĐẨY ĐI CHỖ KHÁC — menu nhiều khả năng đọc delta chuột, " +
-                        "toạ độ tuyệt đối sẽ không dùng được");
-                SaveProbeShot(dir, "alt-2-hover", b, Log);
+                Native.GetCursorPos(out var p3);
+                Log($"sau SetCursorPos — chuột: {p3.x},{p3.y}");
+                SaveProbeShot(dir, "alt-3-setcursorpos", b, Log);
+
+                InputSender.MoveSmooth(target.X, target.Y, 12);
+                Thread.Sleep(500);
+                Native.GetCursorPos(out var p4);
+                Log($"sau SendInput — chuột: {p4.x},{p4.y}");
+                SaveProbeShot(dir, "alt-4-sendinput", b, Log);
             }
             finally
             {
@@ -658,8 +663,8 @@ internal sealed class FishingPanel : UserControl
             Thread.Sleep(150);
             bool stillDown = Native.IsKeyDown(HeldKeys.VK_ALT);
             Log($"IsKeyDown(Alt) sau khi nhả = {stillDown}" + (stillDown ? "  ← ALT ĐANG KẸT" : ""));
-            Log("xong — mở 2 ảnh trong " + dir);
-            Log("ảnh 2 mà nút bên trái sáng/viền lên = menu ăn toạ độ tuyệt đối, làm tiếp được.");
+            Log("xong — mở 4 ảnh trong " + dir);
+            Log("ảnh 2 còn menu = menu không tự tắt. Ảnh 3/4: ảnh nào còn menu thì dùng cách đó.");
         }
         catch (Exception ex)
         {
@@ -670,6 +675,26 @@ internal sealed class FishingPanel : UserControl
             HeldKeys.ReleaseAll();
             Post(() => _btnAltProbe.Enabled = !IsRunning);
         }
+    }
+
+    /// <summary>
+    /// Đích rê tới. Ưu tiên tâm ô "Nút Tương tác" đã khoanh — lần trước tôi đoán một offset
+    /// theo phần trăm bề rộng màn và trượt nút cả trăm pixel, nên có nhìn ảnh cũng không kết
+    /// luận được là menu tắt hay chỉ là rê hụt.
+    /// </summary>
+    private Point AltProbeTarget(Screen screen, out string how)
+    {
+        var p = _cfg.TryGet(screen);
+        if (p?.AltInteract.IsSet == true)
+        {
+            var r = FishingConfig.ToAbsolute(screen, p.AltInteract);
+            how = "tâm ô Nút Tương tác đã khoanh";
+            return new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+        }
+
+        var b = screen.Bounds;
+        how = "đoán bên trái tâm màn — chưa khoanh Nút Tương tác";
+        return new Point(b.Left + b.Width / 2 - (int)(b.Width * 0.04), b.Top + b.Height / 2);
     }
 
     private static void SaveProbeShot(string dir, string name, Rectangle bounds, Action<string> log)

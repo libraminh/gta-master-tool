@@ -41,6 +41,27 @@ internal static class InputSender
     }
 
     /// <summary>
+    /// CHI dat lai vi tri con tro, khong ban su kien chuot nao.
+    /// <see cref="MoveTo"/> ban them MOUSEEVENTF_MOVE, ma GTA doc raw input de xoay camera —
+    /// trong che do con dang cam camera (vi du menu radial giu Alt), cu do bi nuot thanh lenh
+    /// xoay va menu tat theo. SetCursorPos khong sinh ra delta do.
+    /// </summary>
+    public static void MoveCursorOnly(int x, int y) => Native.SetCursorPos(x, y);
+
+    /// <summary>Rê con trỏ nhiều bước nhỏ nhưng chỉ bằng SetCursorPos.</summary>
+    public static void MoveCursorOnlySmooth(int x, int y, int steps, int stepDelayMs = 12)
+    {
+        Native.GetCursorPos(out var from);
+        steps = Math.Max(1, steps);
+        for (int i = 1; i <= steps; i++)
+        {
+            MoveCursorOnly(from.x + (x - from.x) * i / steps, from.y + (y - from.y) * i / steps);
+            if (i < steps) Thread.Sleep(stepDelayMs);
+        }
+        MoveCursorOnly(x, y);
+    }
+
+    /// <summary>
     /// Di chuyen theo NHIEU BUOC NHO thay vi teleport mot nhat.
     /// Game cap nhat "dang hover cai nao" theo frame va co the theo doi chuyen dong;
     /// nhay mot phat toi dich de bi bo qua, khien cu LeftDown ngay sau do
