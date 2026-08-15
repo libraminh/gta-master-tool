@@ -337,7 +337,8 @@ internal sealed class FishingBot
         // ba lo day ma log van trong binh thuong.
         _catchesSinceDump = 0;
         throw new TrunkStepException(
-            "ba lô gần đầy nhưng không tìm thấy ô cá nào — vào Học vật phẩm gán nhãn cho icon cá");
+            "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
+            "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
     }
 
     /// <summary>

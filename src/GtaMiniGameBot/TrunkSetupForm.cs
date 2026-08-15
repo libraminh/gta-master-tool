@@ -241,15 +241,15 @@ internal sealed class TrunkSetupForm : Form
 
         var boxItems = new GroupBox
         {
-            Text = "5 · Nhận diện ô kho đồ",
+            Text = "5 · Ô chứa cá",
             Location = new Point(12, y),
             Size = new Size(916, 70)
         };
         Controls.Add(boxItems);
 
-        var btnLearnItems = new Button { Text = "Học vật phẩm…" };
+        var btnLearnItems = new Button { Text = "Chọn ô chứa cá…" };
         btnLearnItems.SetBounds(14, 26, 150, 30);
-        btnLearnItems.Click += (_, _) => OpenLearnItems();
+        btnLearnItems.Click += (_, _) => OpenFishSlots();
         boxItems.Controls.Add(btnLearnItems);
 
         var btnCal = new Button { Text = "Hiệu chỉnh ô trống" };
@@ -451,41 +451,41 @@ internal sealed class TrunkSetupForm : Form
 
     // ---------------------------------------------------------------- nhận diện ô
 
-    private void OpenLearnItems()
+    private void OpenFishSlots()
     {
-        using var f = new LearnItemsForm(_cfg, _screen, _profile);
+        using var f = new FishSlotForm(_cfg, _screen, _profile);
         f.ShowDialog(this);
         RefreshAll();
     }
 
-    private IEnumerable<(string Label, string Shot, GridSpec Grid)> Grids()
+    private IEnumerable<(string Label, string Shot, string GridName, GridSpec Grid)> Grids()
     {
-        yield return ("phím nhanh", "bag", _profile.Hotbar);
-        yield return ("ba lô     ", "bag", _profile.Bag);
-        yield return ("cốp       ", "trunk", _profile.Trunk);
+        yield return ("phím nhanh", "bag", FishSlot.GridHotbar, _profile.Hotbar);
+        yield return ("ba lô     ", "bag", FishSlot.GridBag, _profile.Bag);
+        yield return ("cốp       ", "trunk", null, _profile.Trunk);
     }
 
     private void ScanAllGrids()
     {
-        foreach (var (label, shot, grid) in Grids())
+        foreach (var (label, shot, gridName, grid) in Grids())
         {
             if (!grid.IsSet) { Append($"{label}: chưa khoanh lưới"); continue; }
 
             using var still = StillPicker.Load(FishingConfig.ShotPath(_key, shot));
             if (still is null) { Append($"{label}: chưa có ảnh “{shot}”"); continue; }
 
-            using var probe = new GridScanner(_cfg, _screen, grid, new ItemAtlas());
-            var size = probe.CellSize;
-            var notes = new List<string>();
-            var atlas = ItemAtlas.Load(_key, size, _cfg.BadgeFrac, notes);
-            foreach (string n in notes) Append("   " + n);
-
-            using var scanner = new GridScanner(_cfg, _screen, grid, atlas);
+            using var scanner = new GridScanner(_cfg, _screen, grid);
             var cells = scanner.ScanStill(still);
-            Append($"{label}: ô {size.Width}×{size.Height}, mẫu giữ {atlas.KeepCount} / cá {atlas.FishCount}");
-            foreach (var c in cells.Where(c => c.State != CellState.Empty))
-                Append("   " + c);
-            Append($"   trống {cells.Count(c => c.State == CellState.Empty)}/{cells.Count}");
+            var size = scanner.CellSize;
+            Append($"{label}: ô {size.Width}×{size.Height}, " +
+                   $"trống {cells.Count(c => c.IsEmpty)}/{cells.Count}");
+
+            foreach (var c in cells.Where(c => !c.IsEmpty))
+            {
+                bool isFish = gridName is not null
+                    && _profile.FishSlots.Any(s => s.Grid == gridName && s.Index == c.Index);
+                Append("   " + c + (isFish ? "   ← Ô CHỨA CÁ" : ""));
+            }
         }
         RefreshAll();
     }
@@ -501,13 +501,13 @@ internal sealed class TrunkSetupForm : Form
         var chroma = new List<double>();
         var std = new List<double>();
 
-        foreach (var (label, shot, grid) in Grids())
+        foreach (var (label, shot, _, grid) in Grids())
         {
             if (!grid.IsSet) continue;
             using var still = StillPicker.Load(FishingConfig.ShotPath(_key, shot));
             if (still is null) continue;
 
-            using var scanner = new GridScanner(_cfg, _screen, grid, new ItemAtlas());
+            using var scanner = new GridScanner(_cfg, _screen, grid);
             foreach (var c in scanner.ScanStill(still))
             {
                 chroma.Add(c.Chroma);
@@ -753,18 +753,10 @@ internal sealed class TrunkSetupForm : Form
                 : $"còn thiếu: {missing}";
         _ocrStatus.ForeColor = atlas.Count > 0 && missing.Length == 0 ? Color.DarkGreen : Color.DimGray;
 
-        int keep = 0, fish = 0;
-        foreach (var (_, _, grid) in Grids())
-        {
-            if (!grid.IsSet) continue;
-            using var probe = new GridScanner(_cfg, _screen, grid, new ItemAtlas());
-            var a = ItemAtlas.Load(_key, probe.CellSize, _cfg.BadgeFrac, null);
-            keep += a.KeepCount;
-            fish += a.FishCount;
-        }
-        _itemStatus.Text = $"mẫu giữ lại {keep}, mẫu cá {fish}" +
+        var slots = _profile.FishSlots;
+        _itemStatus.Text = (slots.Count == 0 ? "chưa chọn ô chứa cá" : "ô cá: " + string.Join(", ", slots.Select(s => s.Label))) +
                            $"  ·  ô trống: màu<{_cfg.CellEmptyChroma01:F3} lệch<{_cfg.CellEmptyStdMax:F1}";
-        _itemStatus.ForeColor = fish > 0 ? Color.DarkGreen : Color.DimGray;
+        _itemStatus.ForeColor = slots.Count > 0 ? Color.DarkGreen : Color.DimGray;
     }
 
     private void Append(string line)

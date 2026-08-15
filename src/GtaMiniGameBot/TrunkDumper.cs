@@ -72,25 +72,20 @@ internal sealed class TrunkDumper : IDisposable
             problem = "chưa khoanh ô số KG ba lô";
             return null;
         }
+        if (p.FishSlots is not { Count: > 0 })
+        {
+            opener.Dispose();
+            problem = "chưa chọn ô chứa cá";
+            return null;
+        }
 
         var atlas = DigitAtlas.Load(p.Key);
         var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg);
 
-        var notes = new List<string>();
-        var hotbar = MakeScanner(cfg, screen, p, p.Hotbar, notes);
-        var bag = MakeScanner(cfg, screen, p, p.Bag, notes);
-        var trunk = MakeScanner(cfg, screen, p, p.Trunk, notes);
-        foreach (string n in notes) log(n);
-
-        return new TrunkDumper(cfg, screen, p, log, opener, weight, hotbar, bag, trunk);
-    }
-
-    private static GridScanner MakeScanner(FishingConfig cfg, Screen screen, FishingProfile p,
-                                           GridSpec grid, List<string> notes)
-    {
-        using var probe = new GridScanner(cfg, screen, grid, new ItemAtlas());
-        var atlas = ItemAtlas.Load(p.Key, probe.CellSize, cfg.BadgeFrac, notes);
-        return new GridScanner(cfg, screen, grid, atlas);
+        return new TrunkDumper(cfg, screen, p, log, opener, weight,
+            new GridScanner(cfg, screen, p.Hotbar),
+            new GridScanner(cfg, screen, p.Bag),
+            new GridScanner(cfg, screen, p.Trunk));
     }
 
     // ---------------------------------------------------------------- đọc KG
@@ -194,7 +189,7 @@ internal sealed class TrunkDumper : IDisposable
 
         if (moved == 0)
         {
-            _log("không thấy ô cá nào để kéo");
+            _log("mọi ô chứa cá đã khai báo đều đang trống");
             _opener.CloseAll(ct);
             return DumpResult.NothingToMove;
         }
@@ -202,7 +197,8 @@ internal sealed class TrunkDumper : IDisposable
         double after = ReadTrunkScreenWeight();
         if (before >= 0 && after >= 0 && before - after < _cfg.MinDropKg)
             _log($"cảnh báo: kéo {moved} ô nhưng KG chỉ giảm {before - after:F1} " +
-                 $"(chờ ít nhất {_cfg.MinDropKg:F1})");
+                 $"(chờ ít nhất {_cfg.MinDropKg:F1}) — nhiều khả năng cá đã tràn sang một ô " +
+                 "chưa khai báo, vào Chọn ô chứa cá thêm ô đó");
 
         _log($"đã kéo {moved} ô sang cốp, KG {before:F1} → {after:F1}");
         _opener.CloseAll(ct);
@@ -219,27 +215,41 @@ internal sealed class TrunkDumper : IDisposable
         return r.Ok ? r.Value : -1;
     }
 
+    /// <summary>
+    /// Ô cá đầu tiên trong danh sách khai báo mà đang có đồ. Không dò icon: người dùng đã cam
+    /// kết ô đó luôn là cá, nên ở đây chỉ cần biết ô rỗng hay không.
+    /// </summary>
     private (GridScanner Scanner, CellInfo Cell)? NextFish(out string note)
     {
         note = null;
         InputSender.MoveCursorOnly(_park.X, _park.Y);
         Thread.Sleep(120);
 
-        var odd = new List<string>();
-        foreach (var (name, scanner) in new[] { ("phím nhanh", _hotbar), ("ba lô", _bag) })
+        foreach (var slot in _profile.FishSlots)
         {
-            foreach (var c in scanner.ScanScreen())
+            var scanner = ScannerFor(slot.Grid);
+            if (scanner is null) continue;
+            if (slot.Index < 0 || slot.Index >= scanner.Count)
             {
-                if (c.State == CellState.Fish) { note = $"thấy cá ở {name} #{c.Index} ({c.Name})"; return (scanner, c); }
-                if (c.State == CellState.Unknown) odd.Add($"{name} #{c.Index}");
+                note = $"ô {slot.Label} nằm ngoài lưới ({scanner.Count} ô) — bỏ qua";
+                continue;
             }
-        }
 
-        if (odd.Count > 0)
-            note = $"ô lạ chưa gán nhãn: {string.Join(", ", odd)} — KHÔNG kéo, " +
-                   "vào Học vật phẩm gán nhãn nếu đó là cá";
+            var cell = scanner.ScanCell(slot.Index);
+            if (cell is null || cell.IsEmpty) continue;
+
+            note = $"kéo ô {slot.Label} (màu={cell.Chroma:F3} lệch={cell.Std:F1})";
+            return (scanner, cell);
+        }
         return null;
     }
+
+    private GridScanner ScannerFor(string grid) => grid switch
+    {
+        FishSlot.GridHotbar => _hotbar,
+        FishSlot.GridBag => _bag,
+        _ => null
+    };
 
     /// <summary>Null = cốp không còn ô trống.</summary>
     private CellInfo NextEmptyTrunkCell()

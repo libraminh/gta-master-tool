@@ -90,6 +90,25 @@ internal sealed class GridSpec
     }
 }
 
+/// <summary>
+/// Một ô luôn chứa cá. Người dùng tự khai báo thay vì để bot nhận icon.
+/// Đánh đổi có ý thức: bot kéo BẤT KỲ thứ gì nằm trong ô này mà không hỏi lại.
+/// </summary>
+internal sealed class FishSlot
+{
+    public const string GridHotbar = "hotbar";
+    public const string GridBag = "bag";
+
+    public string Grid { get; set; } = GridHotbar;
+    public int Index { get; set; }
+
+    [JsonIgnore]
+    public bool IsValid => Index >= 0 && Grid is GridHotbar or GridBag;
+
+    [JsonIgnore]
+    public string Label => (Grid == GridBag ? "ba lô" : "phím nhanh") + " #" + Index;
+}
+
 internal sealed class FishingProfile
 {
     public string Device { get; set; }
@@ -124,6 +143,12 @@ internal sealed class FishingProfile
     public GridSpec Hotbar { get; set; } = new();
     public GridSpec Bag { get; set; } = new();
     public GridSpec Trunk { get; set; } = new();
+
+    /// <summary>
+    /// Các ô chứa cá. Cố ý KHÔNG có mặc định: đoán hộ một ô rồi kéo đồ trong đó đi là việc
+    /// không được làm ngầm. Khai báo nhiều ô để phòng khi cá tràn sang ô kế vì đầy chồng.
+    /// </summary>
+    public List<FishSlot> FishSlots { get; set; } = new();
 
     /// <summary>
     /// Vùng quét cao trùm mọi vị trí nút CẤT VÀO có thể trượt tới. Chưa khoanh thì
@@ -197,6 +222,9 @@ internal sealed class FishingProfile
         Hotbar.Normalize(1, 5);
         Bag.Normalize(5, 5);
         Trunk.Normalize(5, 5);
+
+        FishSlots ??= new List<FishSlot>();
+        FishSlots.RemoveAll(s => s is null || !s.IsValid);
     }
 
     /// <summary>Thiếu gì để bật được đổ cốp — hiện thẳng trên panel thay vì để bot chết giữa chừng.</summary>
@@ -212,6 +240,7 @@ internal sealed class FishingProfile
         if (!Hotbar.IsSet) missing.Add("lưới hotbar");
         if (!Bag.IsSet) missing.Add("lưới ba lô");
         if (!Trunk.IsSet) missing.Add("lưới cốp");
+        if (FishSlots is not { Count: > 0 }) missing.Add("ô chứa cá");
 
         if (missing.Count == 0)
             return PauseMarker.IsSet ? "đủ cấu hình đổ cốp" : "đủ cấu hình đổ cốp (chưa khoanh menu tạm dừng)";
@@ -353,9 +382,8 @@ internal sealed class FishingConfig
 
     // -- ô lưới --
     public double CellInsetFrac { get; set; } = 0.15;
-    /// <summary>Phần góc dưới-phải bị cắt bỏ: chỗ game vẽ số lượng, mồi tụt số sẽ làm lệch so khớp.</summary>
+    /// <summary>Phần góc dưới-phải bị bỏ khỏi phép đo: chỗ game vẽ số lượng.</summary>
     public double BadgeFrac { get; set; } = 0.42;
-    public double ItemNccMin { get; set; } = 0.75;
     /// <summary>Tỉ lệ pixel có màu tối đa để coi là ô trống. Hiệu chỉnh được, không đoán.</summary>
     public double CellEmptyChroma01 { get; set; } = 0.06;
     /// <summary>Độ lệch chuẩn xám tối đa để coi là ô trống.</summary>
@@ -439,7 +467,6 @@ internal sealed class FishingConfig
 
         if (CellInsetFrac is < 0 or > 0.4) CellInsetFrac = 0.15;
         if (BadgeFrac is <= 0 or >= 0.9) BadgeFrac = 0.42;
-        if (ItemNccMin is <= 0 or > 1) ItemNccMin = 0.75;
         if (CellEmptyChroma01 is <= 0 or > 1) CellEmptyChroma01 = 0.06;
         if (CellEmptyStdMax <= 0) CellEmptyStdMax = 12.0;
         if (HeaderNccMin is <= 0 or > 1) HeaderNccMin = 0.70;
@@ -482,15 +509,6 @@ internal sealed class FishingConfig
     public static string DigitDir(string key) => Path.Combine(ProfileDir(key), "digits");
     public static string DigitPath(string key, string cls) => Path.Combine(DigitDir(key), cls + ".png");
     public static string DigitUnknownDir(string key) => Path.Combine(DigitDir(key), "unknown");
-
-    /// <summary>
-    /// Mẫu icon vật phẩm: giữ lại (cần câu, katana, mồi) và cá.
-    /// Chia thêm theo KÍCH THƯỚC Ô vì icon co giãn theo ô: ô hotbar và ô ba lô lệch nhau vài
-    /// pixel nên mẫu của lưới này không so được với lưới kia.
-    /// </summary>
-    public static string ItemDir(string key, bool fish, Size cell) =>
-        Path.Combine(ProfileDir(key), fish ? "items-fish" : "items-keep",
-                     $"{cell.Width}x{cell.Height}");
 
     public static string OcrDebugDir(string key) => Path.Combine(ProfileDir(key), "debug-ocr");
     public static string InvDebugDir(string key) => Path.Combine(ProfileDir(key), "debug-inv");
