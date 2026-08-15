@@ -23,6 +23,7 @@ internal sealed class FishingPanel : UserControl
     private readonly Button _btnReject = new();
     private readonly Button _btnKeep = new();
     private readonly Button _btnKeepBand = new();
+    private readonly Button _btnAltProbe = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
     private readonly PictureBox _thumbReject = new();
@@ -73,9 +74,8 @@ internal sealed class FishingPanel : UserControl
 
     public void StopWork()
     {
-        _bot?.Stop();
-        try { InputSender.KeyUp(0x53); } catch { }
-        try { InputSender.LeftUp(); } catch { }
+        _bot?.StopAndWait();
+        HeldKeys.ReleaseAll();
         _reader?.Dispose();
         _reader = null;
     }
@@ -83,9 +83,8 @@ internal sealed class FishingPanel : UserControl
     public void Shutdown()
     {
         _timer.Stop();
-        _bot?.Stop();
-        try { InputSender.KeyUp(0x53); } catch { }
-        try { InputSender.LeftUp(); } catch { }
+        _bot?.StopAndWait();
+        HeldKeys.ReleaseAll();
         _reader?.Dispose();
         _reader = null;
         DisposeThumb(_thumbBar);
@@ -195,6 +194,12 @@ internal sealed class FishingPanel : UserControl
         AddThumb(_thumbKeep, 492, y, "CẤT VÀO");
         AddThumb(_thumbKeepBand, 652, y, "Vùng quét");
         y += 130;
+
+        _btnAltProbe.SetBounds(12, y, 230, 32);
+        _btnAltProbe.Text = "Test giữ Alt (menu xe)";
+        _btnAltProbe.Click += (_, _) => DoAltProbe();
+        Controls.Add(_btnAltProbe);
+        y += 40;
 
         _log.SetBounds(12, y, w, 760 - y - 12);
         _log.Multiline = true;
@@ -450,6 +455,129 @@ internal sealed class FishingPanel : UserControl
         _bot.Start();
     }
 
+    // ------------------------------------------------- test giữ Alt (menu xe)
+
+    /// <summary>
+    /// Trả lời câu hỏi phải biết trước khi viết phần đổ cốp: menu radial của xe có ăn theo
+    /// TOẠ ĐỘ CHUỘT TUYỆT ĐỐI không. Nếu nó đọc delta chuột (kiểu bánh xe theo hướng) thì mọi
+    /// cú click bằng InputSender.MoveTo đều rơi vào khoảng trống và phải làm cách khác hẳn.
+    /// Test cũng đo luôn: Alt có xuống thật không, và có nhả ra được không.
+    /// </summary>
+    private void DoAltProbe()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi test"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var ok = MessageBox.Show(this,
+            "Test này kiểm tra menu Alt của xe có ăn theo vị trí chuột tuyệt đối không.\r\n\r\n" +
+            "Đứng cạnh xe, camera hướng vào xe. Bấm OK rồi có 5 giây để click vào cửa sổ game.\r\n\r\n" +
+            "Bot sẽ giữ Alt ~1,5 giây, chụp 2 ảnh (lúc menu vừa mở và sau khi rê chuột sang trái), " +
+            "rồi nhả Alt. Bạn mở 2 ảnh xem nút bên trái có sáng lên ở ảnh thứ 2 không.",
+            "Test giữ Alt", MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+        if (ok != DialogResult.OK) return;
+
+        _btnAltProbe.Enabled = false;
+        Append("--- test giữ Alt ---");
+        new Thread(() => AltProbeWorker(screen)) { IsBackground = true, Name = "AltProbe" }.Start();
+    }
+
+    private void AltProbeWorker(Screen screen)
+    {
+        void Log(string s) => Post(() => Append(s));
+
+        try
+        {
+            for (int i = 5; i >= 1; i--)
+            {
+                int n = i;
+                Log($"...{n}");
+                Thread.Sleep(1000);
+            }
+
+            string title = Native.ForegroundTitle();
+            Log($"cửa sổ đang focus: “{title}”");
+            if (!title.Contains(_cfg.WindowMatch, StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"KHÔNG phải cửa sổ game (“{_cfg.WindowMatch}”) — huỷ test");
+                return;
+            }
+
+            // Nguoi dung dang giu Alt that thi khong gianh quyen so huu phim: cu Alt-up cua
+            // minh se lam phim cua ho "dinh len" cho toi khi ho bam lai.
+            if (Native.IsKeyDown(HeldKeys.VK_ALT))
+            {
+                Log("Alt đang được giữ sẵn — huỷ test, nhả Alt ra rồi thử lại");
+                return;
+            }
+
+            string dir = Path.Combine(AppPaths.Root, "debug-alt");
+            Directory.CreateDirectory(dir);
+
+            var b = screen.Bounds;
+            int cx = b.Left + b.Width / 2;
+            int cy = b.Top + b.Height / 2;
+            Native.GetCursorPos(out var before);
+            Log($"chuột trước khi bấm Alt: {before.x},{before.y}  (tâm màn game: {cx},{cy})");
+
+            InputSender.AltDown();
+            try
+            {
+                Thread.Sleep(500);
+                Log($"IsKeyDown(Alt) sau khi bấm = {Native.IsKeyDown(HeldKeys.VK_ALT)}");
+                Native.GetCursorPos(out var atMenu);
+                Log($"chuột lúc menu vừa mở: {atMenu.x},{atMenu.y}");
+                SaveProbeShot(dir, "alt-1-menu", b, Log);
+
+                // Le ra day la cho nut ben trai ("Tuong tac"/"Cop xe") nam.
+                int tx = cx - (int)(b.Width * 0.12);
+                int ty = cy;
+                InputSender.MoveSmooth(tx, ty, 12);
+                Thread.Sleep(500);
+                Native.GetCursorPos(out var after);
+                Log($"rê tới {tx},{ty} — chuột thực tế: {after.x},{after.y}");
+                if (Math.Abs(after.x - tx) > 4 || Math.Abs(after.y - ty) > 4)
+                    Log("CHUỘT BỊ ĐẨY ĐI CHỖ KHÁC — menu nhiều khả năng đọc delta chuột, " +
+                        "toạ độ tuyệt đối sẽ không dùng được");
+                SaveProbeShot(dir, "alt-2-hover", b, Log);
+            }
+            finally
+            {
+                InputSender.AltUp();
+            }
+
+            Thread.Sleep(150);
+            bool stillDown = Native.IsKeyDown(HeldKeys.VK_ALT);
+            Log($"IsKeyDown(Alt) sau khi nhả = {stillDown}" + (stillDown ? "  ← ALT ĐANG KẸT" : ""));
+            Log("xong — mở 2 ảnh trong " + dir);
+            Log("ảnh 2 mà nút bên trái sáng/viền lên = menu ăn toạ độ tuyệt đối, làm tiếp được.");
+        }
+        catch (Exception ex)
+        {
+            Log("lỗi test: " + ex.Message);
+        }
+        finally
+        {
+            HeldKeys.ReleaseAll();
+            Post(() => _btnAltProbe.Enabled = !IsRunning);
+        }
+    }
+
+    private static void SaveProbeShot(string dir, string name, Rectangle bounds, Action<string> log)
+    {
+        string path = Path.Combine(dir, name + ".png");
+        try
+        {
+            using var bmp = RegionPicker.Capture(bounds);
+            RegionPicker.SavePng(bmp, path);
+            log($"đã chụp {name}.png");
+        }
+        catch (Exception ex)
+        {
+            log($"chụp {name} lỗi: {ex.Message}");
+        }
+    }
+
     /// <summary>Nguoi dung doi phim bat/tat job trong tab Tiện ích.</summary>
     public void SetJobHotkeyText(string text)
     {
@@ -465,6 +593,7 @@ internal sealed class FishingPanel : UserControl
         _btnReject.Enabled = !running;
         _btnKeep.Enabled = !running;
         _btnKeepBand.Enabled = !running;
+        _btnAltProbe.Enabled = !running;
         _screens.Enabled = !running;
         RunningChanged?.Invoke(running);
     }

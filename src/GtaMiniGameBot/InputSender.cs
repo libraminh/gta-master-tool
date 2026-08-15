@@ -86,12 +86,27 @@ internal static class InputSender
     public static void KeyDown(ushort vk) => Key(vk, false);
     public static void KeyUp(ushort vk) => Key(vk, true);
 
+    /// <summary>Scancode Alt TRAI. Xem <see cref="AltDown"/> de biet vi sao khong dung VK.</summary>
+    private const ushort SCAN_LALT = 0x38;
+
+    /// <summary>
+    /// Giu/nha Alt TRAI bang scancode thang, KHONG extended.
+    /// Di qua MapVirtualKey nhu cac phim khac co the ra E0 38 - tren nhieu layout do la AltGr
+    /// va keo theo Ctrl ngam, game se thay mot modifier minh khong he dinh gui. Loi cung loai
+    /// da gap voi Ctrl, xem UtilityService.CtrlVk().
+    /// </summary>
+    public static void AltDown() => ScanKey(SCAN_LALT, extended: false, up: false);
+    public static void AltUp() => ScanKey(SCAN_LALT, extended: false, up: true);
+
     private static void Key(ushort vk, bool up)
     {
         uint sc = Native.MapVirtualKey(vk, Native.MAPVK_VK_TO_VSC_EX);
         bool extended = ((sc >> 8) & 0xFF) is 0xE0 or 0xE1;
-        ushort scan = (ushort)(sc & 0xFF);
+        ScanKey((ushort)(sc & 0xFF), extended, up);
+    }
 
+    private static void ScanKey(ushort scan, bool extended, bool up)
+    {
         uint flags = Native.KEYEVENTF_SCANCODE;
         if (extended) flags |= Native.KEYEVENTF_EXTENDEDKEY;
         if (up) flags |= Native.KEYEVENTF_KEYUP;

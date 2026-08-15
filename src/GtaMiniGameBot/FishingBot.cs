@@ -50,6 +50,19 @@ internal sealed class FishingBot
 
     public void Stop() => _cts?.Cancel();
 
+    /// <summary>
+    /// Huỷ rồi CHỜ luồng bot chết hẳn. <see cref="Stop"/> chỉ báo CTS và trả về ngay, nên nếu
+    /// người gọi nhả phím ngay sau đó thì luồng bot còn sống vẫn kịp bấm lại — phím kẹt xuống
+    /// dù panel đã báo "đã dừng". Hết thời gian chờ thì thôi, không treo UI.
+    /// </summary>
+    public void StopAndWait(int ms = 1500)
+    {
+        _cts?.Cancel();
+        var t = _thread;
+        if (t is null || !t.IsAlive) return;
+        try { t.Join(ms); } catch { }
+    }
+
     public static string TenLyDo(FishingStopReason r) => r switch
     {
         FishingStopReason.UserStopped => "người dùng bấm dừng",
@@ -198,7 +211,7 @@ internal sealed class FishingBot
         finally
         {
             ReleaseS();
-            try { InputSender.LeftUp(); } catch { }
+            HeldKeys.ReleaseAll();
             Stopped?.Invoke(reason, message);
         }
     }

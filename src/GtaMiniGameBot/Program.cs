@@ -47,8 +47,29 @@ internal static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
+        InstallSafetyNets();
         Application.Run(new HomeForm());
         return 0;
+    }
+
+    /// <summary>
+    /// Ngoai le khong bat duoc lam app chet ma OnFormClosing KHONG chay - phim S, chuot trai,
+    /// Alt se ket xuong trong game va nguoi choi phai tu bam lai de go. Ba moc nay la lop cuoi
+    /// cung nha chung ra. Van hien loi len de khong nuot mat, dung nhu hop thoai mac dinh.
+    /// </summary>
+    private static void InstallSafetyNets()
+    {
+        Application.ThreadException += (_, e) =>
+        {
+            HeldKeys.ReleaseAll();
+            try
+            {
+                MessageBox.Show(e.Exception.ToString(), "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            catch { }
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => HeldKeys.ReleaseAll();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => HeldKeys.ReleaseAll();
     }
 
     /// <summary>De console hien duoc tieng Viet co dau thay vi ky tu la.</summary>
