@@ -81,7 +81,10 @@ internal sealed class TrunkSetupForm : Form
     private readonly Dictionary<Slot, Label> _slotLabels = new();
     private readonly Label _summary = new();
     private readonly Label _ocrStatus = new();
+    private readonly Button _btnDiagnose = new();
+    private readonly Button _btnOpenTrunk = new();
     private readonly TextBox _log = new();
+    private CancellationTokenSource _cts;
 
     public TrunkSetupForm(FishingConfig cfg, Screen screen, FishingProfile profile)
     {
@@ -95,7 +98,7 @@ internal sealed class TrunkSetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(940, 786);
+        ClientSize = new Size(940, 856);
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.White;
 
@@ -202,7 +205,35 @@ internal sealed class TrunkSetupForm : Form
         boxOcr.Controls.Add(_ocrStatus);
         y += 82;
 
-        _log.SetBounds(12, y, 916, 786 - y - 12);
+        var boxMenu = new GroupBox
+        {
+            Text = "4 · Mở cốp xe",
+            Location = new Point(12, y),
+            Size = new Size(916, 70)
+        };
+        Controls.Add(boxMenu);
+
+        _btnDiagnose.SetBounds(14, 26, 190, 30);
+        _btnDiagnose.Text = "Test dò menu (không click)";
+        _btnDiagnose.Click += (_, _) => RunMenuTest(clickThrough: false);
+        boxMenu.Controls.Add(_btnDiagnose);
+
+        _btnOpenTrunk.SetBounds(212, 26, 150, 30);
+        _btnOpenTrunk.Text = "Test mở cốp";
+        _btnOpenTrunk.Click += (_, _) => RunMenuTest(clickThrough: true);
+        boxMenu.Controls.Add(_btnOpenTrunk);
+
+        boxMenu.Controls.Add(new Label
+        {
+            Text = "Đứng cạnh xe, camera hướng vào xe. Bấm xong có " + _cfg.ShotCountdownSec +
+                   " giây để click vào game.",
+            Location = new Point(374, 33),
+            AutoSize = true,
+            ForeColor = Color.DimGray
+        });
+        y += 82;
+
+        _log.SetBounds(12, y, 916, 856 - y - 12);
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
@@ -291,6 +322,20 @@ internal sealed class TrunkSetupForm : Form
         using (var g = Graphics.FromImage(crop))
             g.DrawImage(still, new Rectangle(0, 0, src.Width, src.Height), src, GraphicsUnit.Pixel);
 
+        // Nut menu: bo sat vien thuoc truoc khi luu. Nen quanh nut la canh game, doi theo tung
+        // lan chup, de vao mau NCC chi to dim diem khop.
+        if (name.StartsWith("menu-", StringComparison.Ordinal))
+        {
+            var tight = MenuLocator.TightenPill(crop, _cfg.MenuColorTol, out string note);
+            Append($"   {note}");
+            if (tight != new Rectangle(0, 0, crop.Width, crop.Height))
+            {
+                using var inner = crop.Clone(tight, PixelFormat.Format32bppArgb);
+                StillPicker.Save(inner, FishingConfig.TrunkTemplatePath(_key, name));
+                return;
+            }
+        }
+
         StillPicker.Save(crop, FishingConfig.TrunkTemplatePath(_key, name));
     }
 
@@ -368,6 +413,91 @@ internal sealed class TrunkSetupForm : Form
         var r = WeightReader.ReadStill(still, roi, atlas, _cfg, cap);
         Append($"{label}: {r}");
         Append("   " + r.Trace);
+    }
+
+    // ---------------------------------------------------------------- mở cốp
+
+    private void RunMenuTest(bool clickThrough)
+    {
+        if (clickThrough)
+        {
+            var ok = MessageBox.Show(this,
+                "Bot sẽ CLICK THẬT: giữ Alt → Tương tác → Cốp xe → Esc đóng lại.\r\n\r\n" +
+                "Nếu menu không hiện thì cú click rơi vào thế giới game — đứng sát xe, " +
+                "camera hướng vào xe, tay không cầm súng.",
+                "Test mở cốp", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (ok != DialogResult.OK) return;
+        }
+
+        _btnDiagnose.Enabled = false;
+        _btnOpenTrunk.Enabled = false;
+        _cts = new CancellationTokenSource();
+
+        var ct = _cts.Token;
+        new Thread(() => MenuTestWorker(clickThrough, ct))
+        {
+            IsBackground = true,
+            Name = "TrunkTest"
+        }.Start();
+    }
+
+    private void MenuTestWorker(bool clickThrough, CancellationToken ct)
+    {
+        void Log(string s) => Post(() => Append(s));
+
+        TrunkOpener opener = null;
+        try
+        {
+            for (int i = _cfg.ShotCountdownSec; i >= 1; i--)
+            {
+                int n = i;
+                Log($"...{n}");
+                Thread.Sleep(1000);
+            }
+
+            opener = TrunkOpener.Create(_cfg, _screen, _profile, Log, out string problem);
+            if (opener is null) { Log("chưa chạy được: " + problem); return; }
+
+            if (!clickThrough)
+            {
+                opener.Diagnose(ct);
+                return;
+            }
+
+            opener.Open(ct);
+            Thread.Sleep(600);
+            Log("đóng lại bằng Esc");
+            opener.CloseAll(ct);
+            Log("XONG — đi hết được cả chuỗi");
+        }
+        catch (OperationCanceledException) { Log("đã huỷ"); }
+        catch (TrunkStepException ex) { Log("DỪNG: " + ex.Message); }
+        catch (Exception ex) { Log("lỗi: " + ex.Message); }
+        finally
+        {
+            if (opener is not null && opener.WatchdogFired)
+                Log("→ đồng hồ an toàn đã phải ra tay, xem lại timeout");
+            opener?.Dispose();
+            HeldKeys.ReleaseAll();
+            Post(() =>
+            {
+                _btnDiagnose.Enabled = true;
+                _btnOpenTrunk.Enabled = true;
+            });
+        }
+    }
+
+    private void Post(Action a)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try { BeginInvoke(a); } catch { }
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        _cts?.Cancel();
+        HeldKeys.ReleaseAll();
+        base.OnFormClosing(e);
     }
 
     // ---------------------------------------------------------------- trạng thái
