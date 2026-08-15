@@ -581,11 +581,12 @@ internal sealed class FishingPanel : UserControl
         if (screen is null) { Append("không chọn được màn hình"); return; }
 
         var ok = MessageBox.Show(this,
-            "Test này tìm cách rê chuột mà KHÔNG làm tắt menu Alt của xe.\r\n\r\n" +
-            "Đứng cạnh xe, camera hướng vào xe. Bấm OK rồi có 5 giây để click vào cửa sổ game.\r\n\r\n" +
-            "Bot giữ Alt rồi chụp 4 ảnh: lúc menu vừa mở, sau khi đứng yên, sau khi rê bằng " +
-            "SetCursorPos, và sau khi rê bằng SendInput.",
-            "Test giữ Alt", MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+            "Test này chạy thử cả chuỗi mở cốp bằng toạ độ hai ô nút bạn đã khoanh:\r\n" +
+            "giữ Alt → click Tương tác → click Cốp xe → Esc đóng lại.\r\n\r\n" +
+            "LƯU Ý: bot sẽ click thật. Nếu menu không hiện (xe quá xa, camera không hướng vào xe) " +
+            "thì cú click đó rơi vào thế giới game — hãy đứng sát xe, tay không cầm súng.\r\n\r\n" +
+            "Bấm OK rồi có 5 giây để click vào cửa sổ game.",
+            "Test giữ Alt", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
         if (ok != DialogResult.OK) return;
 
         _btnAltProbe.Enabled = false;
@@ -627,9 +628,11 @@ internal sealed class FishingPanel : UserControl
 
             var b = screen.Bounds;
             var target = AltProbeTarget(screen, out string how);
+            var trunk = AltProbeTrunk(screen);
             Native.GetCursorPos(out var before);
             Log($"chuột trước khi bấm Alt: {before.x},{before.y}");
-            Log($"đích rê tới: {target.X},{target.Y} ({how})");
+            Log($"Tương tác: {target.X},{target.Y} ({how})");
+            Log(trunk is null ? "Cốp xe: chưa khoanh" : $"Cốp xe: {trunk.Value.X},{trunk.Value.Y}");
 
             InputSender.AltDown();
             try
@@ -638,22 +641,29 @@ internal sealed class FishingPanel : UserControl
                 Log($"IsKeyDown(Alt) sau khi bấm = {Native.IsKeyDown(HeldKeys.VK_ALT)}");
                 SaveProbeShot(dir, "alt-1-menu", b, Log);
 
-                // Moc so sanh: menu co tu tat khi chi dung yen khong? Khong co moc nay thi
-                // khong biet menu tat vi CACH re chuot hay vi CO re chuot.
-                Thread.Sleep(700);
-                SaveProbeShot(dir, "alt-2-dung-yen", b, Log);
-
                 InputSender.MoveCursorOnlySmooth(target.X, target.Y, 12);
-                Thread.Sleep(500);
-                Native.GetCursorPos(out var p3);
-                Log($"sau SetCursorPos — chuột: {p3.x},{p3.y}");
-                SaveProbeShot(dir, "alt-3-setcursorpos", b, Log);
+                Thread.Sleep(400);
+                SaveProbeShot(dir, "alt-2-hover-tuongtac", b, Log);
 
-                InputSender.MoveSmooth(target.X, target.Y, 12);
-                Thread.Sleep(500);
-                Native.GetCursorPos(out var p4);
-                Log($"sau SendInput — chuột: {p4.x},{p4.y}");
-                SaveProbeShot(dir, "alt-4-sendinput", b, Log);
+                Log("click Tương tác");
+                ProbeClick();
+                Thread.Sleep(700);
+                SaveProbeShot(dir, "alt-3-sau-click", b, Log);
+
+                if (trunk is null)
+                {
+                    Log("chưa khoanh Nút Cốp xe — dừng ở đây");
+                }
+                else
+                {
+                    InputSender.MoveCursorOnlySmooth(trunk.Value.X, trunk.Value.Y, 12);
+                    Thread.Sleep(400);
+                    SaveProbeShot(dir, "alt-4-hover-copxe", b, Log);
+
+                    Log("click Cốp xe");
+                    ProbeClick();
+                    Thread.Sleep(1200);
+                }
             }
             finally
             {
@@ -663,8 +673,16 @@ internal sealed class FishingPanel : UserControl
             Thread.Sleep(150);
             bool stillDown = Native.IsKeyDown(HeldKeys.VK_ALT);
             Log($"IsKeyDown(Alt) sau khi nhả = {stillDown}" + (stillDown ? "  ← ALT ĐANG KẸT" : ""));
-            Log("xong — mở 4 ảnh trong " + dir);
-            Log("ảnh 2 còn menu = menu không tự tắt. Ảnh 3/4: ảnh nào còn menu thì dùng cách đó.");
+
+            SaveProbeShot(dir, "alt-5-sau-copxe", b, Log);
+
+            // Dong lai de khong bo man hinh kho do dang mo.
+            InputSender.TapKey(0x1B);
+            Thread.Sleep(700);
+            SaveProbeShot(dir, "alt-6-sau-esc", b, Log);
+
+            Log("xong — mở 6 ảnh trong " + dir);
+            Log("ảnh 3 hiện menu 4 nút = click ăn. Ảnh 5 hiện cốp xe = đi hết được chuỗi.");
         }
         catch (Exception ex)
         {
@@ -695,6 +713,22 @@ internal sealed class FishingPanel : UserControl
         var b = screen.Bounds;
         how = "đoán bên trái tâm màn — chưa khoanh Nút Tương tác";
         return new Point(b.Left + b.Width / 2 - (int)(b.Width * 0.04), b.Top + b.Height / 2);
+    }
+
+    private Point? AltProbeTrunk(Screen screen)
+    {
+        var p = _cfg.TryGet(screen);
+        if (p?.AltTrunk.IsSet != true) return null;
+        var r = FishingConfig.ToAbsolute(screen, p.AltTrunk);
+        return new Point(r.Left + r.Width / 2, r.Top + r.Height / 2);
+    }
+
+    /// <summary>Click tại chỗ — KHÔNG rê, vì cú rê mới là thứ làm tắt menu.</summary>
+    private static void ProbeClick()
+    {
+        InputSender.LeftDown();
+        Thread.Sleep(60);
+        InputSender.LeftUp();
     }
 
     private static void SaveProbeShot(string dir, string name, Rectangle bounds, Action<string> log)
