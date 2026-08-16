@@ -1,0 +1,200 @@
+{
+  "Profiles": {
+    "2560x1440": {
+      "Device": "\\\\.\\DISPLAY1",
+      "Width": 2560,
+      "Height": 1440,
+      "Bar": {
+        "X": 1913,
+        "Y": 833,
+        "W": 38,
+        "H": 350
+      },
+      "Fish": {
+        "X": 1964,
+        "Y": 521,
+        "W": 18,
+        "H": 34
+      },
+      "Reject": {
+        "X": 40,
+        "Y": 1021,
+        "W": 352,
+        "H": 82
+      },
+      "Keep": {
+        "X": 952,
+        "Y": 800,
+        "W": 187,
+        "H": 65
+      },
+      "TrunkDumpEnabled": true,
+      "BagWeight": {
+        "X": 945,
+        "Y": 223,
+        "W": 73,
+        "H": 49
+      },
+      "TrunkWeight": {
+        "X": 2136,
+        "Y": 230,
+        "W": 81,
+        "H": 38
+      },
+      "BagHeader": {
+        "X": 469,
+        "Y": 199,
+        "W": 137,
+        "H": 78
+      },
+      "TrunkHeader": {
+        "X": 1646,
+        "Y": 194,
+        "W": 289,
+        "H": 83
+      },
+      "PauseMarker": {
+        "X": 0,
+        "Y": 0,
+        "W": 0,
+        "H": 0
+      },
+      "AltBand": {
+        "X": 812,
+        "Y": 441,
+        "W": 986,
+        "H": 570
+      },
+      "AltInteract": {
+        "X": 1073,
+        "Y": 696,
+        "W": 156,
+        "H": 48
+      },
+      "AltTrunk": {
+        "X": 876,
+        "Y": 682,
+        "W": 221,
+        "H": 81
+      },
+      "AltFuel": {
+        "X": 1414,
+        "Y": 682,
+        "W": 322,
+        "H": 81
+      },
+      "Hotbar": {
+        "Area": {
+          "X": 171,
+          "Y": 310,
+          "W": 108,
+          "H": 588
+        },
+        "Cols": 1,
+        "Rows": 5
+      },
+      "Bag": {
+        "Area": {
+          "X": 483,
+          "Y": 308,
+          "W": 588,
+          "H": 583
+        },
+        "Cols": 5,
+        "Rows": 5
+      },
+      "Trunk": {
+        "Area": {
+          "X": 1674,
+          "Y": 303,
+          "W": 590,
+          "H": 597
+        },
+        "Cols": 5,
+        "Rows": 5
+      },
+      "FishSlots": [
+        {
+          "Grid": "hotbar",
+          "Index": 1
+        }
+      ],
+      "KeepBand": {
+        "X": 933,
+        "Y": 625,
+        "W": 230,
+        "H": 608
+      }
+    }
+  },
+  "FishNccMin": 0.75,
+  "RejectNccMin": 0.75,
+  "KeepColorTol": 20,
+  "KeepDensityMin": 0.55,
+  "KeepClickRetries": 2,
+  "WaitBiteMs": 25000,
+  "FightTimeoutMs": 40000,
+  "AfterReleaseMs": 1200,
+  "CastCooldownMs": 1500,
+  "CastSpaceDelayMs": 200,
+  "RejectRecastMs": 100,
+  "PollMs": 100,
+  "BiteDebounceFrames": 3,
+  "DoneFill01": 0.95,
+  "WaitKeepMs": 8000,
+  "KeepAppearMs": 400,
+  "KeepGoneMs": 1500,
+  "KeepHoverMs": 320,
+  "KeepMoveSteps": 8,
+  "WindowMatch": "PlayXGTA",
+  "WeightCheckEveryCatches": 3,
+  "BagCapKg": 30,
+  "TrunkCapKg": 60,
+  "DumpMarginKg": 3,
+  "CatchesPerDumpFallback": 20,
+  "DumpEveryCatches": 5,
+  "MinDropKg": 0.5,
+  "WeightOcrFailMax": 3,
+  "MaxWeightJumpKg": 5,
+  "DigitNccMin": 0.8,
+  "DigitMarginMin": 0.08,
+  "DigitWidthTolPx": 2,
+  "DigitMinGlyphW": 2,
+  "DigitMinGlyphInk": 6,
+  "DigitMergeGapPx": 0,
+  "DigitInkMinGray": 90,
+  "MenuColorTol": 22,
+  "MenuDensityMin": 0.5,
+  "MenuNccMin": 0.7,
+  "MenuNccMargin": 0.06,
+  "MenuHoverMs": 200,
+  "MenuMoveSteps": 12,
+  "MenuClickRetries": 2,
+  "AltMenuAppearMs": 250,
+  "AltMenuWaitMs": 1500,
+  "AltRetries": 2,
+  "AltRetryGapMs": 400,
+  "AltMaxHoldMs": 4000,
+  "TabToggleMs": 900,
+  "TabWaitMs": 2500,
+  "TrunkOpenMs": 3000,
+  "EscCloseMs": 1500,
+  "AfterEscMs": 300,
+  "AfterDumpMs": 600,
+  "AfterDumpTurnMs": 400,
+  "DumpRetryGapMs": 1500,
+  "MaxDumpMs": 60000,
+  "DragGrabMs": 140,
+  "DragMoveSteps": 20,
+  "DragStepMs": 10,
+  "DragDropHoverMs": 180,
+  "DragSettleMs": 350,
+  "DragRetries": 2,
+  "MaxDragsPerDump": 12,
+  "DragCursorOnly": true,
+  "CellInsetFrac": 0.15,
+  "BadgeFrac": 0.42,
+  "CellEmptyStdMax": 6.151228489771987,
+  "HeaderNccMin": 0.7,
+  "ShotCountdownSec": 5
+}
