@@ -3,6 +3,9 @@
 **/obj/
 *.user
 
+# Portable zip build by tools/build-portable.ps1 (~58 MB, khong commit)
+dist/
+
 # Published app artifacts
 app/*.exe
 app/*.dll

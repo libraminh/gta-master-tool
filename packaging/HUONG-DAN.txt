@@ -1,0 +1,47 @@
+GtaMiniGameBot - ban portable
+=============================
+
+Cach chay
+---------
+1. Giai nen CA thu muc ra mot cho bat ky (Desktop, D:\tools, ...).
+   Phai giu nguyen ca cac file va thu muc con, dung tach rieng file exe ra.
+2. Chay GtaMiniGameBot.exe. Khong can cai .NET, tat ca da nam trong exe.
+3. Windows co the bao "Windows protected your PC" (SmartScreen) vi exe chua ky.
+   Bam "More info" -> "Run anyway".
+4. Nen chay bang quyen Administrator neu game khong nhan phim/chuot.
+
+Yeu cau
+-------
+- Windows 10/11 64-bit.
+- Game chay o che do cua so hoac borderless.
+- Vung da khoanh san (job cau ca) canh cho man hinh 2560x1440. Man hinh khac do
+  phan giai thi van chay duoc nhung phai vao app khoanh lai vung cho dung.
+
+Da khoanh san nhung gi
+----------------------
+Zip nay kem san toan bo vung + anh mau cua job CAU CA cho 2560x1440: thanh keo ca,
+mau con ca, nut Keep, cac o tui do / cop xe, menu radial va bo mau chu so de doc
+can nang. Chay len la dung duoc luon, khong phai setup lai tu dau.
+
+Cac job khac (gian khoan dau, tho mo) van phai tu canh chinh.
+
+Du lieu nguoi dung
+------------------
+Config, vung da khoanh va anh mau duoc luu o:
+    %APPDATA%\GtaMiniGameBot
+Lan chay dau tien app se chep config.json, fishing.json, car-template.png va thu muc
+fishing\ trong thu muc exe sang do lam mac dinh.
+
+QUAN TRONG: app chi chep sang khi ben do CHUA CO file do. Ai da tung chay ban cu
+roi thi se khong nhan duoc vung khoanh san - muon lay ban mac dinh moi thi xoa
+thu muc %APPDATA%\GtaMiniGameBot roi chay lai.
+
+Do cung la cach reset ve trang khi canh chinh loan xa nga.
+
+Luu y
+-----
+- Ban zip khong kem anh chup tinh man hinh game (thu muc shots\). Bot chay binh
+  thuong, chi khi vao form setup cop xe hoac form hoc chu so thi app se doi chup
+  lai anh - bam nut chup trong form la xong.
+- Go bo: xoa thu muc giai nen + thu muc %APPDATA%\GtaMiniGameBot. App khong ghi gi
+  vao Registry.
