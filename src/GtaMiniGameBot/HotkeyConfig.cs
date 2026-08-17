@@ -5,7 +5,7 @@ namespace GtaMiniGameBot;
 /// <summary>
 /// Phím tắt người dùng đặt lại được.
 /// JobToggle / UtilsToggle di qua RegisterHotKey nen nhan duoc to hop.
-/// AutoRun / HoldCtrl di qua low-level hook nen chi nhan phim don.
+/// AutoRun / HoldCtrl / Sprint di qua low-level hook nen chi nhan phim don.
 /// </summary>
 internal sealed class HotkeyConfig
 {
@@ -13,6 +13,7 @@ internal sealed class HotkeyConfig
     public const uint DefaultUtilsVk = 0x70;  // F1
     public const uint DefaultAutoRunVk = 0x14; // CapsLock
     public const uint DefaultHoldCtrlVk = 0x46; // F
+    public const uint DefaultSprintVk = 0xC0; // ` (Oemtilde)
 
     private const uint ModMask =
         Native.MOD_ALT | Native.MOD_CONTROL | Native.MOD_SHIFT | Native.MOD_WIN;
@@ -23,6 +24,7 @@ internal sealed class HotkeyConfig
     public uint UtilsToggleMods { get; set; }
     public uint AutoRunVk { get; set; } = DefaultAutoRunVk;
     public uint HoldCtrlVk { get; set; } = DefaultHoldCtrlVk;
+    public uint SprintVk { get; set; } = DefaultSprintVk;
 
     /// <summary>Json cũ thiếu field thì về 0 — trả lại mặc định, không để phím rỗng.</summary>
     public void Normalize()
@@ -31,6 +33,7 @@ internal sealed class HotkeyConfig
         if (UtilsToggleVk == 0) { UtilsToggleVk = DefaultUtilsVk; UtilsToggleMods = 0; }
         if (AutoRunVk == 0) AutoRunVk = DefaultAutoRunVk;
         if (HoldCtrlVk == 0) HoldCtrlVk = DefaultHoldCtrlVk;
+        if (SprintVk == 0) SprintVk = DefaultSprintVk;
         JobToggleMods &= ModMask;
         UtilsToggleMods &= ModMask;
     }
@@ -42,7 +45,8 @@ internal sealed class HotkeyConfig
         UtilsToggleVk = UtilsToggleVk,
         UtilsToggleMods = UtilsToggleMods,
         AutoRunVk = AutoRunVk,
-        HoldCtrlVk = HoldCtrlVk
+        HoldCtrlVk = HoldCtrlVk,
+        SprintVk = SprintVk
     };
 
     // ---------------- hien thi ----------------
