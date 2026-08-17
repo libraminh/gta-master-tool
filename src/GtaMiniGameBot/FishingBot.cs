@@ -106,6 +106,10 @@ internal sealed class FishingBot
 
             Emit($"bắt đầu. chờ cắn {_cfg.WaitBiteMs} ms, giữ S tối đa {_cfg.FightTimeoutMs} ms, " +
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
+            Emit(_cfg.CastConfirmMs > 0
+                ? $"xác minh thả câu: thanh không hiện sau {_cfg.CastConfirmMs} ms thì thả lại " +
+                  $"(tối đa {_cfg.CastConfirmRetries} lần)"
+                : "xác minh thả câu: TẮT — thả trượt sẽ phải chờ hết thời gian chờ cắn");
             Emit($"{HotkeyText.Job()} = bật/tắt. Cửa sổ game phải đang focus (" + _cfg.WindowMatch + ").");
             Emit($"mỗi lần 4 sẽ bấm Space sau {_cfg.CastSpaceDelayMs} ms — tắt hotkey 4 trong AutoHotkey.");
 
@@ -116,6 +120,12 @@ internal sealed class FishingBot
             int biteFrames = 0;
             bool fighting = false;
             bool sawHud = false;
+
+            // Thanh câu hiện = dây đang dưới nước = cú thả câu đã ăn. Không thấy nó sau
+            // CastConfirmMs thì cú thả trượt, thả lại luôn thay vì chờ hết WaitBiteMs.
+            bool sawCastHud = false;
+            int castRetries = 0;
+
             var waitSw = Stopwatch.StartNew();
             var fightSw = new Stopwatch();
             var ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
@@ -130,6 +140,8 @@ internal sealed class FishingBot
 
                 if (!fighting)
                 {
+                    if (snap.UiOpen) sawCastHud = true;
+
                     if (snap.FishBite) biteFrames++;
                     else biteFrames = 0;
 
@@ -150,6 +162,30 @@ internal sealed class FishingBot
                         Sleep(ct, _cfg.RejectRecastMs);
                         Cast(ct, "câu lại", waitRelease: false);
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
+                        waitSw.Restart();
+                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        continue;
+                    }
+
+                    // Thanh câu chưa từng hiện => dây chưa xuống nước, cú thả vừa rồi trượt.
+                    // Bắt sớm ở đây để khỏi đứng chờ trọn WaitBiteMs cho một cú thả không tồn tại.
+                    // BarConfigured là bắt buộc: chưa khoanh thanh thì UiOpen luôn false và
+                    // lượt nào cũng bị kết luận trượt. Panel chặn Start khi thiếu, nhưng điều
+                    // kiện đó ở xa nên chốt lại ngay tại chỗ dùng.
+                    bool castMissed = !sawCastHud
+                                      && snap.BarConfigured
+                                      && _cfg.CastConfirmMs > 0
+                                      && castRetries < _cfg.CastConfirmRetries
+                                      && waitSw.ElapsedMilliseconds >= _cfg.CastConfirmMs;
+                    if (castMissed)
+                    {
+                        castRetries++;
+                        Emit($"thanh câu không hiện sau {_cfg.CastConfirmMs} ms — thả câu trượt, " +
+                             $"thả lại (lần {castRetries}/{_cfg.CastConfirmRetries})");
+                        Cast(ct, "thả lại (trượt)", waitRelease: false);
+                        biteFrames = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                         continue;
@@ -157,9 +193,14 @@ internal sealed class FishingBot
 
                     if (waitSw.ElapsedMilliseconds >= _cfg.WaitBiteMs)
                     {
-                        Emit($"hết {_cfg.WaitBiteMs} ms không cắn — câu lại");
+                        Emit($"hết {_cfg.WaitBiteMs} ms không cắn — câu lại" +
+                             $" (thanh={(sawCastHud ? "đã mở" : "chưa mở lần nào")}" +
+                             $" fill={snap.BlueFill01 * 100:0.0}% cá={snap.FishScore:F3}" +
+                             $" chê={snap.RejectScore:F3})");
                         Cast(ct, "câu lại (timeout)");
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                     }
@@ -179,6 +220,8 @@ internal sealed class FishingBot
                         fighting = false;
                         sawHud = false;
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                         continue;
@@ -191,6 +234,8 @@ internal sealed class FishingBot
                         fighting = false;
                         sawHud = false;
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                     }
@@ -243,13 +288,25 @@ internal sealed class FishingBot
             return;
         }
 
-        var found = WaitForKeep(reader, ct);
+        var found = WaitForKeep(reader, out bool configured, ct);
         if (found is null)
         {
-            // Không dò được: về cách cũ, click ô đã khoanh. Đúng với con cá tên ngắn.
-            var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
-            Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — click ô đã khoanh");
-            ClickKeep(new Point(abs.Left + abs.Width / 2, abs.Top + abs.Height / 2), ct);
+            if (!configured)
+            {
+                // Thiếu mẫu/vùng thì lượt nào cũng trượt, click mù sẽ thành đấm liên tục.
+                Emit("thiếu mẫu/vùng CẤT VÀO — bỏ qua, không click mù (vào Cấu hình khoanh lại)");
+            }
+            else if (_cfg.BlindKeepClick != true)
+            {
+                Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — bỏ qua (BlindKeepClick tắt)");
+            }
+            else
+            {
+                // Không dò được: về cách cũ, click ô đã khoanh. Đúng với con cá tên ngắn.
+                var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
+                Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — click ô đã khoanh");
+                ClickKeep(new Point(abs.Left + abs.Width / 2, abs.Top + abs.Height / 2), ct);
+            }
         }
         else
         {
@@ -257,17 +314,23 @@ internal sealed class FishingBot
                  $"  dens={found.KeepDensity:F2}  ncc={found.KeepScore:F3}");
             ClickKeep(found.KeepClick, ct);
 
+            var anchor = found.KeepRect;
             for (int i = 0; i < _cfg.KeepClickRetries; i++)
             {
-                var still = WaitForKeepGone(reader, ct);
+                var still = WaitForKeepGone(reader, anchor, ct);
                 if (still is null) break;
                 Emit($"nút vẫn còn sau {_cfg.KeepGoneMs} ms — click lại (lần {i + 1}/{_cfg.KeepClickRetries})");
                 ClickKeep(still.KeepClick, ct);
+                anchor = still.KeepRect;
             }
         }
 
         try { SnapshotReady?.Invoke(reader.Read()); } catch { }
         MaybeDump(ct);
+
+        // Mặc định 0 — xem chú thích AfterKeepCastMs. Chờ ở đây là cách phòng hờ cho việc
+        // animation cất cá nuốt mất phím 4; cách bắt sau khi đã trượt nằm ở vòng lặp chính.
+        Sleep(ct, _cfg.AfterKeepCastMs);
         Cast(ct, "thả câu", waitRelease: false);
     }
 
@@ -363,9 +426,12 @@ internal sealed class FishingBot
     /// <summary>
     /// Chờ dò được nút, tối đa <see cref="FishingConfig.WaitKeepMs"/>. Null = không thấy.
     /// Panel hiện chậm hay nhanh tùy con cá nên không thể click theo một mốc thời gian cố định.
+    /// <paramref name="configured"/> false = thiếu mẫu/vùng, khác hẳn với "chờ mãi không thấy":
+    /// bên gọi phải cấm click mù, vì lượt nào cũng sẽ trượt.
     /// </summary>
-    private FishingSnapshot WaitForKeep(FishingReader reader, CancellationToken ct)
+    private FishingSnapshot WaitForKeep(FishingReader reader, out bool configured, CancellationToken ct)
     {
+        configured = true;
         var sw = Stopwatch.StartNew();
         while (true)
         {
@@ -376,7 +442,11 @@ internal sealed class FishingBot
             SnapshotReady?.Invoke(snap);
 
             if (snap.KeepVisible) return snap;
-            if (!snap.KeepConfigured) return null;      // thiếu mẫu/vùng — poll thêm cũng vô ích
+            if (!snap.KeepConfigured)                   // thiếu mẫu/vùng — poll thêm cũng vô ích
+            {
+                configured = false;
+                return null;
+            }
             if (sw.ElapsedMilliseconds >= _cfg.WaitKeepMs) return null;
 
             Sleep(ct, _cfg.PollMs);
@@ -386,10 +456,15 @@ internal sealed class FishingBot
     /// <summary>
     /// Chờ nút tắt sau khi click, tối đa <see cref="FishingConfig.KeepGoneMs"/>.
     /// Null = đã tắt; khác null = vẫn còn, kèm toạ độ mới để click lại.
+    ///
+    /// <paramref name="anchor"/> là ô nút của cú click vừa rồi. Khối dò được mà nhảy ra xa
+    /// quá <see cref="FishingConfig.KeepAnchorTolPx"/> thì đó không còn là cái nút cũ nữa —
+    /// panel đã tắt và bộ dò màu đang bắt nhầm thứ khác trong dải quét. Click theo nó là
+    /// click thẳng vào thế giới game, tức là đấm người đứng cạnh.
     /// </summary>
-    private FishingSnapshot WaitForKeepGone(FishingReader reader, CancellationToken ct)
+    private FishingSnapshot WaitForKeepGone(FishingReader reader, Rectangle anchor, CancellationToken ct)
     {
-        if (_cfg.KeepGoneMs <= 0) return null;
+        if (_cfg.KeepGoneMs <= 0 || _cfg.KeepAnchorTolPx <= 0) return null;
 
         var sw = Stopwatch.StartNew();
         while (true)
@@ -400,17 +475,39 @@ internal sealed class FishingBot
             SnapshotReady?.Invoke(snap);
 
             if (!snap.KeepVisible) return null;
+            if (!NearAnchor(snap.KeepRect, anchor))
+            {
+                Emit($"nút “còn” nhưng lệch chỗ @ {snap.KeepRect.X},{snap.KeepRect.Y}" +
+                     $" (nút cũ @ {anchor.X},{anchor.Y}) — coi như đã tắt, bỏ click lại");
+                return null;
+            }
             if (sw.ElapsedMilliseconds >= _cfg.KeepGoneMs) return snap;
 
             Sleep(ct, _cfg.PollMs);
         }
     }
 
+    /// <summary>Tâm hai ô cách nhau trong <see cref="FishingConfig.KeepAnchorTolPx"/> pixel.</summary>
+    private bool NearAnchor(Rectangle hit, Rectangle anchor)
+    {
+        if (hit.IsEmpty || anchor.IsEmpty) return false;
+        int tol = _cfg.KeepAnchorTolPx;
+        int dx = (hit.Left + hit.Width / 2) - (anchor.Left + anchor.Width / 2);
+        int dy = (hit.Top + hit.Height / 2) - (anchor.Top + anchor.Height / 2);
+        return Math.Abs(dx) <= tol && Math.Abs(dy) <= tol;
+    }
+
+    /// <summary>
+    /// Rê chuột bằng MoveCursorOnly chứ không MoveSmooth: MoveSmooth bắn kèm
+    /// MOUSEEVENTF_MOVE mà GTA đọc thành lệnh xoay camera (xem InputSender.MoveCursorOnly),
+    /// nên mỗi lần cất cá là góc nhìn bị kéo lệch một nhát. TrunkOpener và DragSmooth đã
+    /// chuyển từ trước, chỗ này sót lại.
+    /// </summary>
     private void ClickKeep(Point p, CancellationToken ct)
     {
         WaitWindow(ct);
         Emit($"click CẤT VÀO @ {p.X},{p.Y}");
-        InputSender.MoveSmooth(p.X, p.Y, _cfg.KeepMoveSteps);
+        InputSender.MoveCursorOnlySmooth(p.X, p.Y, _cfg.KeepMoveSteps);
         Sleep(ct, _cfg.KeepHoverMs);
         InputSender.LeftDown();
         Sleep(ct, 60);

@@ -911,10 +911,16 @@ internal sealed class FishingPanel : UserControl
         }
         else
         {
-            _keep.Text = s.KeepVisible
-                ? $"cất vào : CÓ @ {s.KeepClick.X},{s.KeepClick.Y}  {s.KeepRect.Width}×{s.KeepRect.Height}" +
-                  $"  dens={s.KeepDensity:F2}  ncc={s.KeepScore:F3}"
-                : "cất vào : không";
+            if (s.KeepVisible)
+                _keep.Text = $"cất vào : CÓ @ {s.KeepClick.X},{s.KeepClick.Y}  {s.KeepRect.Width}×{s.KeepRect.Height}" +
+                             $"  dens={s.KeepDensity:F2}  ncc={s.KeepScore:F3}";
+            else if (s.KeepDensity >= 0)
+                // Có khối đúng màu nhưng NCC dưới ngưỡng — hiện số ra để còn chỉnh KeepNccMin,
+                // đừng để lẫn với "chẳng thấy gì".
+                _keep.Text = $"cất vào : loại vì ncc={s.KeepScore:F3} < {_cfg.KeepNccMin:F2}" +
+                             $"  (dens={s.KeepDensity:F2})";
+            else
+                _keep.Text = "cất vào : không";
             _keep.ForeColor = s.KeepVisible ? Color.DarkGreen : Color.DimGray;
         }
     }

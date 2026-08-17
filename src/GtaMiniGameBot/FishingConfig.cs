@@ -276,10 +276,60 @@ internal sealed class FishingConfig
     public int KeepColorTol { get; set; } = 20;
     /// <summary>Tỉ lệ pixel đúng màu tối thiểu trong ô nút vừa dò được.</summary>
     public double KeepDensityMin { get; set; } = 0.55;
+
+    /// <summary>
+    /// NCC tối thiểu với keep.png thì mới coi khối màu dò được là nút thật. Số âm = tắt.
+    ///
+    /// Đo trên log 17/08: nút THẬT chỉ đạt 0.402–0.420 (mẫu lệch scale so với panel thật),
+    /// nên đừng nâng lên 0.7 như <see cref="FishNccMin"/> — sẽ chặn sạch nút thật rồi đẩy
+    /// mọi lượt vào nhánh click mù. Đây chỉ là lớp chặn phụ; cửa chính là
+    /// <see cref="KeepAnchorTolPx"/>.
+    /// </summary>
+    public double KeepNccMin { get; set; } = 0.30;
+
     /// <summary>Click lại tối đa mấy lần nếu nút vẫn còn sau <see cref="KeepGoneMs"/>.</summary>
     public int KeepClickRetries { get; set; } = 2;
 
+    /// <summary>
+    /// Click lại chỉ được phép khi khối dò được còn nằm quanh chỗ nút vừa click, lệch tâm
+    /// tối đa ngần này pixel. 0 = không bao giờ click lại.
+    ///
+    /// Vì sao cần: dò nút thuần theo màu trên cả dải cao 608px, nên khi panel đã tắt nó
+    /// hay bắt nhầm mảng tối khác rồi click thẳng vào thế giới game — trong GTA đó là cú
+    /// đấm vào người đứng cạnh. Log 17/08 có hai lần như vậy, lệch 100px và 174px.
+    /// Nút cao 77px và panel thật đứng yên trong lúc chờ, nên 40 là rộng rãi.
+    /// </summary>
+    public int KeepAnchorTolPx { get; set; } = 40;
+
     public int WaitBiteMs { get; set; } = 25_000;
+
+    /// <summary>
+    /// Thả câu xong, chờ ngần này mà thanh câu vẫn chưa hiện thì coi như cú thả TRƯỢT
+    /// (animation cất cá nuốt mất phím 4, rồi Space thành lệnh nhảy) và thả lại luôn,
+    /// khỏi đứng chờ hết <see cref="WaitBiteMs"/>. 0 = tắt, chờ mù như cũ.
+    ///
+    /// Đo log 17/08: cú thả ngay sau khi cất cá hụt 26% (34/132), trong khi câu lại lúc
+    /// nhân vật đứng rảnh chỉ hụt 6% (13/209). Mỗi lần hụt tốn trọn 25 s.
+    /// </summary>
+    public int CastConfirmMs { get; set; } = 4_000;
+
+    /// <summary>
+    /// Thả lại tối đa mấy lần trước khi chịu thua và chờ theo <see cref="WaitBiteMs"/>.
+    /// Trần này là dây an toàn: nếu thanh câu vì lý do nào đó không dò được lúc chờ, bot
+    /// chỉ thừa vài cú thả rồi chạy y như cũ, chứ không kẹt vòng lặp thả câu vô hạn.
+    /// </summary>
+    public int CastConfirmRetries { get; set; } = 2;
+
+    /// <summary>
+    /// Chờ sau khi click CẤT VÀO rồi mới bấm 4 + space, để animation cất cá chạy xong.
+    ///
+    /// Mặc định 0. Khi đã có <see cref="CastConfirmMs"/> thì cú trượt chỉ còn tốn ~4 s,
+    /// nên bắt CẢ 132 vòng chờ phòng hờ 1.2 s (158 s) hoá ra đắt hơn là để 34 cú trượt
+    /// tự lộ rồi thả lại (136 s). Chỉ nâng lên 1200–2500 nếu log vẫn cho thấy nhóm
+    /// "sau cất cá" trượt nhiều hơn hẳn nhóm còn lại.
+    /// </summary>
+    public int AfterKeepCastMs { get; set; } = 0;
+
     public int FightTimeoutMs { get; set; } = 40_000;
     public int AfterReleaseMs { get; set; } = 1_200;
     public int CastCooldownMs { get; set; } = 1_500;
@@ -291,6 +341,20 @@ internal sealed class FishingConfig
     public int BiteDebounceFrames { get; set; } = 3;
     public double DoneFill01 { get; set; } = 0.95;
     public int WaitKeepMs { get; set; } = 8_000;
+
+    /// <summary>
+    /// Hết <see cref="WaitKeepMs"/> mà không dò ra nút thì có click mù vào tâm ô đã khoanh
+    /// không. Bật để không mất con cá tên ngắn (panel hiện quá nhanh, dò không kịp);
+    /// tắt nếu vẫn còn bị đấm người sau khi câu.
+    ///
+    /// Riêng trường hợp thiếu mẫu/vùng thì KHÔNG BAO GIỜ click mù, bất kể cờ này —
+    /// lúc đó mọi lượt câu đều trượt, thành đấm liên tục.
+    ///
+    /// Nullable vì json cũ thiếu field sẽ ra false, mà mặc định phải là true —
+    /// <see cref="Normalize"/> phân biệt "thiếu" với "người dùng tắt hẳn".
+    /// </summary>
+    public bool? BlindKeepClick { get; set; }
+
     public int KeepAppearMs { get; set; } = 400;
     public int KeepGoneMs { get; set; } = 1_500;
     public int KeepHoverMs { get; set; } = 320;
@@ -413,8 +477,13 @@ internal sealed class FishingConfig
         if (RejectNccMin <= 0) RejectNccMin = 0.75;
         if (KeepColorTol <= 0) KeepColorTol = 20;
         if (KeepDensityMin <= 0 || KeepDensityMin > 1) KeepDensityMin = 0.55;
+        if (KeepNccMin == 0 || KeepNccMin > 1) KeepNccMin = 0.30;   // <0 = cố ý tắt, giữ nguyên
         if (KeepClickRetries < 0) KeepClickRetries = 2;
+        if (KeepAnchorTolPx < 0) KeepAnchorTolPx = 40;
         if (WaitBiteMs <= 0) WaitBiteMs = 25_000;
+        if (CastConfirmMs < 0) CastConfirmMs = 4_000;        // 0 = cố ý tắt, giữ nguyên
+        if (CastConfirmRetries < 0) CastConfirmRetries = 2;
+        if (AfterKeepCastMs < 0) AfterKeepCastMs = 0;
         if (FightTimeoutMs <= 0) FightTimeoutMs = 40_000;
         if (AfterReleaseMs <= 0) AfterReleaseMs = 1_200;
         if (CastCooldownMs <= 0) CastCooldownMs = 1_500;
@@ -424,6 +493,7 @@ internal sealed class FishingConfig
         if (BiteDebounceFrames <= 0) BiteDebounceFrames = 3;
         if (DoneFill01 <= 0 || DoneFill01 > 1) DoneFill01 = 0.95;
         if (WaitKeepMs <= 0) WaitKeepMs = 8_000;
+        BlindKeepClick ??= true;
         if (KeepAppearMs <= 0) KeepAppearMs = 400;
         if (KeepGoneMs < 0) KeepGoneMs = 1_500;
         if (KeepHoverMs <= 0) KeepHoverMs = 320;
