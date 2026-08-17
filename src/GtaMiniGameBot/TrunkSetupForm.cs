@@ -635,7 +635,12 @@ internal sealed class TrunkSetupForm : Form
             Thread.Sleep(400);
             Log("--- đổ cốp ---");
             var r = dumper.Dump(ct);
-            Log(r == DumpResult.Ok ? "XONG — đã kéo cá sang cốp" : "không thấy ô cá nào để kéo");
+            Log(r switch
+            {
+                DumpResult.Ok => "XONG — đã kéo cá sang cốp",
+                DumpResult.TrunkFull => "cốp không nhận thêm — xem dòng ngay trên để biết vì sao",
+                _ => "không thấy ô cá nào để kéo"
+            });
         }
         catch (OperationCanceledException) { Log("đã huỷ"); }
         catch (TrunkStepException ex) { Log("DỪNG: " + ex.Message); }
