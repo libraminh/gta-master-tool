@@ -2,7 +2,7 @@ namespace GtaMiniGameBot;
 
 internal sealed class UtilsPanel : UserControl
 {
-    private enum Hk { Job, Utils, AutoRun, HoldCtrl }
+    private enum Hk { Job, Utils, AutoRun, HoldCtrl, Sprint }
 
     private readonly UtilityService _svc = new();
     private HotkeyConfig _keys = HotkeyConfig.Load();
@@ -11,6 +11,7 @@ internal sealed class UtilsPanel : UserControl
     private readonly Label _status = new();
     private readonly Button _btnToggle = new();
     private readonly Label _autoRun = new();
+    private readonly Label _sprint = new();
     private readonly Label _ctrlHold = new();
     private readonly Label _focus = new();
     private readonly Button _btnTestOverlay = new();
@@ -34,7 +35,7 @@ internal sealed class UtilsPanel : UserControl
         AutoScroll = true;
 
         BuildUi();
-        _svc.SetKeys(_keys.AutoRunVk, _keys.HoldCtrlVk);
+        _svc.SetKeys(_keys.AutoRunVk, _keys.HoldCtrlVk, _keys.SprintVk);
         _svc.Changed += OnChanged;
         RefreshHotkeyUi();
     }
@@ -67,7 +68,7 @@ internal sealed class UtilsPanel : UserControl
         Controls.Add(_btnToggle);
         y += 44;
 
-        var box = new GroupBox { Text = "Trạng thái", Location = new Point(12, y), Size = new Size(w, 100) };
+        var box = new GroupBox { Text = "Trạng thái", Location = new Point(12, y), Size = new Size(w, 122) };
         Controls.Add(box);
 
         _focus.SetBounds(16, 24, 760, 20);
@@ -78,19 +79,23 @@ internal sealed class UtilsPanel : UserControl
         _autoRun.Font = new Font("Consolas", 10F);
         box.Controls.Add(_autoRun);
 
-        _ctrlHold.SetBounds(16, 68, 760, 20);
+        _sprint.SetBounds(16, 68, 760, 20);
+        _sprint.Font = new Font("Consolas", 10F);
+        box.Controls.Add(_sprint);
+
+        _ctrlHold.SetBounds(16, 90, 760, 20);
         _ctrlHold.Font = new Font("Consolas", 10F);
         box.Controls.Add(_ctrlHold);
-        y += 116;
+        y += 138;
 
-        var help = new GroupBox { Text = "Cách dùng", Location = new Point(12, y), Size = new Size(w, 168) };
+        var help = new GroupBox { Text = "Cách dùng", Location = new Point(12, y), Size = new Size(w, 188) };
         Controls.Add(help);
 
         _note.AutoSize = false;
         _note.Font = new Font("Segoe UI", 9.5F);
-        _note.SetBounds(16, 24, 760, 130);
+        _note.SetBounds(16, 24, 760, 150);
         help.Controls.Add(_note);
-        y += 176;
+        y += 196;
 
         _btnTestOverlay.SetBounds(12, y, 220, 30);
         _btnTestOverlay.Text = "Test overlay 5 giây";
@@ -111,21 +116,22 @@ internal sealed class UtilsPanel : UserControl
 
     private void BuildHotkeyBox(int y, int w)
     {
-        var box = new GroupBox { Text = "Phím tắt", Location = new Point(12, y), Size = new Size(w, 216) };
+        var box = new GroupBox { Text = "Phím tắt", Location = new Point(12, y), Size = new Size(w, 254) };
         Controls.Add(box);
 
         AddHotkeyRow(box, 26, Hk.Job, "Bật/tắt job (Dầu khí, Câu cá, Thợ mỏ)");
         AddHotkeyRow(box, 64, Hk.Utils, "Bật/tắt tiện ích");
         AddHotkeyRow(box, 102, Hk.AutoRun, "Tự chạy — giữ W");
-        AddHotkeyRow(box, 140, Hk.HoldCtrl, "Giữ lâu để thêm Left Ctrl");
+        AddHotkeyRow(box, 140, Hk.Sprint, "Chạy nước rút — giữ W + Left Shift");
+        AddHotkeyRow(box, 178, Hk.HoldCtrl, "Giữ lâu để thêm Left Ctrl");
 
         box.Controls.Add(new Label
         {
-            Text = "Hai phím dưới đi qua hook và bị chặn không cho tới game khi tiện ích đang bật — "
+            Text = "Ba phím dưới đi qua hook và bị chặn không cho tới game khi tiện ích đang bật — "
                  + "đừng chọn phím vẫn cần dùng lúc chơi. Hai phím trên nhận được tổ hợp Ctrl/Shift/Alt.",
             ForeColor = Color.DimGray,
             AutoSize = false,
-            Bounds = new Rectangle(16, 172, 760, 36)
+            Bounds = new Rectangle(16, 210, 760, 36)
         });
     }
 
@@ -200,11 +206,12 @@ internal sealed class UtilsPanel : UserControl
             case Hk.Job: _keys.JobToggleVk = vk; _keys.JobToggleMods = mods; break;
             case Hk.Utils: _keys.UtilsToggleVk = vk; _keys.UtilsToggleMods = mods; break;
             case Hk.AutoRun: _keys.AutoRunVk = vk; break;
+            case Hk.Sprint: _keys.SprintVk = vk; break;
             case Hk.HoldCtrl: _keys.HoldCtrlVk = vk; break;
         }
 
         _keys.Save();
-        _svc.SetKeys(_keys.AutoRunVk, _keys.HoldCtrlVk);
+        _svc.SetKeys(_keys.AutoRunVk, _keys.HoldCtrlVk, _keys.SprintVk);
         RefreshHotkeyUi();
     }
 
@@ -213,6 +220,7 @@ internal sealed class UtilsPanel : UserControl
         Hk.Job => (_keys.JobToggleVk, _keys.JobToggleMods),
         Hk.Utils => (_keys.UtilsToggleVk, _keys.UtilsToggleMods),
         Hk.AutoRun => (_keys.AutoRunVk, 0u),
+        Hk.Sprint => (_keys.SprintVk, 0u),
         _ => (_keys.HoldCtrlVk, 0u)
     };
 
@@ -221,6 +229,7 @@ internal sealed class UtilsPanel : UserControl
         Hk.Job => (HotkeyConfig.DefaultJobVk, 0u),
         Hk.Utils => (HotkeyConfig.DefaultUtilsVk, 0u),
         Hk.AutoRun => (HotkeyConfig.DefaultAutoRunVk, 0u),
+        Hk.Sprint => (HotkeyConfig.DefaultSprintVk, 0u),
         _ => (HotkeyConfig.DefaultHoldCtrlVk, 0u)
     };
 
@@ -231,6 +240,7 @@ internal sealed class UtilsPanel : UserControl
         Hk.Job => "bật/tắt job",
         Hk.Utils => "bật/tắt tiện ích",
         Hk.AutoRun => "tự chạy",
+        Hk.Sprint => "chạy nước rút",
         _ => "giữ để thêm Ctrl"
     };
 
@@ -263,10 +273,11 @@ internal sealed class UtilsPanel : UserControl
         _note.Text =
             $"{KeyText(Hk.Utils)} — bật/tắt cả hai tính năng (toggle, dùng được từ mọi tab).\r\n" +
             $"{KeyText(Hk.AutoRun)} — bật/tắt tự chạy (giữ W). Chỉ khi tiện ích đang bật và game đang focus.\r\n" +
+            $"{KeyText(Hk.Sprint)} — bật/tắt chạy nước rút (giữ W + Left Shift). Bật cái này thì tự chạy tắt, và ngược lại.\r\n" +
             $"Giữ {KeyText(Hk.HoldCtrl)} hơn 200 ms — vừa phím đó vừa Left Ctrl. Nhấn thả nhanh thì chỉ phím đó.\r\n" +
             "\r\n" +
             $"{KeyText(Hk.Job)} không dùng ở tab này ({KeyText(Hk.Job)} vẫn bật/tắt job Dầu khí / Câu cá / Thợ mỏ).\r\n" +
-            "Mất focus game thì tạm nhả W/Ctrl; auto-run vẫn nhớ, quay lại game sẽ giữ W tiếp.";
+            "Mất focus game thì tạm nhả W/Shift/Ctrl; tự chạy và nước rút vẫn nhớ, quay lại game sẽ giữ tiếp.";
 
         RefreshUi();
     }
@@ -276,6 +287,7 @@ internal sealed class UtilsPanel : UserControl
         bool on = _svc.Enabled;
         string utilsKey = KeyText(Hk.Utils);
         string autoKey = KeyText(Hk.AutoRun).PadRight(9);
+        string sprintKey = KeyText(Hk.Sprint).PadRight(9);
         string holdKey = ("giữ " + KeyText(Hk.HoldCtrl)).PadRight(9);
 
         _status.Text = on ? $"{utilsKey} đang BẬT" : $"{utilsKey} đang TẮT";
@@ -291,6 +303,8 @@ internal sealed class UtilsPanel : UserControl
         {
             _autoRun.Text = $"{autoKey}: --  (bật {utilsKey} trước)";
             _autoRun.ForeColor = Color.DimGray;
+            _sprint.Text = $"{sprintKey}: --  (bật {utilsKey} trước)";
+            _sprint.ForeColor = Color.DimGray;
             _ctrlHold.Text = $"{holdKey}: --  (bật {utilsKey} trước)";
             _ctrlHold.ForeColor = Color.DimGray;
             return;
@@ -300,6 +314,11 @@ internal sealed class UtilsPanel : UserControl
             ? $"{autoKey}: đang tự chạy (giữ W)"
             : $"{autoKey}: tắt — nhấn {KeyText(Hk.AutoRun)} để chạy";
         _autoRun.ForeColor = _svc.AutoRun ? Color.DarkGreen : Color.DimGray;
+
+        _sprint.Text = _svc.Sprint
+            ? $"{sprintKey}: đang nước rút (giữ W + Left Shift)"
+            : $"{sprintKey}: tắt — nhấn {KeyText(Hk.Sprint)} để nước rút";
+        _sprint.ForeColor = _svc.Sprint ? Color.DarkGreen : Color.DimGray;
 
         _ctrlHold.Text = _svc.CtrlHeld
             ? $"{holdKey}: đang thêm Left Ctrl"
