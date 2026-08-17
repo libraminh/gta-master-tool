@@ -378,6 +378,28 @@ internal sealed class FishingConfig
     /// một cụm 13 con nặng 22.7 kg thì cốp còn 9.9 kg là chắc chắn không lọt.
     /// </summary>
     public int DumpEveryCatches { get; set; }
+    /// <summary>
+    /// Cốp còn trống ít hơn ngần này thì cân sau MỖI con và đổ luôn, thay vì mỗi
+    /// <see cref="WeightCheckEveryCatches"/> con. 0 = tắt.
+    ///
+    /// Vì sao: chỗ phí trong cốp bằng đúng cân nặng CỤM cá không lọt được. Nhìn lại sau 5 con
+    /// thì cụm đã 8.75 kg, nên cốp còn 5 kg trống là bỏ trắng 5 kg. Đổ từng con thì cụm chỉ
+    /// 1.75 kg, và cốp chỉ phí đúng một con — gần bằng đi tách cá, mà không phải tách.
+    /// Đắt hơn một chút: mỗi con tốn trọn một lượt mở-đóng cốp, nhưng chỉ vài con cuối phiên.
+    /// </summary>
+    public double TrunkTightKg { get; set; } = 10.0;
+    /// <summary>
+    /// Cốp đã đầy thì bot câu tiếp cho đầy ba lô; ba lô tới ngần này kg là dừng phiên.
+    /// Sát trần <see cref="BagCapKg"/> chứ không chừa lề như lúc đổ cốp: chặng này không còn
+    /// chỗ nào để đổ nữa nên mỗi kg bỏ trống là một kg mất trắng.
+    /// </summary>
+    public double BagFullStopKg { get; set; } = 29.0;
+    /// <summary>
+    /// Phải hỏng bấy nhiêu LƯỢT đổ liên tiếp mới kết luận cốp đầy hẳn.
+    /// Hai lượt cách nhau ít nhất một con cá nên lượt sau đo lại KG cốp thật sự — bắt được
+    /// cả trường hợp người chơi tự dọn bớt cốp giữa chừng, lẫn cú kéo hỏng vì lý do vặt.
+    /// </summary>
+    public int TrunkFullTries { get; set; } = 2;
     /// <summary>Đổ xong KG phải giảm ít nhất bấy nhiêu, không thì coi như kéo trượt.</summary>
     public double MinDropKg { get; set; } = 0.5;
     /// <summary>Hỏng liên tiếp bấy nhiêu lần thì bỏ hẳn OCR cho phần còn lại của phiên.</summary>
@@ -506,6 +528,12 @@ internal sealed class FishingConfig
         if (DumpMarginKg <= 0) DumpMarginKg = 3.0;
         if (CatchesPerDumpFallback <= 0) CatchesPerDumpFallback = 20;
         if (DumpEveryCatches < 0) DumpEveryCatches = 0;
+        if (TrunkTightKg < 0) TrunkTightKg = 10.0;
+        if (BagFullStopKg <= 0) BagFullStopKg = 29.0;
+        // Khong bao gio duoc vuot tran ba lo: dat 35 tren cai ba lo 30 kg thi bot cau mai
+        // khong bao gio den nguong dung.
+        if (BagFullStopKg > BagCapKg) BagFullStopKg = BagCapKg;
+        if (TrunkFullTries <= 0) TrunkFullTries = 2;
         if (MinDropKg <= 0) MinDropKg = 0.5;
         if (WeightOcrFailMax <= 0) WeightOcrFailMax = 3;
         if (MaxWeightJumpKg <= 0) MaxWeightJumpKg = 5.0;

@@ -7,7 +7,19 @@ internal enum FishingStopReason
     UserStopped,
     MissingRegions,
     TrunkDump,
-    Error
+    Error,
+    /// <summary>Cốp đầy và ba lô cũng đầy — hết chỗ chứa, phiên đã chạy hết mức. Không phải lỗi.</summary>
+    BagFull
+}
+
+/// <summary>
+/// Hết chỗ chứa: cốp đầy, ba lô cũng đầy. Ném ra để cắt vòng câu từ chỗ sâu trong
+/// <see cref="FishingBot.MaybeDump"/>, y như <see cref="TrunkStepException"/> — khác ở chỗ đây
+/// là kết thúc BÌNH THƯỜNG của một phiên, nên UI báo xanh chứ không báo đỏ.
+/// </summary>
+internal sealed class BagFullException : Exception
+{
+    public BagFullException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -31,6 +43,11 @@ internal sealed class FishingBot
     private TrunkDumper _dumper;
     private int _catches;
     private int _catchesSinceDump;
+
+    /// <summary>KG ba lô lần cân trước, chỉ dùng ở chặng cuối phiên. -1 = chưa cân lần nào.</summary>
+    private double _endgameLastKg = -1;
+    /// <summary>Mấy con liên tiếp mà KG ba lô không nhúc nhích.</summary>
+    private int _endgameFlat;
 
     public FishingBot(FishingConfig cfg, Screen screen, FishingProfile profile)
     {
@@ -73,6 +90,7 @@ internal sealed class FishingBot
         FishingStopReason.UserStopped => "người dùng bấm dừng",
         FishingStopReason.MissingRegions => "chưa khoanh thanh / cá",
         FishingStopReason.TrunkDump => "đổ cốp thất bại",
+        FishingStopReason.BagFull => "cốp đầy, ba lô đầy — đi bán cá",
         _ => "lỗi"
     };
 
@@ -255,6 +273,12 @@ internal sealed class FishingBot
             message = ex.Message;
             Emit(message);
         }
+        catch (BagFullException ex)
+        {
+            reason = FishingStopReason.BagFull;
+            message = ex.Message;
+            Emit("--- xong phiên: " + ex.Message + " ---");
+        }
         catch (TrunkStepException ex)
         {
             reason = FishingStopReason.TrunkDump;
@@ -354,6 +378,13 @@ internal sealed class FishingBot
 
         if (_cfg.DumpEveryCatches > 0)
             Emit($"đổ cốp: trần cứng mỗi {_cfg.DumpEveryCatches} con, dù ba lô còn nhẹ");
+
+        Emit(_cfg.TrunkTightKg > 0
+            ? $"cốp còn trống ≤ {_cfg.TrunkTightKg:F0} kg thì đổ sau MỖI con, để cụm cá đủ nhỏ " +
+              "mà lọt nốt chỗ trống cuối"
+            : "dồn đổ khi cốp sắp đầy: TẮT (TrunkTightKg = 0)");
+        Emit($"cốp đầy hẳn thì thôi mở cốp, câu tiếp tới khi ba lô ≥ {_cfg.BagFullStopKg:F1} kg " +
+             "rồi dừng phiên");
     }
 
     /// <summary>
@@ -368,11 +399,22 @@ internal sealed class FishingBot
         _catches++;
         _catchesSinceDump++;
 
+        // Cop day roi thi khong con gi de do: chi con viec chat day ba lo roi dung.
+        if (_dumper.TrunkFull) { WatchBagUntilFull(ct); return; }
+
         // Tran cung theo so con: cat nho moi luot keo. Thu lam hong khong phai cop day ma la
         // MOT CUM qua nang — cum 13 con nang 22.7 kg thi cop con 9.9 kg la chac chan khong lot.
         bool byCount = _cfg.DumpEveryCatches > 0 && _catchesSinceDump >= _cfg.DumpEveryCatches;
 
-        int every = Math.Max(1, _cfg.WeightCheckEveryCatches);
+        // Cop sap day thi nhin lai sau MOI con. Cho phi trong cop bang dung can nang cum ca
+        // khong lot duoc, ma cum to bao nhieu la do khoang cach giua hai lan nhin: nhin sau 5
+        // con thi cum 8.75 kg va cop con 5 kg la bo trang 5 kg, nhin sau moi con thi cum chi
+        // 1.75 kg va cop chi phi dung mot con.
+        bool tight = _cfg.TrunkTightKg > 0
+                     && _dumper.TrunkFreeKg >= 0
+                     && _dumper.TrunkFreeKg <= _cfg.TrunkTightKg;
+
+        int every = tight ? 1 : Math.Max(1, _cfg.WeightCheckEveryCatches);
         if (!byCount && _catches % every != 0) return;
 
         if (_dumper.OcrHealthy)
@@ -388,13 +430,17 @@ internal sealed class FishingBot
                 // Do TRUOC khi cho ca vuot qua cho trong cua cop: qua roi thi cum ca khong con
                 // lot vao dau duoc nua va chuyen di ban ca la bat buoc.
                 bool wontFit = fishKg >= 0 && free >= 0 && fishKg >= free - _cfg.DumpMarginKg;
+                // Che do don: co ca la do, khong doi ba lo nang. Chinh viec do som moi giu duoc
+                // cum nho. fishKg < 0 (chua biet) thi cu de duong cu quyet dinh.
+                bool tightNow = tight && fishKg > 0;
 
                 Emit($"ba lô {w.Value:F1}/{w.Cap:F0} kg" +
                      (fishKg >= 0 ? $", chỗ cá ≈ {fishKg:F1} kg" : "") +
                      (free >= 0 ? $", cốp còn {free:F1} kg" : "") +
-                     $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") + ")");
+                     $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") +
+                     (tightNow ? ", cốp sắp đầy nên đổ từng con" : "") + ")");
 
-                if (!bagFull && !wontFit && !byCount) return;
+                if (!bagFull && !wontFit && !byCount && !tightNow) return;
             }
             else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
             {
@@ -408,19 +454,72 @@ internal sealed class FishingBot
 
         Emit("--- đổ cá vào cốp ---");
         var r = _dumper.Dump(ct);
+        _catchesSinceDump = 0;
+
         if (r == DumpResult.Ok)
         {
-            _catchesSinceDump = 0;
             Emit("--- đổ xong, câu tiếp ---");
+            return;
+        }
+
+        if (r == DumpResult.TrunkFull)
+        {
+            Emit(_dumper.TrunkFull
+                ? "--- cốp đầy, từ giờ chỉ chất vào ba lô ---"
+                : "--- lượt này cốp không nhận, câu tiếp rồi thử lại một lượt nữa ---");
             return;
         }
 
         // Khong thay o ca nao ma ba lo van bao gan day: khong the cau tiep, se cau vao cai
         // ba lo day ma log van trong binh thuong.
-        _catchesSinceDump = 0;
         throw new TrunkStepException(
             "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
             "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
+    }
+
+    /// <summary>
+    /// Chặng cuối phiên: cốp đã đầy nên không mở cốp nữa, chỉ canh ba lô đầy tới đâu rồi dừng.
+    ///
+    /// Cân sau MỖI con chứ không giãn ra như lúc còn đổ cốp: chặng này chỉ dài vài con, và
+    /// ngưỡng dừng nằm sát trần nên đo thưa là câu lố vào cái ba lô đã hết chỗ.
+    /// </summary>
+    private void WatchBagUntilFull(CancellationToken ct)
+    {
+        // Khong do duoc thi dung luon. Cau tiep luc nay la cau mu: khong con cop de do, cung
+        // khong biet ba lo con bao nhieu cho — ca cat khong vao ma log van trong binh thuong.
+        if (!_dumper.OcrHealthy)
+            throw new BagFullException(
+                "cốp đầy mà đọc KG ba lô cũng hỏng — dừng cho chắc, đi bán cá rồi bật lại");
+
+        // Mot lan doc hong khong dung phien: PeekBagWeight tu dem, hong lien tiep du nhieu thi
+        // OcrHealthy tat va cua tren dung ho. Dung ngay o lan hong dau la vut ca phien vi mot
+        // khung hinh xau.
+        var w = _dumper.PeekBagWeight(ct);
+        if (!w.Ok)
+        {
+            Emit("cốp đầy — lần cân này hỏng, câu tiếp rồi cân lại");
+            return;
+        }
+
+        if (w.Value >= _cfg.BagFullStopKg)
+            throw new BagFullException(
+                $"cốp đầy và ba lô đã {w.Value:F1}/{w.Cap:F0} kg — xong phiên, đi bán cá");
+
+        // Ba lo dung lai duoi nguong van la ba lo day: con ca ke tiep nang hon cho con lai thi
+        // game khong cho cat, KG dung yen va nguong dung khong bao gio toi. Khong bat cai nay
+        // thi bot cau den sang van thay "chua du 29 kg".
+        if (_endgameLastKg >= 0 && w.Value <= _endgameLastKg + 0.05)
+        {
+            _endgameFlat++;
+            if (_endgameFlat >= 2)
+                throw new BagFullException(
+                    $"câu thêm {_endgameFlat} con mà ba lô vẫn {w.Value:F1}/{w.Cap:F0} kg — " +
+                    "cá không cất vào được nữa, xong phiên, đi bán cá");
+        }
+        else _endgameFlat = 0;
+        _endgameLastKg = w.Value;
+
+        Emit($"cốp đầy — ba lô {w.Value:F1}/{w.Cap:F0} kg, câu tiếp tới {_cfg.BagFullStopKg:F1} kg");
     }
 
     /// <summary>

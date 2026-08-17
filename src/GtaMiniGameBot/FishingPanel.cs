@@ -599,7 +599,10 @@ internal sealed class FishingPanel : UserControl
         _bot.Stopped += (r, msg) => Post(() =>
         {
             _status.Text = "Đã dừng — " + FishingBot.TenLyDo(r);
-            _status.ForeColor = r == FishingStopReason.UserStopped ? Color.DarkGreen : Color.Firebrick;
+            // BagFull la phien chay het muc chu khong phai su co — dung to do cho no.
+            _status.ForeColor = r is FishingStopReason.UserStopped or FishingStopReason.BagFull
+                ? Color.DarkGreen
+                : Color.Firebrick;
             SetRunningUi(false);
             if (!string.IsNullOrEmpty(msg) && r != FishingStopReason.UserStopped)
                 Append(msg);
