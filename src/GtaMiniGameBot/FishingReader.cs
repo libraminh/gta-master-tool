@@ -21,7 +21,10 @@ internal sealed class FishingSnapshot
 
     public bool KeepVisible { get; init; }
 
-    /// <summary>NCC tại ô vừa dò được — chỉ để chẩn đoán, không phải cửa chặn.</summary>
+    /// <summary>
+    /// NCC tại khối màu vừa dò được. Phải ≥ <see cref="FishingConfig.KeepNccMin"/> thì
+    /// <see cref="KeepVisible"/> mới bật. Vẫn ghi lại cả khi bị loại, để chẩn đoán.
+    /// </summary>
     public double KeepScore { get; init; } = -1;
 
     /// <summary>Tỉ lệ pixel đúng màu nút, 0..1. -1 = chưa dò được.</summary>
@@ -181,9 +184,17 @@ internal sealed class FishingReader : IDisposable
             if (hit is not null)
             {
                 keepDensity = hit.Density;
-                keepRect = hit.Rect;
-                keepClick = hit.Click;
                 keepScore = ScoreAt(hit.Rect);
+
+                // Dò thuần theo màu nên mảng tối nào đúng cỡ trong dải quét cũng lọt.
+                // NCC âm = không chấm được (mẫu to hơn dải) — lúc đó đừng chặn, cứ để
+                // cửa neo vị trí ở FishingBot lo.
+                bool nccOk = _cfg.KeepNccMin < 0 || keepScore < 0 || keepScore >= _cfg.KeepNccMin;
+                if (nccOk)
+                {
+                    keepRect = hit.Rect;
+                    keepClick = hit.Click;
+                }
             }
         }
 

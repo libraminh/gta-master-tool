@@ -7,7 +7,19 @@ internal enum FishingStopReason
     UserStopped,
     MissingRegions,
     TrunkDump,
-    Error
+    Error,
+    /// <summary>Cốp đầy và ba lô cũng đầy — hết chỗ chứa, phiên đã chạy hết mức. Không phải lỗi.</summary>
+    BagFull
+}
+
+/// <summary>
+/// Hết chỗ chứa: cốp đầy, ba lô cũng đầy. Ném ra để cắt vòng câu từ chỗ sâu trong
+/// <see cref="FishingBot.MaybeDump"/>, y như <see cref="TrunkStepException"/> — khác ở chỗ đây
+/// là kết thúc BÌNH THƯỜNG của một phiên, nên UI báo xanh chứ không báo đỏ.
+/// </summary>
+internal sealed class BagFullException : Exception
+{
+    public BagFullException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -31,6 +43,11 @@ internal sealed class FishingBot
     private TrunkDumper _dumper;
     private int _catches;
     private int _catchesSinceDump;
+
+    /// <summary>KG ba lô lần cân trước, chỉ dùng ở chặng cuối phiên. -1 = chưa cân lần nào.</summary>
+    private double _endgameLastKg = -1;
+    /// <summary>Mấy con liên tiếp mà KG ba lô không nhúc nhích.</summary>
+    private int _endgameFlat;
 
     public FishingBot(FishingConfig cfg, Screen screen, FishingProfile profile)
     {
@@ -73,6 +90,7 @@ internal sealed class FishingBot
         FishingStopReason.UserStopped => "người dùng bấm dừng",
         FishingStopReason.MissingRegions => "chưa khoanh thanh / cá",
         FishingStopReason.TrunkDump => "đổ cốp thất bại",
+        FishingStopReason.BagFull => "cốp đầy, ba lô đầy — đi bán cá",
         _ => "lỗi"
     };
 
@@ -106,6 +124,10 @@ internal sealed class FishingBot
 
             Emit($"bắt đầu. chờ cắn {_cfg.WaitBiteMs} ms, giữ S tối đa {_cfg.FightTimeoutMs} ms, " +
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
+            Emit(_cfg.CastConfirmMs > 0
+                ? $"xác minh thả câu: thanh không hiện sau {_cfg.CastConfirmMs} ms thì thả lại " +
+                  $"(tối đa {_cfg.CastConfirmRetries} lần)"
+                : "xác minh thả câu: TẮT — thả trượt sẽ phải chờ hết thời gian chờ cắn");
             Emit($"{HotkeyText.Job()} = bật/tắt. Cửa sổ game phải đang focus (" + _cfg.WindowMatch + ").");
             Emit($"mỗi lần 4 sẽ bấm Space sau {_cfg.CastSpaceDelayMs} ms — tắt hotkey 4 trong AutoHotkey.");
 
@@ -116,6 +138,12 @@ internal sealed class FishingBot
             int biteFrames = 0;
             bool fighting = false;
             bool sawHud = false;
+
+            // Thanh câu hiện = dây đang dưới nước = cú thả câu đã ăn. Không thấy nó sau
+            // CastConfirmMs thì cú thả trượt, thả lại luôn thay vì chờ hết WaitBiteMs.
+            bool sawCastHud = false;
+            int castRetries = 0;
+
             var waitSw = Stopwatch.StartNew();
             var fightSw = new Stopwatch();
             var ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
@@ -130,6 +158,8 @@ internal sealed class FishingBot
 
                 if (!fighting)
                 {
+                    if (snap.UiOpen) sawCastHud = true;
+
                     if (snap.FishBite) biteFrames++;
                     else biteFrames = 0;
 
@@ -150,6 +180,30 @@ internal sealed class FishingBot
                         Sleep(ct, _cfg.RejectRecastMs);
                         Cast(ct, "câu lại", waitRelease: false);
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
+                        waitSw.Restart();
+                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        continue;
+                    }
+
+                    // Thanh câu chưa từng hiện => dây chưa xuống nước, cú thả vừa rồi trượt.
+                    // Bắt sớm ở đây để khỏi đứng chờ trọn WaitBiteMs cho một cú thả không tồn tại.
+                    // BarConfigured là bắt buộc: chưa khoanh thanh thì UiOpen luôn false và
+                    // lượt nào cũng bị kết luận trượt. Panel chặn Start khi thiếu, nhưng điều
+                    // kiện đó ở xa nên chốt lại ngay tại chỗ dùng.
+                    bool castMissed = !sawCastHud
+                                      && snap.BarConfigured
+                                      && _cfg.CastConfirmMs > 0
+                                      && castRetries < _cfg.CastConfirmRetries
+                                      && waitSw.ElapsedMilliseconds >= _cfg.CastConfirmMs;
+                    if (castMissed)
+                    {
+                        castRetries++;
+                        Emit($"thanh câu không hiện sau {_cfg.CastConfirmMs} ms — thả câu trượt, " +
+                             $"thả lại (lần {castRetries}/{_cfg.CastConfirmRetries})");
+                        Cast(ct, "thả lại (trượt)", waitRelease: false);
+                        biteFrames = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                         continue;
@@ -157,9 +211,14 @@ internal sealed class FishingBot
 
                     if (waitSw.ElapsedMilliseconds >= _cfg.WaitBiteMs)
                     {
-                        Emit($"hết {_cfg.WaitBiteMs} ms không cắn — câu lại");
+                        Emit($"hết {_cfg.WaitBiteMs} ms không cắn — câu lại" +
+                             $" (thanh={(sawCastHud ? "đã mở" : "chưa mở lần nào")}" +
+                             $" fill={snap.BlueFill01 * 100:0.0}% cá={snap.FishScore:F3}" +
+                             $" chê={snap.RejectScore:F3})");
                         Cast(ct, "câu lại (timeout)");
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                     }
@@ -179,6 +238,8 @@ internal sealed class FishingBot
                         fighting = false;
                         sawHud = false;
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                         continue;
@@ -191,6 +252,8 @@ internal sealed class FishingBot
                         fighting = false;
                         sawHud = false;
                         biteFrames = 0;
+                        sawCastHud = false;
+                        castRetries = 0;
                         waitSw.Restart();
                         ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
                     }
@@ -209,6 +272,12 @@ internal sealed class FishingBot
             reason = FishingStopReason.MissingRegions;
             message = ex.Message;
             Emit(message);
+        }
+        catch (BagFullException ex)
+        {
+            reason = FishingStopReason.BagFull;
+            message = ex.Message;
+            Emit("--- xong phiên: " + ex.Message + " ---");
         }
         catch (TrunkStepException ex)
         {
@@ -243,13 +312,25 @@ internal sealed class FishingBot
             return;
         }
 
-        var found = WaitForKeep(reader, ct);
+        var found = WaitForKeep(reader, out bool configured, ct);
         if (found is null)
         {
-            // Không dò được: về cách cũ, click ô đã khoanh. Đúng với con cá tên ngắn.
-            var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
-            Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — click ô đã khoanh");
-            ClickKeep(new Point(abs.Left + abs.Width / 2, abs.Top + abs.Height / 2), ct);
+            if (!configured)
+            {
+                // Thiếu mẫu/vùng thì lượt nào cũng trượt, click mù sẽ thành đấm liên tục.
+                Emit("thiếu mẫu/vùng CẤT VÀO — bỏ qua, không click mù (vào Cấu hình khoanh lại)");
+            }
+            else if (_cfg.BlindKeepClick != true)
+            {
+                Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — bỏ qua (BlindKeepClick tắt)");
+            }
+            else
+            {
+                // Không dò được: về cách cũ, click ô đã khoanh. Đúng với con cá tên ngắn.
+                var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
+                Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — click ô đã khoanh");
+                ClickKeep(new Point(abs.Left + abs.Width / 2, abs.Top + abs.Height / 2), ct);
+            }
         }
         else
         {
@@ -257,17 +338,23 @@ internal sealed class FishingBot
                  $"  dens={found.KeepDensity:F2}  ncc={found.KeepScore:F3}");
             ClickKeep(found.KeepClick, ct);
 
+            var anchor = found.KeepRect;
             for (int i = 0; i < _cfg.KeepClickRetries; i++)
             {
-                var still = WaitForKeepGone(reader, ct);
+                var still = WaitForKeepGone(reader, anchor, ct);
                 if (still is null) break;
                 Emit($"nút vẫn còn sau {_cfg.KeepGoneMs} ms — click lại (lần {i + 1}/{_cfg.KeepClickRetries})");
                 ClickKeep(still.KeepClick, ct);
+                anchor = still.KeepRect;
             }
         }
 
         try { SnapshotReady?.Invoke(reader.Read()); } catch { }
         MaybeDump(ct);
+
+        // Mặc định 0 — xem chú thích AfterKeepCastMs. Chờ ở đây là cách phòng hờ cho việc
+        // animation cất cá nuốt mất phím 4; cách bắt sau khi đã trượt nằm ở vòng lặp chính.
+        Sleep(ct, _cfg.AfterKeepCastMs);
         Cast(ct, "thả câu", waitRelease: false);
     }
 
@@ -291,6 +378,13 @@ internal sealed class FishingBot
 
         if (_cfg.DumpEveryCatches > 0)
             Emit($"đổ cốp: trần cứng mỗi {_cfg.DumpEveryCatches} con, dù ba lô còn nhẹ");
+
+        Emit(_cfg.TrunkTightKg > 0
+            ? $"cốp còn trống ≤ {_cfg.TrunkTightKg:F0} kg thì đổ sau MỖI con, để cụm cá đủ nhỏ " +
+              "mà lọt nốt chỗ trống cuối"
+            : "dồn đổ khi cốp sắp đầy: TẮT (TrunkTightKg = 0)");
+        Emit($"cốp đầy hẳn thì thôi mở cốp, câu tiếp tới khi ba lô ≥ {_cfg.BagFullStopKg:F1} kg " +
+             "rồi dừng phiên");
     }
 
     /// <summary>
@@ -305,11 +399,22 @@ internal sealed class FishingBot
         _catches++;
         _catchesSinceDump++;
 
+        // Cop day roi thi khong con gi de do: chi con viec chat day ba lo roi dung.
+        if (_dumper.TrunkFull) { WatchBagUntilFull(ct); return; }
+
         // Tran cung theo so con: cat nho moi luot keo. Thu lam hong khong phai cop day ma la
         // MOT CUM qua nang — cum 13 con nang 22.7 kg thi cop con 9.9 kg la chac chan khong lot.
         bool byCount = _cfg.DumpEveryCatches > 0 && _catchesSinceDump >= _cfg.DumpEveryCatches;
 
-        int every = Math.Max(1, _cfg.WeightCheckEveryCatches);
+        // Cop sap day thi nhin lai sau MOI con. Cho phi trong cop bang dung can nang cum ca
+        // khong lot duoc, ma cum to bao nhieu la do khoang cach giua hai lan nhin: nhin sau 5
+        // con thi cum 8.75 kg va cop con 5 kg la bo trang 5 kg, nhin sau moi con thi cum chi
+        // 1.75 kg va cop chi phi dung mot con.
+        bool tight = _cfg.TrunkTightKg > 0
+                     && _dumper.TrunkFreeKg >= 0
+                     && _dumper.TrunkFreeKg <= _cfg.TrunkTightKg;
+
+        int every = tight ? 1 : Math.Max(1, _cfg.WeightCheckEveryCatches);
         if (!byCount && _catches % every != 0) return;
 
         if (_dumper.OcrHealthy)
@@ -325,13 +430,17 @@ internal sealed class FishingBot
                 // Do TRUOC khi cho ca vuot qua cho trong cua cop: qua roi thi cum ca khong con
                 // lot vao dau duoc nua va chuyen di ban ca la bat buoc.
                 bool wontFit = fishKg >= 0 && free >= 0 && fishKg >= free - _cfg.DumpMarginKg;
+                // Che do don: co ca la do, khong doi ba lo nang. Chinh viec do som moi giu duoc
+                // cum nho. fishKg < 0 (chua biet) thi cu de duong cu quyet dinh.
+                bool tightNow = tight && fishKg > 0;
 
                 Emit($"ba lô {w.Value:F1}/{w.Cap:F0} kg" +
                      (fishKg >= 0 ? $", chỗ cá ≈ {fishKg:F1} kg" : "") +
                      (free >= 0 ? $", cốp còn {free:F1} kg" : "") +
-                     $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") + ")");
+                     $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") +
+                     (tightNow ? ", cốp sắp đầy nên đổ từng con" : "") + ")");
 
-                if (!bagFull && !wontFit && !byCount) return;
+                if (!bagFull && !wontFit && !byCount && !tightNow) return;
             }
             else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
             {
@@ -345,27 +454,85 @@ internal sealed class FishingBot
 
         Emit("--- đổ cá vào cốp ---");
         var r = _dumper.Dump(ct);
+        _catchesSinceDump = 0;
+
         if (r == DumpResult.Ok)
         {
-            _catchesSinceDump = 0;
             Emit("--- đổ xong, câu tiếp ---");
+            return;
+        }
+
+        if (r == DumpResult.TrunkFull)
+        {
+            Emit(_dumper.TrunkFull
+                ? "--- cốp đầy, từ giờ chỉ chất vào ba lô ---"
+                : "--- lượt này cốp không nhận, câu tiếp rồi thử lại một lượt nữa ---");
             return;
         }
 
         // Khong thay o ca nao ma ba lo van bao gan day: khong the cau tiep, se cau vao cai
         // ba lo day ma log van trong binh thuong.
-        _catchesSinceDump = 0;
-        throw new TrunkStepException(
-            "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
-            "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
+        throw new TrunkStepException(_dumper.ByIcon
+            ? "ba lô gần đầy nhưng không nhận ra ô nào là cá — xem log mấy ô “không rõ”, " +
+              "loài mới thì vào Vật phẩm & cá tích thêm"
+            : "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
+              "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
+    }
+
+    /// <summary>
+    /// Chặng cuối phiên: cốp đã đầy nên không mở cốp nữa, chỉ canh ba lô đầy tới đâu rồi dừng.
+    ///
+    /// Cân sau MỖI con chứ không giãn ra như lúc còn đổ cốp: chặng này chỉ dài vài con, và
+    /// ngưỡng dừng nằm sát trần nên đo thưa là câu lố vào cái ba lô đã hết chỗ.
+    /// </summary>
+    private void WatchBagUntilFull(CancellationToken ct)
+    {
+        // Khong do duoc thi dung luon. Cau tiep luc nay la cau mu: khong con cop de do, cung
+        // khong biet ba lo con bao nhieu cho — ca cat khong vao ma log van trong binh thuong.
+        if (!_dumper.OcrHealthy)
+            throw new BagFullException(
+                "cốp đầy mà đọc KG ba lô cũng hỏng — dừng cho chắc, đi bán cá rồi bật lại");
+
+        // Mot lan doc hong khong dung phien: PeekBagWeight tu dem, hong lien tiep du nhieu thi
+        // OcrHealthy tat va cua tren dung ho. Dung ngay o lan hong dau la vut ca phien vi mot
+        // khung hinh xau.
+        var w = _dumper.PeekBagWeight(ct);
+        if (!w.Ok)
+        {
+            Emit("cốp đầy — lần cân này hỏng, câu tiếp rồi cân lại");
+            return;
+        }
+
+        if (w.Value >= _cfg.BagFullStopKg)
+            throw new BagFullException(
+                $"cốp đầy và ba lô đã {w.Value:F1}/{w.Cap:F0} kg — xong phiên, đi bán cá");
+
+        // Ba lo dung lai duoi nguong van la ba lo day: con ca ke tiep nang hon cho con lai thi
+        // game khong cho cat, KG dung yen va nguong dung khong bao gio toi. Khong bat cai nay
+        // thi bot cau den sang van thay "chua du 29 kg".
+        if (_endgameLastKg >= 0 && w.Value <= _endgameLastKg + 0.05)
+        {
+            _endgameFlat++;
+            if (_endgameFlat >= 2)
+                throw new BagFullException(
+                    $"câu thêm {_endgameFlat} con mà ba lô vẫn {w.Value:F1}/{w.Cap:F0} kg — " +
+                    "cá không cất vào được nữa, xong phiên, đi bán cá");
+        }
+        else _endgameFlat = 0;
+        _endgameLastKg = w.Value;
+
+        Emit($"cốp đầy — ba lô {w.Value:F1}/{w.Cap:F0} kg, câu tiếp tới {_cfg.BagFullStopKg:F1} kg");
     }
 
     /// <summary>
     /// Chờ dò được nút, tối đa <see cref="FishingConfig.WaitKeepMs"/>. Null = không thấy.
     /// Panel hiện chậm hay nhanh tùy con cá nên không thể click theo một mốc thời gian cố định.
+    /// <paramref name="configured"/> false = thiếu mẫu/vùng, khác hẳn với "chờ mãi không thấy":
+    /// bên gọi phải cấm click mù, vì lượt nào cũng sẽ trượt.
     /// </summary>
-    private FishingSnapshot WaitForKeep(FishingReader reader, CancellationToken ct)
+    private FishingSnapshot WaitForKeep(FishingReader reader, out bool configured, CancellationToken ct)
     {
+        configured = true;
         var sw = Stopwatch.StartNew();
         while (true)
         {
@@ -376,7 +543,11 @@ internal sealed class FishingBot
             SnapshotReady?.Invoke(snap);
 
             if (snap.KeepVisible) return snap;
-            if (!snap.KeepConfigured) return null;      // thiếu mẫu/vùng — poll thêm cũng vô ích
+            if (!snap.KeepConfigured)                   // thiếu mẫu/vùng — poll thêm cũng vô ích
+            {
+                configured = false;
+                return null;
+            }
             if (sw.ElapsedMilliseconds >= _cfg.WaitKeepMs) return null;
 
             Sleep(ct, _cfg.PollMs);
@@ -386,10 +557,15 @@ internal sealed class FishingBot
     /// <summary>
     /// Chờ nút tắt sau khi click, tối đa <see cref="FishingConfig.KeepGoneMs"/>.
     /// Null = đã tắt; khác null = vẫn còn, kèm toạ độ mới để click lại.
+    ///
+    /// <paramref name="anchor"/> là ô nút của cú click vừa rồi. Khối dò được mà nhảy ra xa
+    /// quá <see cref="FishingConfig.KeepAnchorTolPx"/> thì đó không còn là cái nút cũ nữa —
+    /// panel đã tắt và bộ dò màu đang bắt nhầm thứ khác trong dải quét. Click theo nó là
+    /// click thẳng vào thế giới game, tức là đấm người đứng cạnh.
     /// </summary>
-    private FishingSnapshot WaitForKeepGone(FishingReader reader, CancellationToken ct)
+    private FishingSnapshot WaitForKeepGone(FishingReader reader, Rectangle anchor, CancellationToken ct)
     {
-        if (_cfg.KeepGoneMs <= 0) return null;
+        if (_cfg.KeepGoneMs <= 0 || _cfg.KeepAnchorTolPx <= 0) return null;
 
         var sw = Stopwatch.StartNew();
         while (true)
@@ -400,17 +576,39 @@ internal sealed class FishingBot
             SnapshotReady?.Invoke(snap);
 
             if (!snap.KeepVisible) return null;
+            if (!NearAnchor(snap.KeepRect, anchor))
+            {
+                Emit($"nút “còn” nhưng lệch chỗ @ {snap.KeepRect.X},{snap.KeepRect.Y}" +
+                     $" (nút cũ @ {anchor.X},{anchor.Y}) — coi như đã tắt, bỏ click lại");
+                return null;
+            }
             if (sw.ElapsedMilliseconds >= _cfg.KeepGoneMs) return snap;
 
             Sleep(ct, _cfg.PollMs);
         }
     }
 
+    /// <summary>Tâm hai ô cách nhau trong <see cref="FishingConfig.KeepAnchorTolPx"/> pixel.</summary>
+    private bool NearAnchor(Rectangle hit, Rectangle anchor)
+    {
+        if (hit.IsEmpty || anchor.IsEmpty) return false;
+        int tol = _cfg.KeepAnchorTolPx;
+        int dx = (hit.Left + hit.Width / 2) - (anchor.Left + anchor.Width / 2);
+        int dy = (hit.Top + hit.Height / 2) - (anchor.Top + anchor.Height / 2);
+        return Math.Abs(dx) <= tol && Math.Abs(dy) <= tol;
+    }
+
+    /// <summary>
+    /// Rê chuột bằng MoveCursorOnly chứ không MoveSmooth: MoveSmooth bắn kèm
+    /// MOUSEEVENTF_MOVE mà GTA đọc thành lệnh xoay camera (xem InputSender.MoveCursorOnly),
+    /// nên mỗi lần cất cá là góc nhìn bị kéo lệch một nhát. TrunkOpener và DragSmooth đã
+    /// chuyển từ trước, chỗ này sót lại.
+    /// </summary>
     private void ClickKeep(Point p, CancellationToken ct)
     {
         WaitWindow(ct);
         Emit($"click CẤT VÀO @ {p.X},{p.Y}");
-        InputSender.MoveSmooth(p.X, p.Y, _cfg.KeepMoveSteps);
+        InputSender.MoveCursorOnlySmooth(p.X, p.Y, _cfg.KeepMoveSteps);
         Sleep(ct, _cfg.KeepHoverMs);
         InputSender.LeftDown();
         Sleep(ct, 60);

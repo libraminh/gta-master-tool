@@ -599,7 +599,10 @@ internal sealed class FishingPanel : UserControl
         _bot.Stopped += (r, msg) => Post(() =>
         {
             _status.Text = "Đã dừng — " + FishingBot.TenLyDo(r);
-            _status.ForeColor = r == FishingStopReason.UserStopped ? Color.DarkGreen : Color.Firebrick;
+            // BagFull la phien chay het muc chu khong phai su co — dung to do cho no.
+            _status.ForeColor = r is FishingStopReason.UserStopped or FishingStopReason.BagFull
+                ? Color.DarkGreen
+                : Color.Firebrick;
             SetRunningUi(false);
             if (!string.IsNullOrEmpty(msg) && r != FishingStopReason.UserStopped)
                 Append(msg);
@@ -911,10 +914,16 @@ internal sealed class FishingPanel : UserControl
         }
         else
         {
-            _keep.Text = s.KeepVisible
-                ? $"cất vào : CÓ @ {s.KeepClick.X},{s.KeepClick.Y}  {s.KeepRect.Width}×{s.KeepRect.Height}" +
-                  $"  dens={s.KeepDensity:F2}  ncc={s.KeepScore:F3}"
-                : "cất vào : không";
+            if (s.KeepVisible)
+                _keep.Text = $"cất vào : CÓ @ {s.KeepClick.X},{s.KeepClick.Y}  {s.KeepRect.Width}×{s.KeepRect.Height}" +
+                             $"  dens={s.KeepDensity:F2}  ncc={s.KeepScore:F3}";
+            else if (s.KeepDensity >= 0)
+                // Có khối đúng màu nhưng NCC dưới ngưỡng — hiện số ra để còn chỉnh KeepNccMin,
+                // đừng để lẫn với "chẳng thấy gì".
+                _keep.Text = $"cất vào : loại vì ncc={s.KeepScore:F3} < {_cfg.KeepNccMin:F2}" +
+                             $"  (dens={s.KeepDensity:F2})";
+            else
+                _keep.Text = "cất vào : không";
             _keep.ForeColor = s.KeepVisible ? Color.DarkGreen : Color.DimGray;
         }
     }

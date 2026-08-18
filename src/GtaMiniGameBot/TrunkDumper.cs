@@ -5,7 +5,9 @@ namespace GtaMiniGameBot;
 internal enum DumpResult
 {
     Ok,
-    NothingToMove
+    NothingToMove,
+    /// <summary>Chỗ cá không lọt cốp nữa. Không phải lỗi — là lúc chuyển sang chất đầy ba lô.</summary>
+    TrunkFull
 }
 
 /// <summary>
@@ -14,6 +16,12 @@ internal enum DumpResult
 /// Mọi bước đều xác nhận bằng pixel trước khi đi tiếp, và không bước nào thả một món đồ vào ô
 /// chưa chứng minh là trống — thả nhầm vào ô có đồ có thể là HOÁN ĐỔI, tức kéo ngược đồ trong
 /// cốp vào ba lô và làm ba lô nặng thêm, đúng cái đang cố tránh.
+///
+/// Cốp đầy KHÔNG phải lỗi: nó là kết cục bình thường của mọi phiên câu. Ba lối phát hiện
+/// (biết trước không lọt / hết ô trống / kéo hỏng lúc cốp đã chật) đều trả
+/// <see cref="DumpResult.TrunkFull"/> chứ không ném, và mỗi lần như vậy ghi một strike. Đủ
+/// <see cref="FishingConfig.TrunkFullTries"/> strike thì <see cref="TrunkFull"/> bật và người
+/// gọi thôi mở cốp. Kéo lọt được một ô là xoá hết strike — cốp vừa nhận đồ thì nó chưa đầy.
 /// </summary>
 internal sealed class TrunkDumper : IDisposable
 {
@@ -29,8 +37,11 @@ internal sealed class TrunkDumper : IDisposable
     private readonly GridScanner _bag;
     private readonly GridScanner _trunk;
     private readonly Point _park;
+    private readonly ItemCatalog _catalog;
+    private readonly HashSet<string> _fishItems;
 
     private int _ocrFails;
+    private int _trunkFullStrikes;
 
     public bool OcrHealthy { get; private set; } = true;
     public string AtlasMissing => _bagWeight?.AtlasMissing ?? "";
@@ -49,9 +60,16 @@ internal sealed class TrunkDumper : IDisposable
     public double PendingFishKg(double bagNow) =>
         BagBaseKg < 0 || bagNow < 0 ? -1 : Math.Max(0, bagNow - BagBaseKg);
 
+    /// <summary>Đã hỏng đủ số lượt để kết luận cốp đầy hẳn — đừng mở cốp nữa.</summary>
+    public bool TrunkFull => _trunkFullStrikes >= _cfg.TrunkFullTries;
+
+    /// <summary>Đã hỏng mấy lượt, để người gọi ghi log "lượt 1/2".</summary>
+    public int TrunkFullStrikes => _trunkFullStrikes;
+
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
                         TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
-                        GridScanner hotbar, GridScanner bag, GridScanner trunk)
+                        GridScanner hotbar, GridScanner bag, GridScanner trunk,
+                        ItemCatalog catalog)
     {
         _cfg = cfg;
         _screen = screen;
@@ -63,6 +81,9 @@ internal sealed class TrunkDumper : IDisposable
         _hotbar = hotbar;
         _bag = bag;
         _trunk = trunk;
+        _catalog = catalog;
+        _fishItems = new HashSet<string>(profile.FishItems ?? new List<string>(),
+                                         StringComparer.OrdinalIgnoreCase);
 
         // Cho do chuot trung tinh truoc moi lan chup kiem tra: o duoi con tro duoc ve sang hon,
         // quen buoc nay la moi phep do deu nhiem.
@@ -88,12 +109,22 @@ internal sealed class TrunkDumper : IDisposable
             problem = "chưa khoanh ô số KG ba lô";
             return null;
         }
-        if (p.FishSlots is not { Count: > 0 })
+        // Hai duong deu chap nhan duoc: nhan ca theo icon, hoac tin may o da khai bao. Khong
+        // co duong nao thi dung han — bot khong duoc phep tu chon o de keo.
+        var catalog = ItemCatalog.Load(cfg);
+        bool byIcon = catalog.Count > 0 && p.FishItems is { Count: > 0 };
+        if (!byIcon && p.FishSlots is not { Count: > 0 })
         {
             opener.Dispose();
-            problem = "chưa chọn ô chứa cá";
+            problem = catalog.Count > 0
+                ? "chưa tích vật phẩm nào là cá, cũng chưa chọn ô chứa cá"
+                : "chưa chọn ô chứa cá (hoặc trích icon từ game rồi tích loài cá)";
             return null;
         }
+        log(byIcon
+            ? $"nhận cá theo icon: {catalog.Count} vật phẩm trong bộ mẫu, " +
+              $"{p.FishItems.Count} loại được tính là cá — quét cả ba lô, không cần ô khai báo"
+            : $"nhận cá theo ô khai báo ({p.FishSlots.Count} ô)");
 
         var atlas = DigitAtlas.Load(p.Key);
         var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg);
@@ -106,7 +137,8 @@ internal sealed class TrunkDumper : IDisposable
         return new TrunkDumper(cfg, screen, p, log, opener, weight, trunkWeight,
             new GridScanner(cfg, screen, p.Hotbar),
             new GridScanner(cfg, screen, p.Bag),
-            new GridScanner(cfg, screen, p.Trunk));
+            new GridScanner(cfg, screen, p.Trunk),
+            catalog);
     }
 
     // ---------------------------------------------------------------- đọc KG
@@ -160,7 +192,13 @@ internal sealed class TrunkDumper : IDisposable
 
     // ---------------------------------------------------------------- đổ
 
-    /// <summary>Ném <see cref="TrunkStepException"/> nếu cả hai lượt đều không xong.</summary>
+    /// <summary>
+    /// Ném <see cref="TrunkStepException"/> nếu cả hai lượt đều không xong.
+    ///
+    /// <see cref="DumpResult.TrunkFull"/> KHÔNG đi qua đường thử lại này: cốp chật thì lượt hai
+    /// đọc ra đúng mấy con số của lượt một và chỉ tổ kéo thêm một chùm nữa vào chỗ không có.
+    /// Hai lượt thử của nó đếm ở tầng trên, cách nhau ít nhất một con cá.
+    /// </summary>
     public DumpResult Dump(CancellationToken ct)
     {
         try
@@ -196,14 +234,11 @@ internal sealed class TrunkDumper : IDisposable
         // Biet truoc la khong lot thi KHONG keo thu. Cu keo hong lam game hien thong bao do
         // "Kho do da day" va bot chi biet la "keo that bai", khong phan biet duoc voi keo truot.
         if (fishKg >= 0 && TrunkFreeKg >= 0 && fishKg > TrunkFreeKg)
-        {
-            _opener.CloseAll(ct);
-            throw new TrunkStepException(
-                $"cốp chỉ còn {TrunkFreeKg:F1} kg mà chỗ cá đang có {fishKg:F1} kg — " +
-                "đi bán cá rồi bật lại");
-        }
+            return ConcludeTrunkFull(
+                $"cốp còn {TrunkFreeKg:F1} kg mà chỗ cá đang có {fishKg:F1} kg", ct);
 
         int moved = 0;
+        string fullWhy = null;
 
         while (moved < _cfg.MaxDragsPerDump)
         {
@@ -216,20 +251,25 @@ internal sealed class TrunkDumper : IDisposable
             if (source is null) break;
 
             var dest = NextEmptyTrunkCell();
-            if (dest is null)
-                throw new TrunkStepException("cốp xe không còn ô trống — đã đầy?");
+            if (dest is null) { fullWhy = "cốp không còn ô trống nào"; break; }
 
             if (!DragOne(source.Value.Scanner, source.Value.Cell, dest, ct))
-                throw new TrunkStepException(
-                    TrunkFreeKg is >= 0 and < 5
-                        ? $"kéo không được, cốp chỉ còn {TrunkFreeKg:F1} kg — nhiều khả năng " +
-                          "cụm cá nặng hơn chỗ trống, đi bán cá rồi bật lại"
-                        : "kéo cá vào cốp thất bại");
+            {
+                // Cop con rong ranh ma keo hong thi KHONG phai chuyen day cop — do la loi that
+                // (mat focus, luoi khoanh lech) va phai bao ra, khong duoc nuot thanh "cop day".
+                if (!CouldBeFull(fishKg))
+                    throw new TrunkStepException("kéo cá vào cốp thất bại");
+
+                fullWhy = TrunkFreeKg >= 0
+                    ? $"kéo không được, cốp chỉ còn {TrunkFreeKg:F1} kg"
+                    : "kéo không được, mà chưa khoanh ô KG cốp nên không loại trừ được là cốp đầy";
+                break;
+            }
 
             moved++;
         }
 
-        if (moved == 0)
+        if (moved == 0 && fullWhy is null)
         {
             _log("mọi ô chứa cá đã khai báo đều đang trống");
             _opener.CloseAll(ct);
@@ -237,26 +277,64 @@ internal sealed class TrunkDumper : IDisposable
             return DumpResult.NothingToMove;
         }
 
-        double after = ReadBagWeightNow();
-        if (before >= 0 && after >= 0 && before - after < _cfg.MinDropKg)
-            _log($"cảnh báo: kéo {moved} ô nhưng KG chỉ giảm {before - after:F1} " +
-                 $"(chờ ít nhất {_cfg.MinDropKg:F1}) — nhiều khả năng cá đã tràn sang một ô " +
-                 "chưa khai báo, vào Chọn ô chứa cá thêm ô đó");
-        else if (after >= 0)
+        if (moved > 0)
         {
-            // Moi o ca da khai bao deu trong, nen can nang bay gio CHINH LA can nang khong co ca.
-            BagBaseKg = after;
+            double after = ReadBagWeightNow();
+            if (before >= 0 && after >= 0 && before - after < _cfg.MinDropKg)
+                _log($"cảnh báo: kéo {moved} ô nhưng KG chỉ giảm {before - after:F1} " +
+                     $"(chờ ít nhất {_cfg.MinDropKg:F1}) — " +
+                     (ByIcon
+                         ? "ô vừa kéo có thể không phải cá, xem lại danh sách đã tích"
+                         : "nhiều khả năng cá đã tràn sang một ô chưa khai báo, " +
+                           "vào Chọn ô chứa cá thêm ô đó"));
+            else if (after >= 0)
+            {
+                // Moi o ca da khai bao deu trong, nen can nang bay gio CHINH LA can nang khong co ca.
+                BagBaseKg = after;
+            }
+
+            MeasureTrunkFree();
+            _log($"đã kéo {moved} ô sang cốp, ba lô {before:F1} → {after:F1} kg" +
+                 (TrunkFreeKg >= 0 ? $", cốp còn trống {TrunkFreeKg:F1} kg" : ""));
+
+            // Cop vua nhan do thi no chua day: xoa strike cu di. Neu ngay sau do van dung tuong,
+            // ConcludeTrunkFull ben duoi ghi lai tu strike 1 — dung, vi day la lan chan moi.
+            _trunkFullStrikes = 0;
         }
 
-        MeasureTrunkFree();
-        _log($"đã kéo {moved} ô sang cốp, ba lô {before:F1} → {after:F1} kg" +
-             (TrunkFreeKg >= 0 ? $", cốp còn trống {TrunkFreeKg:F1} kg" : ""));
+        if (fullWhy is not null) return ConcludeTrunkFull(fullWhy, ct);
 
         _opener.CloseAll(ct);
         Sleep(ct, _cfg.AfterDumpMs);
         TurnBack(ct);
         _bagWeight.ResetHistory();
         return DumpResult.Ok;
+    }
+
+    /// <summary>
+    /// Cú kéo hỏng vừa rồi có thể là do cốp chật không? Chỉ trả false khi cốp RỘNG RÃI hơn chỗ
+    /// cá một cách chắc chắn — lúc đó lỗi nằm ở chỗ khác và phải báo ra thay vì đổ cho cốp.
+    /// </summary>
+    private bool CouldBeFull(double fishKg) =>
+        TrunkFreeKg < 0 || fishKg < 0 || TrunkFreeKg <= fishKg + _cfg.DumpMarginKg;
+
+    /// <summary>
+    /// Ghi một strike "cốp không nhận nữa", dọn màn hình rồi quay mặt lại như một lượt đổ bình
+    /// thường — bot còn câu tiếp, nên vẫn phải trả nhân vật về đúng tư thế hướng ra hồ.
+    /// </summary>
+    private DumpResult ConcludeTrunkFull(string why, CancellationToken ct)
+    {
+        _trunkFullStrikes++;
+        _log($"cốp không nhận thêm ({why}) — lượt hỏng {_trunkFullStrikes}/{_cfg.TrunkFullTries}" +
+             (TrunkFull
+                 ? ". KẾT LUẬN CỐP ĐẦY: thôi mở cốp, câu tiếp cho đầy ba lô rồi dừng"
+                 : ". Lượt đổ sau sẽ đo lại — dọn bớt cốp bây giờ là bot đổ tiếp được"));
+
+        _opener.CloseAll(ct);
+        Sleep(ct, _cfg.AfterDumpMs);
+        TurnBack(ct);
+        _bagWeight.ResetHistory();
+        return DumpResult.TrunkFull;
     }
 
     /// <summary>
@@ -309,14 +387,66 @@ internal sealed class TrunkDumper : IDisposable
     }
 
     /// <summary>
-    /// Ô cá đầu tiên trong danh sách khai báo mà đang có đồ. Không dò icon: người dùng đã cam
-    /// kết ô đó luôn là cá, nên ở đây chỉ cần biết ô rỗng hay không.
+    /// Ô cá tiếp theo cần kéo.
+    ///
+    /// Hai chế độ. Có bộ icon moi từ cache game và người dùng đã tích vật phẩm nào là cá thì
+    /// quét CẢ phím nhanh lẫn ba lô rồi nhận cá theo icon — cá nằm đâu cũng thấy. Chưa có thì
+    /// quay về lối cũ: chỉ tin mấy ô người dùng khai báo, không nhìn icon.
     /// </summary>
     private (GridScanner Scanner, CellInfo Cell)? NextFish(out string note)
     {
         note = null;
         InputSender.MoveCursorOnly(_park.X, _park.Y);
         Thread.Sleep(120);
+
+        return ByIcon ? NextFishByIcon(out note) : NextFishBySlot(out note);
+    }
+
+    /// <summary>Có đủ bộ icon và danh sách cá thì mới nhận diện được; thiếu một trong hai là về lối cũ.</summary>
+    public bool ByIcon => _catalog is { Count: > 0 } && _fishItems.Count > 0;
+
+    /// <summary>
+    /// Quét mọi ô đang có đồ, kéo ô đầu tiên nhận ra là cá.
+    ///
+    /// Ô không nhận ra thì ĐỂ YÊN. Đó là lựa chọn có chủ ý: đoán bừa một ô lạ rồi kéo đi có
+    /// thể là ném cả cần câu, mồi hay tiền vào cốp, mà thứ mất đi thì không kéo ngược lại được.
+    /// </summary>
+    private (GridScanner Scanner, CellInfo Cell)? NextFishByIcon(out string note)
+    {
+        note = null;
+        var unknown = new List<string>();
+
+        foreach (var (label, scanner) in new[] { ("phím nhanh", _hotbar), ("ba lô", _bag) })
+        {
+            foreach (var (cell, gray) in scanner.ScanScreenPixels())
+            {
+                if (cell is null || cell.IsEmpty) continue;
+
+                var guess = _catalog.Classify(gray, cell.Rect.Width, cell.Rect.Height);
+                if (guess.Name is null)
+                {
+                    unknown.Add($"{label} #{cell.Index} {guess}");
+                    continue;
+                }
+                if (!_fishItems.Contains(guess.Name)) continue;
+
+                foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
+                note = $"kéo {label} #{cell.Index} — {guess}";
+                return (scanner, cell);
+            }
+        }
+
+        foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
+        return null;
+    }
+
+    /// <summary>
+    /// Ô cá đầu tiên trong danh sách khai báo mà đang có đồ. Không dò icon: người dùng đã cam
+    /// kết ô đó luôn là cá, nên ở đây chỉ cần biết ô rỗng hay không.
+    /// </summary>
+    private (GridScanner Scanner, CellInfo Cell)? NextFishBySlot(out string note)
+    {
+        note = null;
 
         foreach (var slot in _profile.FishSlots)
         {
