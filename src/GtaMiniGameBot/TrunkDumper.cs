@@ -433,15 +433,21 @@ internal sealed class TrunkDumper : IDisposable
                 if (cell is null || cell.IsEmpty) continue;
 
                 var guess = _catalog.Classify(gray, cell.Rect.Width, cell.Rect.Height);
-                if (guess.Name is null)
+
+                // Hoi "co phai ca" chu khong hoi "loai gi" — xem ItemGuess.FishName.
+                string fishName = guess.FishName(_fishItems, _cfg.ItemNccMin);
+                if (fishName is null)
                 {
-                    unknown.Add($"{label} #{cell.Index} {guess}");
+                    // Ro ma khong phai ca thi im lang bo qua; chi ke ra o thuc su khong ro.
+                    if (guess.Name is null) unknown.Add($"{label} #{cell.Index} {guess}");
                     continue;
                 }
-                if (!_fishItems.Contains(guess.Name)) continue;
 
                 foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
-                note = $"kéo {label} #{cell.Index} — {guess}";
+                note = guess.Name is null
+                    ? $"kéo {label} #{cell.Index} — {guess.Best} {guess.Score:F2}, lẫn với " +
+                      $"{guess.Runner} {guess.RunnerScore:F2} — cả hai đều là cá nên vẫn kéo"
+                    : $"kéo {label} #{cell.Index} — {guess}";
                 return (scanner, cell);
             }
         }
