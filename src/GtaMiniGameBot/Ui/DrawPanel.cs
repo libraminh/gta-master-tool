@@ -24,6 +24,13 @@ internal class DrawPanel : Panel
         SetStyle(ControlStyles.Selectable, true);
         TabStop = true;
     }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        // Vo hai voi panel khong co thanh cuon; chi co tac dung khi AutoScroll bat.
+        try { Native.SetWindowTheme(Handle, "DarkMode_Explorer", null); } catch { }
+    }
 }
 
 /// <summary>Khung co tieu de — thay GroupBox, vi GroupBox bo qua ForeColor o vien.</summary>

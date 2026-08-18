@@ -68,6 +68,9 @@ internal sealed class FishingBot
     /// <summary>KG ba lô lần cân gần nhất, chỉ để hiện lên UI. -1 = chưa cân.</summary>
     private double _lastBagKg = -1;
 
+    /// <summary>Fill thanh câu đọc được gần nhất, cho badge overlay. -1 = chưa đọc được.</summary>
+    private double _lastFill = -1;
+
     public FishingBot(FishingConfig cfg, Screen screen, FishingProfile profile)
     {
         _cfg = cfg;
@@ -205,6 +208,7 @@ internal sealed class FishingBot
 
                 var snap = reader.Read();
                 SnapshotReady?.Invoke(snap);
+                _lastFill = snap.BlueFill01;
                 Heartbeat();
 
                 if (!fighting)
@@ -784,6 +788,7 @@ internal sealed class FishingBot
             CatchesSinceDump = _catchesSinceDump,
             CastRetries = _castRetries,
             CastConfirmRetries = _cfg.CastConfirmRetries,
+            Fill01 = _lastFill,
 
             // Copy ra day chu khong phoi _dumper: no bi set null trong finally cua
             // luong bot, UI giu tham chieu la dua.

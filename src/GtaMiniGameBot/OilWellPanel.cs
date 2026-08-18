@@ -14,19 +14,19 @@ internal sealed class OilWellPanel : UserControl
     private readonly Label _greenLabel = new();
     private readonly Label _progressLabel = new();
     private readonly Label _carLabel = new();
-    private readonly CheckBox _carReset = new();
-    private readonly NumericUpDown _carResetSec = new();
-    private readonly NumericUpDown _afterEnter = new();
-    private readonly NumericUpDown _afterExit = new();
-    private readonly TextBox _log = new();
-    private readonly CheckBox _watch = new();
-    private readonly CheckBox _jitter = new();
-    private readonly NumericUpDown _maxCycles = new();
-    private readonly Button _btnCalibrate = new();
-    private readonly Button _btnCarTemplate = new();
-    private readonly Button _btnOneCycle = new();
-    private readonly Button _btnToggle = new();
-    private readonly Button _btnDebug = new();
+    private readonly DarkCheck _carReset = new();
+    private readonly DarkSpin _carResetSec = new();
+    private readonly DarkSpin _afterEnter = new();
+    private readonly DarkSpin _afterExit = new();
+    private readonly LogView _log = new();
+    private readonly DarkCheck _watch = new();
+    private readonly DarkCheck _jitter = new();
+    private readonly DarkSpin _maxCycles = new();
+    private readonly DarkButton _btnCalibrate = new();
+    private readonly DarkButton _btnCarTemplate = new();
+    private readonly DarkButton _btnOneCycle = new();
+    private readonly DarkButton _btnToggle = new();
+    private readonly DarkButton _btnDebug = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _jobKey = HotkeyText.Job();
 
@@ -36,9 +36,9 @@ internal sealed class OilWellPanel : UserControl
 
     public OilWellPanel()
     {
-        Font = new Font("Segoe UI", 9F);
+        Font = Theme.Body;
         Dock = DockStyle.Fill;
-        BackColor = Color.White;
+        BackColor = Theme.Ground;
 
         BuildUi();
 
@@ -91,12 +91,12 @@ internal sealed class OilWellPanel : UserControl
         const int w = 796;
 
         _status.SetBounds(12, y, w, 30);
-        _status.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+        _status.Font = Theme.StateBig;
         _status.Text = "Đang dừng";
         Controls.Add(_status);
         y += 38;
 
-        var box = new GroupBox { Text = "Đọc màn hình", Location = new Point(12, y), Size = new Size(w, 160) };
+        var box = new DarkGroup { Title = "Đọc màn hình", Location = new Point(12, y), Size = new Size(w, 160) };
         Controls.Add(box);
 
         for (int i = 0; i < 4; i++)
@@ -105,27 +105,27 @@ internal sealed class OilWellPanel : UserControl
             {
                 Location = new Point(16, 24 + i * 22),
                 Size = new Size(380, 20),
-                Font = new Font("Consolas", 10F),
+                Font = Theme.DataMd,
                 Text = $"thanh {i + 1}: --"
             };
             box.Controls.Add(_barLabels[i]);
         }
 
         _panelLabel.SetBounds(410, 24, 370, 20);
-        _panelLabel.Font = new Font("Consolas", 10F);
+        _panelLabel.Font = Theme.DataMd;
         box.Controls.Add(_panelLabel);
 
         _greenLabel.SetBounds(410, 46, 370, 20);
-        _greenLabel.Font = new Font("Consolas", 10F);
+        _greenLabel.Font = Theme.DataMd;
         box.Controls.Add(_greenLabel);
 
         _progressLabel.SetBounds(410, 68, 370, 20);
-        _progressLabel.Font = new Font("Consolas", 10F);
+        _progressLabel.Font = Theme.DataMd;
         _progressLabel.Text = "chu kỳ 0  |  thùng 0";
         box.Controls.Add(_progressLabel);
 
         _carLabel.SetBounds(16, 112, 380, 20);
-        _carLabel.Font = new Font("Consolas", 10F);
+        _carLabel.Font = Theme.DataMd;
         _carLabel.Text = "trạng thái : --";
         box.Controls.Add(_carLabel);
 
@@ -140,8 +140,8 @@ internal sealed class OilWellPanel : UserControl
         box.Controls.Add(_carReset);
 
         _carResetSec.SetBounds(638, 118, 70, 24);
-        _carResetSec.Minimum = 60;
-        _carResetSec.Maximum = 480;
+        _carResetSec.Min = 60;
+        _carResetSec.Max = 480;
         _carResetSec.Value = Math.Clamp(_cfg.CarResetEverySec, 60, 480);
         box.Controls.Add(_carResetSec);
 
@@ -149,13 +149,13 @@ internal sealed class OilWellPanel : UserControl
 
         Controls.Add(new Label { Text = "Chờ sau khi lên xe (ms):", Location = new Point(14, y + 4), AutoSize = true });
         _afterEnter.SetBounds(180, y, 80, 24);
-        _afterEnter.Minimum = 500; _afterEnter.Maximum = 15000; _afterEnter.Increment = 250;
+        _afterEnter.Min = 500; _afterEnter.Max = 15000; _afterEnter.Step = 250;
         _afterEnter.Value = Math.Clamp(_cfg.AfterEnterCarMs, 500, 15000);
         Controls.Add(_afterEnter);
 
         Controls.Add(new Label { Text = "Chờ sau khi xuống xe (ms):", Location = new Point(290, y + 4), AutoSize = true });
         _afterExit.SetBounds(470, y, 80, 24);
-        _afterExit.Minimum = 500; _afterExit.Maximum = 15000; _afterExit.Increment = 250;
+        _afterExit.Min = 500; _afterExit.Max = 15000; _afterExit.Step = 250;
         _afterExit.Value = Math.Clamp(_cfg.AfterExitCarMs, 500, 15000);
         Controls.Add(_afterExit);
 
@@ -193,7 +193,7 @@ internal sealed class OilWellPanel : UserControl
             Location = new Point(310, y + 2), AutoSize = true
         });
         _maxCycles.SetBounds(560, y, 80, 24);
-        _maxCycles.Maximum = 10000;
+        _maxCycles.Max = 10000;
         _maxCycles.Value = 0;
         Controls.Add(_maxCycles);
 
@@ -205,10 +205,7 @@ internal sealed class OilWellPanel : UserControl
         y += 34;
 
         _log.SetBounds(12, y, w, 760 - y - 12);
-        _log.Multiline = true;
-        _log.ReadOnly = true;
-        _log.ScrollBars = ScrollBars.Vertical;
-        _log.Font = new Font("Consolas", 9F);
+        _log.Font = Theme.Data;
         _log.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
         Controls.Add(_log);
     }
@@ -316,11 +313,11 @@ internal sealed class OilWellPanel : UserControl
             return;
         }
 
-        _cfg.MaxCycles = oneCycle ? 1 : (int)_maxCycles.Value;
+        _cfg.MaxCycles = oneCycle ? 1 : _maxCycles.Value;
         _cfg.CarResetEnabled = _carReset.Checked;
-        _cfg.CarResetEverySec = (int)_carResetSec.Value;
-        _cfg.AfterEnterCarMs = (int)_afterEnter.Value;
-        _cfg.AfterExitCarMs = (int)_afterExit.Value;
+        _cfg.CarResetEverySec = _carResetSec.Value;
+        _cfg.AfterEnterCarMs = _afterEnter.Value;
+        _cfg.AfterExitCarMs = _afterExit.Value;
 
         _bot = new OilWellBot(_cfg) { Jitter = _jitter.Checked };
         _bot.Log += s => Post(() => Append(s));
@@ -331,12 +328,12 @@ internal sealed class OilWellPanel : UserControl
             _status.Text = $"Đã dừng — {OilWellBot.TenLyDo(r)}";
             _status.ForeColor = r is StopReason.UserStopped or StopReason.InventoryFullNoIncrement
                                      or StopReason.InventoryFullNoReset or StopReason.MaxCyclesReached
-                ? Color.DarkGreen : Color.Firebrick;
+                ? Theme.Good : Theme.Bad;
             SetRunningUi(false);
         });
 
         _status.Text = oneCycle ? "Đang chạy — 1 chu kỳ" : "Đang cày";
-        _status.ForeColor = Color.DarkBlue;
+        _status.ForeColor = Theme.Accent;
         SetRunningUi(true);
         Append(oneCycle ? "--- chạy thử 1 chu kỳ ---" : "--- bắt đầu cày ---");
         _bot.Start();
@@ -386,11 +383,11 @@ internal sealed class OilWellPanel : UserControl
             bool full = s.BarFull[i];
             _barLabels[i].Text = $"thanh {i + 1}  x={_cfg.BarX[i],4}  nhỏ nhất={s.BarMin[i],4}  " +
                                  (full ? "ĐẦY" : "chưa");
-            _barLabels[i].ForeColor = full ? Color.DarkGreen : Color.DimGray;
+            _barLabels[i].ForeColor = full ? Theme.Good : Theme.Dim;
         }
 
         _panelLabel.Text = $"panel : {(s.PanelOpen ? "MỞ" : "ĐÓNG")}  (nổi lên={s.PanelProminence:F1})";
-        _panelLabel.ForeColor = s.PanelOpen ? Color.DarkGreen : Color.Firebrick;
+        _panelLabel.ForeColor = s.PanelOpen ? Theme.Good : Theme.Bad;
 
         _greenLabel.Text = $"pixel xanh (số thùng) : {s.GreenCount}";
 
@@ -400,9 +397,9 @@ internal sealed class OilWellPanel : UserControl
         _carLabel.Text = $"trạng thái : {s.StateName}  (ncc={s.CarScore:F3}){carAge}";
         _carLabel.ForeColor = s.Vehicle switch
         {
-            VehicleState.InCar => Color.DarkOrange,
-            VehicleState.Unknown => Color.Firebrick,
-            _ => s.PanelOpen ? Color.DarkGreen : Color.DimGray
+            VehicleState.InCar => Theme.Warn,
+            VehicleState.Unknown => Theme.Bad,
+            _ => s.PanelOpen ? Theme.Good : Theme.Dim
         };
     }
 
@@ -417,10 +414,7 @@ internal sealed class OilWellPanel : UserControl
 
     private void Append(string line)
     {
-        var stamp = DateTime.Now.ToString("HH:mm:ss");
-        if (_log.Lines.Length > 600)
-            _log.Lines = _log.Lines.Skip(200).ToArray();
-        _log.AppendText($"[{stamp}] {line}{Environment.NewLine}");
+        _log.Append(line);
 
         try
         {

@@ -217,6 +217,14 @@ internal static class Native
     /// <summary>DWM nhan mau dang COLORREF (0x00BBGGRR), khong phai RGB.</summary>
     public static int ColorRef(Color c) => c.R | (c.G << 8) | (c.B << 16);
 
+    /// <summary>
+    /// Thanh cuon cua Panel do Windows ve, khong theo BackColor. Gan theme
+    /// "DarkMode_Explorer" la cach duy nhat lam no toi ma khong phai tu ve
+    /// mot thanh cuon rieng.
+    /// </summary>
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetWindowTheme(IntPtr hWnd, string subApp, string subIdList);
+
     // ---------------------------------------------------------------
     /// <summary>
     /// Chuyen toa do man hinh that -> he 0..65535 cua SendInput.

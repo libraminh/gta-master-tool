@@ -224,16 +224,29 @@ internal sealed class DarkSpin : DarkBase
 
     public int Step { get; set; } = 1;
 
+    // Min/Max duoc dat lan luot luc dung UI, nen co luc ho van con cheo nhau
+    // (dat Min = 500 khi Max con la 100 mac dinh). Phai tu go, khong duoc nem —
+    // day la duong chay luc khoi tao cua so.
     public int Min
     {
         get => _min;
-        set { _min = value; Value = _value; }
+        set
+        {
+            _min = value;
+            if (_max < _min) _max = _min;
+            Reclamp();
+        }
     }
 
     public int Max
     {
         get => _max;
-        set { _max = value; Value = _value; }
+        set
+        {
+            _max = value;
+            if (_min > _max) _min = _max;
+            Reclamp();
+        }
     }
 
     public int Value
@@ -241,7 +254,7 @@ internal sealed class DarkSpin : DarkBase
         get => _value;
         set
         {
-            int v = Math.Clamp(value, _min, _max);
+            int v = Clamp(value);
             if (v == _value) { Invalidate(); return; }
             _value = v;
             Invalidate();
@@ -251,7 +264,20 @@ internal sealed class DarkSpin : DarkBase
 
     public void SetValueQuiet(int value)
     {
-        _value = Math.Clamp(value, _min, _max);
+        _value = Clamp(value);
+        Invalidate();
+    }
+
+    private int Clamp(int v) => _max < _min ? _min : Math.Clamp(v, _min, _max);
+
+    /// <summary>
+    /// Keo Value ve trong khoang moi, KHONG ban ValueChanged: doi khoang la sua rang
+    /// buoc, khong phai nguoi dung sua so. Ban event o day se lam handler luu config
+    /// ngay giua luc dang dung UI.
+    /// </summary>
+    private void Reclamp()
+    {
+        _value = Clamp(_value);
         Invalidate();
     }
 

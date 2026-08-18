@@ -54,6 +54,13 @@ internal sealed class FishingState
     public int CastRetries { get; init; }
     public int CastConfirmRetries { get; init; }
 
+    /// <summary>
+    /// Fill thanh cau doc duoc gan nhat, 0..1. -1 = chua doc duoc.
+    /// Co trong day de badge overlay ve duoc thanh tien do ma khong phai
+    /// dang ky them mot event snapshot nua.
+    /// </summary>
+    public double Fill01 { get; init; } = -1;
+
     // ---------- cop / ba lo (-1 = chua biet) ----------
     public double BagKg { get; init; } = -1;
     public double BagCapKg { get; init; } = -1;
