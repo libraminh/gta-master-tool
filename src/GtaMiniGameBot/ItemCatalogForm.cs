@@ -301,9 +301,12 @@ internal sealed class ItemCatalogForm : Form
                     var top = cat.Top(gray, w, h, 3);
                     var guess = cat.Classify(gray, w, h);
 
-                    string verdict = guess.Name is null
-                        ? "KHÔNG RÕ"
-                        : (fish.Contains(guess.Name) ? "CÁ → kéo" : "không phải cá");
+                    // Bao cao theo DUNG luat bot dung. Truoc day man nay chi doc Name, nen
+                    // mot o bot van keo lai hien "KHÔNG RÕ" — nhin log xong lai di sua sai cho.
+                    string fishName = guess.FishName(fish, _cfg.ItemNccMin);
+                    string verdict = fishName is not null
+                        ? (guess.Name is null ? "CÁ → kéo (lẫn loài)" : "CÁ → kéo")
+                        : guess.Name is null ? "KHÔNG RÕ" : "không phải cá";
 
                     Append($"{label} #{cell.Index,-2} {w}x{h} {verdict,-14} " +
                            string.Join("  ", top.Select(t => $"{t.Name} {t.Score:F2}@{t.Scale:F2}")));
