@@ -43,6 +43,38 @@ internal static class Program
             return rc;
         }
 
+        // Trich icon khong can UI: chay duoc tu terminal de kiem chung phep doc cache truoc khi
+        // dung no trong game.
+        if (args.Length > 0 && args[0].Equals("--harvest-icons", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = HarvestIcons(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "harvest-icons.txt"), report.ToString());
+            return rc;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--test-items", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifyItems.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "test-items.txt"), report.ToString());
+            return rc;
+        }
+
         if (args.Length > 0 && args[0].Equals("--pick-car-template", StringComparison.OrdinalIgnoreCase))
         {
             Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
@@ -85,6 +117,30 @@ internal static class Program
         };
         AppDomain.CurrentDomain.UnhandledException += (_, _) => HeldKeys.ReleaseAll();
         AppDomain.CurrentDomain.ProcessExit += (_, _) => HeldKeys.ReleaseAll();
+    }
+
+    /// <summary>
+    /// --harvest-icons [thư mục cache] — moi icon vật phẩm ra rồi in kết quả.
+    /// Không cần game đang chạy, cũng không cần mở app.
+    /// </summary>
+    private static int HarvestIcons(string[] args)
+    {
+        var cfg = FishingConfig.Load();
+        string dir = args.Length > 1 ? args[1] : cfg.ItemCachePath;
+
+        Console.WriteLine("cache: " + dir);
+        var res = ItemIconExtractor.Harvest(dir, cfg.AllowIconDownload);
+
+        foreach (string n in res.Notes) Console.WriteLine("  ghi chú: " + n);
+        Console.WriteLine($"lấy được {res.Saved.Count} icon → {ItemIconExtractor.ItemDir}");
+
+        if (res.Missing.Count > 0)
+            Console.WriteLine($"thiếu ảnh ({res.Missing.Count}): {string.Join(", ", res.Missing)}");
+
+        foreach (string name in res.Saved.Keys.OrderBy(s => s, StringComparer.OrdinalIgnoreCase))
+            Console.WriteLine("  " + name);
+
+        return res.Saved.Count > 0 ? 0 : 1;
     }
 
     /// <summary>De console hien duoc tieng Viet co dau thay vi ky tu la.</summary>

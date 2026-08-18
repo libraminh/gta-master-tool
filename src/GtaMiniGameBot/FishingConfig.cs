@@ -151,6 +151,13 @@ internal sealed class FishingProfile
     public List<FishSlot> FishSlots { get; set; } = new();
 
     /// <summary>
+    /// Tên vật phẩm được coi là cá, lấy từ bộ icon moi ra khỏi cache game (ví dụ "catfish",
+    /// "perch"). Có danh sách này thì bot quét CẢ ba lô và nhận cá theo icon, không cần
+    /// <see cref="FishSlots"/> nữa. Rỗng = quay về chế độ ô khai báo.
+    /// </summary>
+    public List<string> FishItems { get; set; } = new();
+
+    /// <summary>
     /// Vùng quét cao trùm mọi vị trí nút CẤT VÀO có thể trượt tới. Chưa khoanh thì
     /// suy từ <see cref="Keep"/> — xem <see cref="KeepSearchBand"/>.
     /// </summary>
@@ -402,6 +409,26 @@ internal sealed class FishingConfig
     public int TrunkFullTries { get; set; } = 2;
     /// <summary>Đổ xong KG phải giảm ít nhất bấy nhiêu, không thì coi như kéo trượt.</summary>
     public double MinDropKg { get; set; } = 0.5;
+
+    // -- nhận diện vật phẩm --
+    /// <summary>
+    /// Thư mục cache của game (Chromium blockfile). Icon mọi vật phẩm nằm sẵn trong đó KÈM TÊN,
+    /// nên lấy ra là có bộ mẫu đã gán nhãn, không phải dạy tay con nào.
+    /// </summary>
+    public string ItemCachePath { get; set; } =
+        @"E:\games\XGTA\PlayXGTA.app\data\nui-storage\context-server_\Cache\Cache_Data";
+
+    /// <summary>Điểm NCC tối thiểu để dám nói ô này là vật phẩm nào.</summary>
+    public double ItemNccMin { get; set; } = 0.70;
+
+    /// <summary>
+    /// Cách biệt tối thiểu giữa vật phẩm nhất và nhì. Sát nhau = đoán mò, thà trả "không rõ" —
+    /// cùng lối nghĩ với <see cref="DigitMarginMin"/> bên OCR.
+    /// </summary>
+    public double ItemMarginMin { get; set; } = 0.05;
+
+    /// <summary>Cho phép tải icon thiếu từ images.xgta.network. Tắt = app hoàn toàn không ra mạng.</summary>
+    public bool AllowIconDownload { get; set; } = true;
     /// <summary>Hỏng liên tiếp bấy nhiêu lần thì bỏ hẳn OCR cho phần còn lại của phiên.</summary>
     public int WeightOcrFailMax { get; set; } = 3;
     /// <summary>Hai lần đọc liên tiếp lệch quá bấy nhiêu kg = đọc sai, không phải câu được cá to.</summary>
@@ -535,6 +562,8 @@ internal sealed class FishingConfig
         if (BagFullStopKg > BagCapKg) BagFullStopKg = BagCapKg;
         if (TrunkFullTries <= 0) TrunkFullTries = 2;
         if (MinDropKg <= 0) MinDropKg = 0.5;
+        if (ItemNccMin is <= 0 or > 1) ItemNccMin = 0.70;
+        if (ItemMarginMin is < 0 or > 1) ItemMarginMin = 0.05;
         if (WeightOcrFailMax <= 0) WeightOcrFailMax = 3;
         if (MaxWeightJumpKg <= 0) MaxWeightJumpKg = 5.0;
 

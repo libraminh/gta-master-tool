@@ -262,7 +262,12 @@ internal sealed class TrunkSetupForm : Form
         btnScan.Click += (_, _) => ScanAllGrids();
         boxItems.Controls.Add(btnScan);
 
-        _itemStatus.SetBounds(510, 33, 392, 20);
+        var btnItems = new Button { Text = "Vật phẩm & cá…" };
+        btnItems.SetBounds(508, 26, 140, 30);
+        btnItems.Click += (_, _) => OpenItemCatalog();
+        boxItems.Controls.Add(btnItems);
+
+        _itemStatus.SetBounds(656, 33, 246, 20);
         _itemStatus.Font = new Font("Consolas", 9F);
         boxItems.Controls.Add(_itemStatus);
         y += 82;
@@ -454,6 +459,13 @@ internal sealed class TrunkSetupForm : Form
     private void OpenFishSlots()
     {
         using var f = new FishSlotForm(_cfg, _screen, _profile);
+        f.ShowDialog(this);
+        RefreshAll();
+    }
+
+    private void OpenItemCatalog()
+    {
+        using var f = new ItemCatalogForm(_cfg, _screen, _profile);
         f.ShowDialog(this);
         RefreshAll();
     }
@@ -758,9 +770,15 @@ internal sealed class TrunkSetupForm : Form
         _ocrStatus.ForeColor = atlas.Count > 0 && missing.Length == 0 ? Color.DarkGreen : Color.DimGray;
 
         var slots = _profile.FishSlots;
-        _itemStatus.Text = (slots.Count == 0 ? "chưa chọn ô chứa cá" : "ô cá: " + string.Join(", ", slots.Select(s => s.Label))) +
-                           $"  ·  ô trống khi độ lệch < {_cfg.CellEmptyStdMax:F1}";
-        _itemStatus.ForeColor = slots.Count > 0 ? Color.DarkGreen : Color.DimGray;
+        int items = _profile.FishItems?.Count ?? 0;
+        // Nhan ca theo icon thi thang duong o khai bao — noi ro dang chay duong nao, vi hai
+        // duong hanh xu khac han: mot ben quet ca ba lo, ben kia chi tin may o da chon.
+        _itemStatus.Text = items > 0
+            ? $"nhận cá theo icon: {items} loại"
+            : slots.Count == 0
+                ? "chưa chọn ô chứa cá"
+                : "ô cá: " + string.Join(", ", slots.Select(s => s.Label));
+        _itemStatus.ForeColor = items > 0 || slots.Count > 0 ? Color.DarkGreen : Color.DimGray;
     }
 
     private void Append(string line)
