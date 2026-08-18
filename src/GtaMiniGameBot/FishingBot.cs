@@ -49,6 +49,28 @@ internal sealed class FishingBot
     /// <summary>Mấy con liên tiếp mà KG ba lô không nhúc nhích.</summary>
     private int _endgameFlat;
 
+    // ---------------- trang thai cho UI ----------------
+    // Moi thu duoi day chi luong bot ghi, va chi doc lai luc dong goi FishingState —
+    // cung mot luong, nen khong can lock. UI nhan ban copy bat bien qua event.
+    private FishingPhase _phase = FishingPhase.Idle;
+    private readonly Stopwatch _phaseSw = new();
+    private readonly Stopwatch _sessionSw = new();
+    private long _lastPublishMs = -1;
+
+    private int _casts;
+    private int _bites;
+    private int _rejects;
+    private int _castMissed;
+    private int _biteTimeouts;
+    private int _fightTimeouts;
+    private int _castRetries;
+
+    /// <summary>KG ba lô lần cân gần nhất, chỉ để hiện lên UI. -1 = chưa cân.</summary>
+    private double _lastBagKg = -1;
+
+    /// <summary>Fill thanh câu đọc được gần nhất, cho badge overlay. -1 = chưa đọc được.</summary>
+    private double _lastFill = -1;
+
     public FishingBot(FishingConfig cfg, Screen screen, FishingProfile profile)
     {
         _cfg = cfg;
@@ -61,6 +83,16 @@ internal sealed class FishingBot
     public event Action<string> Log;
     public event Action<FishingSnapshot> SnapshotReady;
     public event Action<FishingStopReason, string> Stopped;
+
+    /// <summary>
+    /// Pha + so dem, phat khi DOI PHA (khong phai moi tick).
+    ///
+    /// Vi sao can event rieng: SnapshotReady chi ban tu vong lap chinh va hai vong
+    /// cho nut, con MaybeDump / Dump / PeekBagWeight / WatchBagUntilFull khong he
+    /// goi reader.Read(). Nghia la suot 10-30 giay do cop, UI khong nhan gi ca va
+    /// dung nguyen so cu.
+    /// </summary>
+    public event Action<FishingState> StateChanged;
 
     public void Start()
     {
@@ -133,6 +165,7 @@ internal sealed class FishingBot
 
             SetUpDumper();
 
+            _sessionSw.Restart();
             Cast(ct, "thả câu");
 
             int biteFrames = 0;
@@ -148,6 +181,26 @@ internal sealed class FishingBot
             var fightSw = new Stopwatch();
             var ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
 
+            // Khoi reset nay truoc day duoc lap y nguyen bon lan — bon cho phai giu
+            // dong bo bang tay. Local function sua thang bien ben ngoai duoc, nen gop
+            // lai duoc ma khong phai doi bien thanh field.
+            //
+            // keepRetries: nhanh "tha truot" khong reset castRetries (no phai cong don
+            // toi CastConfirmRetries) va cung khong can dat sawCastHud = false, vi
+            // sawCastHud == false chinh la dieu kien kich hoat nhanh do.
+            void EnterWaiting(bool keepRetries = false)
+            {
+                biteFrames = 0;
+                sawCastHud = false;
+                if (!keepRetries) castRetries = 0;
+                _castRetries = castRetries;
+                waitSw.Restart();
+                ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                SetPhase(FishingPhase.WaitingForBite);
+            }
+
+            EnterWaiting();
+
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
@@ -155,6 +208,8 @@ internal sealed class FishingBot
 
                 var snap = reader.Read();
                 SnapshotReady?.Invoke(snap);
+                _lastFill = snap.BlueFill01;
+                Heartbeat();
 
                 if (!fighting)
                 {
@@ -165,25 +220,24 @@ internal sealed class FishingBot
 
                     if (biteFrames >= _cfg.BiteDebounceFrames)
                     {
+                        _bites++;
                         Emit($"cá cắn (ncc={snap.FishScore:F3}) — giữ S");
                         HoldS();
                         fighting = true;
                         sawHud = snap.UiOpen;
                         fightSw.Restart();
+                        SetPhase(FishingPhase.Fighting);
                         continue;
                     }
 
                     bool rejectOk = snap.FailNotice && !snap.UiOpen && DateTime.UtcNow >= ignoreFailUntil;
                     if (rejectOk)
                     {
+                        _rejects++;
                         Emit($"chê mồi (ncc={snap.RejectScore:F3}, HUD đóng) — câu lại");
                         Sleep(ct, _cfg.RejectRecastMs);
                         Cast(ct, "câu lại", waitRelease: false);
-                        biteFrames = 0;
-                        sawCastHud = false;
-                        castRetries = 0;
-                        waitSw.Restart();
-                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        EnterWaiting();
                         continue;
                     }
 
@@ -200,12 +254,11 @@ internal sealed class FishingBot
                     if (castMissed)
                     {
                         castRetries++;
+                        _castMissed++;
                         Emit($"thanh câu không hiện sau {_cfg.CastConfirmMs} ms — thả câu trượt, " +
                              $"thả lại (lần {castRetries}/{_cfg.CastConfirmRetries})");
                         Cast(ct, "thả lại (trượt)", waitRelease: false);
-                        biteFrames = 0;
-                        waitSw.Restart();
-                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        EnterWaiting(keepRetries: true);
                         continue;
                     }
 
@@ -215,12 +268,9 @@ internal sealed class FishingBot
                              $" (thanh={(sawCastHud ? "đã mở" : "chưa mở lần nào")}" +
                              $" fill={snap.BlueFill01 * 100:0.0}% cá={snap.FishScore:F3}" +
                              $" chê={snap.RejectScore:F3})");
+                        _biteTimeouts++;
                         Cast(ct, "câu lại (timeout)");
-                        biteFrames = 0;
-                        sawCastHud = false;
-                        castRetries = 0;
-                        waitSw.Restart();
-                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        EnterWaiting();
                     }
                 }
                 else
@@ -237,25 +287,18 @@ internal sealed class FishingBot
                         CollectThenCast(reader, ct);
                         fighting = false;
                         sawHud = false;
-                        biteFrames = 0;
-                        sawCastHud = false;
-                        castRetries = 0;
-                        waitSw.Restart();
-                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        EnterWaiting();
                         continue;
                     }
 
                     if (fightSw.ElapsedMilliseconds >= _cfg.FightTimeoutMs)
                     {
+                        _fightTimeouts++;
                         Emit($"giữ S quá {_cfg.FightTimeoutMs} ms — nhả và câu lại");
                         Cast(ct, "câu lại (timeout kéo)");
                         fighting = false;
                         sawHud = false;
-                        biteFrames = 0;
-                        sawCastHud = false;
-                        castRetries = 0;
-                        waitSw.Restart();
-                        ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
+                        EnterWaiting();
                     }
                 }
 
@@ -295,6 +338,10 @@ internal sealed class FishingBot
         {
             ReleaseS();
             HeldKeys.ReleaseAll();
+            _sessionSw.Stop();
+            // Phat pha Stopped TRUOC khi _dumper bi don, khong thi so kg cuoi cung
+            // cua phien khong con cho nao lay ra.
+            SetPhase(FishingPhase.Stopped);
             _dumper?.Dispose();
             _dumper = null;
             Stopped?.Invoke(reason, message);
@@ -308,10 +355,12 @@ internal sealed class FishingBot
 
         if (!_profile.Keep.IsSet)
         {
+            // Chua khoanh CẤT VÀO thi khong ai bam cat ca — con nay khong tinh la bat duoc.
             Cast(ct, "thả câu", waitRelease: false);
             return;
         }
 
+        SetPhase(FishingPhase.WaitingForKeep);
         var found = WaitForKeep(reader, out bool configured, ct);
         if (found is null)
         {
@@ -336,6 +385,7 @@ internal sealed class FishingBot
         {
             Emit($"thấy nút {found.KeepRect.Width}×{found.KeepRect.Height} @ {found.KeepRect.X},{found.KeepRect.Y}" +
                  $"  dens={found.KeepDensity:F2}  ncc={found.KeepScore:F3}");
+            SetPhase(FishingPhase.ClickingKeep);
             ClickKeep(found.KeepClick, ct);
 
             var anchor = found.KeepRect;
@@ -348,6 +398,12 @@ internal sealed class FishingBot
                 anchor = still.KeepRect;
             }
         }
+
+        // Dem ca o DAY, khong o trong MaybeDump. O do no nam sau chot `_dumper is null`
+        // nen chi dem khi bat do cop — tuc con so "ca phien nay" bien mat hoan toan
+        // khi nguoi dung tat do cop. Cho nay la duong da chac chan co cu click cat ca.
+        _catches++;
+        _catchesSinceDump++;
 
         try { SnapshotReady?.Invoke(reader.Read()); } catch { }
         MaybeDump(ct);
@@ -396,8 +452,8 @@ internal sealed class FishingBot
     {
         if (_dumper is null) return;
 
-        _catches++;
-        _catchesSinceDump++;
+        // _catches / _catchesSinceDump da tang o CollectThenCast, ngay truoc khi vao day.
+        // Truoc kia chung tang o chinh cho nay, tuc nam sau chot `_dumper is null`.
 
         // Cop day roi thi khong con gi de do: chi con viec chat day ba lo roi dung.
         if (_dumper.TrunkFull) { WatchBagUntilFull(ct); return; }
@@ -419,9 +475,11 @@ internal sealed class FishingBot
 
         if (_dumper.OcrHealthy)
         {
+            SetPhase(FishingPhase.CheckingWeight);
             var w = _dumper.PeekBagWeight(ct);
             if (w.Ok)
             {
+                _lastBagKg = w.Value;
                 double full = _cfg.BagCapKg - _cfg.DumpMarginKg;
                 double fishKg = _dumper.PendingFishKg(w.Value);
                 double free = _dumper.TrunkFreeKg;
@@ -440,7 +498,12 @@ internal sealed class FishingBot
                      $"  (đổ khi ≥ {full:F1} kg" + (wontFit ? ", hoặc sắp không lọt cốp" : "") +
                      (tightNow ? ", cốp sắp đầy nên đổ từng con" : "") + ")");
 
-                if (!bagFull && !wontFit && !byCount && !tightNow) return;
+                // Chua den nguong do — quay lai cho can, khong thi UI ket o "Cân ba lô".
+                if (!bagFull && !wontFit && !byCount && !tightNow)
+                {
+                    SetPhase(FishingPhase.WaitingForBite);
+                    return;
+                }
             }
             else if (!byCount && _catchesSinceDump < _cfg.CatchesPerDumpFallback)
             {
@@ -453,8 +516,11 @@ internal sealed class FishingBot
         }
 
         Emit("--- đổ cá vào cốp ---");
+        SetPhase(FishingPhase.Dumping);
         var r = _dumper.Dump(ct);
         _catchesSinceDump = 0;
+        // Cop vua doi, phat lai ngay de so kg tren UI khong tre mot luot.
+        Publish(force: true);
 
         if (r == DumpResult.Ok)
         {
@@ -496,10 +562,13 @@ internal sealed class FishingBot
         // Mot lan doc hong khong dung phien: PeekBagWeight tu dem, hong lien tiep du nhieu thi
         // OcrHealthy tat va cua tren dung ho. Dung ngay o lan hong dau la vut ca phien vi mot
         // khung hinh xau.
+        SetPhase(FishingPhase.EndgameWeighing);
         var w = _dumper.PeekBagWeight(ct);
+        if (w.Ok) _lastBagKg = w.Value;
         if (!w.Ok)
         {
             Emit("cốp đầy — lần cân này hỏng, câu tiếp rồi cân lại");
+            SetPhase(FishingPhase.WaitingForBite);
             return;
         }
 
@@ -522,6 +591,7 @@ internal sealed class FishingBot
         _endgameLastKg = w.Value;
 
         Emit($"cốp đầy — ba lô {w.Value:F1}/{w.Cap:F0} kg, câu tiếp tới {_cfg.BagFullStopKg:F1} kg");
+        SetPhase(FishingPhase.WaitingForBite);
     }
 
     /// <summary>
@@ -615,8 +685,14 @@ internal sealed class FishingBot
         InputSender.LeftUp();
     }
 
+    /// <summary>
+    /// Mot cua duy nhat cho moi cu tha — ca bay cho goi deu qua day, nen dat pha
+    /// Casting va dem _casts o day la du, khong phai rai ra bay cho.
+    /// </summary>
     private void Cast(CancellationToken ct, string why, bool waitRelease = true)
     {
+        SetPhase(FishingPhase.Casting);
+        _casts++;
         ReleaseS();
         if (waitRelease)
             Sleep(ct, _cfg.AfterReleaseMs);
@@ -670,4 +746,62 @@ internal sealed class FishingBot
     }
 
     private void Emit(string line) => Log?.Invoke(line);
+
+    // ---------------------------------------------------------------- trang thai
+
+    private void SetPhase(FishingPhase p)
+    {
+        _phase = p;
+        _phaseSw.Restart();
+        Publish(force: true);
+    }
+
+    /// <summary>
+    /// Goi moi tick vong lap. Chi thuc su phat neu da qua 250 ms — de dong ho trong
+    /// pha co nhich, ma khong nhan doi luu luong BeginInvoke o nhip PollMs.
+    /// </summary>
+    private void Heartbeat() => Publish(force: false);
+
+    private void Publish(bool force)
+    {
+        var h = StateChanged;
+        if (h is null) return;
+
+        long now = _sessionSw.ElapsedMilliseconds;
+        if (!force && _lastPublishMs >= 0 && now - _lastPublishMs < 250) return;
+        _lastPublishMs = now;
+
+        var d = _dumper;
+        h(new FishingState
+        {
+            Phase = _phase,
+            PhaseMs = _phaseSw.ElapsedMilliseconds,
+            SessionMs = now,
+
+            Casts = _casts,
+            Bites = _bites,
+            Rejects = _rejects,
+            CastMissed = _castMissed,
+            BiteTimeouts = _biteTimeouts,
+            FightTimeouts = _fightTimeouts,
+            Catches = _catches,
+            CatchesSinceDump = _catchesSinceDump,
+            CastRetries = _castRetries,
+            CastConfirmRetries = _cfg.CastConfirmRetries,
+            Fill01 = _lastFill,
+
+            // Copy ra day chu khong phoi _dumper: no bi set null trong finally cua
+            // luong bot, UI giu tham chieu la dua.
+            BagKg = _lastBagKg,
+            BagCapKg = _cfg.BagCapKg,
+            PendingFishKg = d is null || _lastBagKg < 0 ? -1 : d.PendingFishKg(_lastBagKg),
+            TrunkFreeKg = d?.TrunkFreeKg ?? -1,
+            TrunkCapKg = _cfg.TrunkCapKg,
+            TrunkFullStrikes = d?.TrunkFullStrikes ?? 0,
+            TrunkFullTries = _cfg.TrunkFullTries,
+            TrunkFull = d?.TrunkFull ?? false,
+            OcrHealthy = d?.OcrHealthy ?? true,
+            DumpOn = d is not null
+        });
+    }
 }

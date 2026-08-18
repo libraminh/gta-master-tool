@@ -8,11 +8,11 @@ internal sealed class MinerPanel : UserControl
     private MinerBot _bot;
 
     private readonly Label _status = new();
-    private readonly NumericUpDown _tapMs = new();
-    private readonly CheckBox _holdShift = new();
+    private readonly DarkSpin _tapMs = new();
+    private readonly DarkCheck _holdShift = new();
     private readonly Label _note = new();
-    private readonly Button _btnToggle = new();
-    private readonly TextBox _log = new();
+    private readonly DarkButton _btnToggle = new();
+    private readonly LogView _log = new();
     private string _jobKey = HotkeyText.Job();
 
     public bool IsRunning => _bot is { Running: true };
@@ -21,9 +21,9 @@ internal sealed class MinerPanel : UserControl
 
     public MinerPanel()
     {
-        Font = new Font("Segoe UI", 9F);
+        Font = Theme.Body;
         Dock = DockStyle.Fill;
-        BackColor = Color.White;
+        BackColor = Theme.Ground;
 
         BuildUi();
 
@@ -62,72 +62,115 @@ internal sealed class MinerPanel : UserControl
 
     // ---------------------------------------------------------------- UI
 
+    /// <summary>
+    /// Khung tho dung Dock nen chieu cao log khong con suy tu so 760 trong
+    /// HomeForm.ClientSize nhu ban cu. Ben trong tung khung van dat tuyet doi.
+    /// Thu tu Add: Fill truoc, roi Top theo thu tu nguoc voi thu tu nhin thay.
+    /// </summary>
     private void BuildUi()
     {
-        int y = 12;
-        const int w = 796;
+        _log.Dock = DockStyle.Fill;
+        Controls.Add(_log);
 
-        _status.SetBounds(12, y, w, 30);
-        _status.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+        Controls.Add(BuildSettings());
+        Controls.Add(BuildCommandBar());
+    }
+
+    private DrawPanel BuildCommandBar()
+    {
+        var bar = new DrawPanel
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.Px(56),
+            BackColor = Theme.Surface
+        };
+
+        _status.SetBounds(Theme.Px(16), Theme.Px(16), Theme.Px(360), Theme.Px(26));
+        _status.Font = Theme.StateBig;
+        _status.BackColor = Theme.Surface;
+        _status.ForeColor = Theme.Head;
         _status.Text = "Đang dừng";
-        Controls.Add(_status);
-        y += 38;
+        bar.Controls.Add(_status);
 
-        var box = new GroupBox { Text = "Cài đặt", Location = new Point(12, y), Size = new Size(w, 96) };
-        Controls.Add(box);
+        _btnToggle.Text = $"Bật  ({_jobKey})";
+        _btnToggle.Primary = true;
+        _btnToggle.Font = Theme.PhaseBig;
+        _btnToggle.Click += (_, _) => Toggle();
+        _btnToggle.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _btnToggle.SetBounds(bar.Width - Theme.Px(180), Theme.Px(13), Theme.Px(164), Theme.Px(32));
+        bar.Controls.Add(_btnToggle);
 
-        box.Controls.Add(new Label { Text = "Bấm E mỗi", Location = new Point(16, 30), AutoSize = true });
+        return bar;
+    }
 
-        _tapMs.SetBounds(96, 26, 80, 24);
-        _tapMs.Minimum = 50;
-        _tapMs.Maximum = 5_000;
-        _tapMs.Increment = 50;
-        _tapMs.Value = Math.Clamp(_cfg.TapEveryMs, (int)_tapMs.Minimum, (int)_tapMs.Maximum);
+    private DrawPanel BuildSettings()
+    {
+        var host = new DrawPanel
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.Px(206),
+            BackColor = Theme.Ground
+        };
+
+        int w = Theme.Px(560);
+
+        var box = new DarkGroup
+        {
+            Title = "Cài đặt",
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(8), w, Theme.Px(88))
+        };
+        host.Controls.Add(box);
+
+        Lab(box, "Bấm E mỗi", Theme.Px(12), Theme.Px(26), Theme.Px(84));
+
+        _tapMs.SetBounds(Theme.Px(100), Theme.Px(22), Theme.Px(80), Theme.Px(24));
+        _tapMs.Min = 50;
+        _tapMs.Max = 5_000;
+        _tapMs.Step = 50;
+        _tapMs.SetValueQuiet(Math.Clamp(_cfg.TapEveryMs, _tapMs.Min, _tapMs.Max));
         box.Controls.Add(_tapMs);
 
-        box.Controls.Add(new Label
-        {
-            Text = "ms   (200 = nhịp đo trong game; đổi được cả lúc đang chạy)",
-            Location = new Point(184, 30),
-            AutoSize = true
-        });
+        Lab(box, "ms   (200 = nhịp đo trong game; đổi được cả lúc đang chạy)",
+            Theme.Px(188), Theme.Px(26), w - Theme.Px(200));
 
-        // Gan sau khi da set .Value de khoi ban ValueChanged luc dung UI.
-        _tapMs.ValueChanged += (_, _) => OnTapMsChanged();
+        // Gan sau khi da set gia tri de khoi ban ValueChanged luc dung UI.
+        _tapMs.ValueChanged += OnTapMsChanged;
 
-        _holdShift.SetBounds(16, 60, 320, 22);
+        _holdShift.SetBounds(Theme.Px(12), Theme.Px(54), Theme.Px(320), Theme.Px(22));
         _holdShift.Text = "Giữ Left Shift cùng W (chạy nước rút)";
-        _holdShift.Checked = _cfg.HoldShift;
-        _holdShift.CheckedChanged += (_, _) => OnHoldShiftChanged();
+        _holdShift.BackColor = Theme.Surface;
+        _holdShift.SetCheckedQuiet(_cfg.HoldShift);
+        _holdShift.CheckedChanged += OnHoldShiftChanged;
         box.Controls.Add(_holdShift);
 
-        y += 106;
-
-        var help = new GroupBox { Text = "Cách dùng", Location = new Point(12, y), Size = new Size(w, 96) };
-        Controls.Add(help);
+        var help = new DarkGroup
+        {
+            Title = "Cách dùng",
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(104), w, Theme.Px(92))
+        };
+        host.Controls.Add(help);
 
         _note.AutoSize = false;
-        _note.Font = new Font("Segoe UI", 9.5F);
-        _note.SetBounds(16, 24, 760, 64);
+        _note.Font = Theme.Body;
+        _note.BackColor = Theme.Surface;
+        _note.ForeColor = Theme.Dim;
+        _note.SetBounds(Theme.Px(12), Theme.Px(22), w - Theme.Px(24), Theme.Px(62));
         help.Controls.Add(_note);
         RefreshNote();
 
-        y += 106;
+        return host;
+    }
 
-        _btnToggle.SetBounds(12, y, 288, 32);
-        _btnToggle.Text = $"Bật  ({_jobKey})";
-        _btnToggle.Click += (_, _) => Toggle();
-        Controls.Add(_btnToggle);
-
-        y += 42;
-
-        _log.SetBounds(12, y, w, 760 - y - 12);
-        _log.Multiline = true;
-        _log.ReadOnly = true;
-        _log.ScrollBars = ScrollBars.Vertical;
-        _log.Font = new Font("Consolas", 9F);
-        _log.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
-        Controls.Add(_log);
+    private static void Lab(Control host, string text, int x, int y, int w)
+    {
+        host.Controls.Add(new Label
+        {
+            Text = text,
+            Font = Theme.Body,
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Text,
+            Bounds = new Rectangle(x, y, w, Theme.Px(18))
+        });
     }
 
     private void RefreshNote()
@@ -146,7 +189,7 @@ internal sealed class MinerPanel : UserControl
     /// </summary>
     private void OnTapMsChanged()
     {
-        _cfg.TapEveryMs = (int)_tapMs.Value;
+        _cfg.TapEveryMs = _tapMs.Value;
         _cfg.Save();
         RefreshNote();
         Append($"nhịp bấm E: {_cfg.TapEveryMs} ms");
@@ -175,13 +218,13 @@ internal sealed class MinerPanel : UserControl
         _bot.Stopped += (r, msg) => Post(() =>
         {
             _status.Text = $"Đã dừng — {MinerBot.TenLyDo(r)}";
-            _status.ForeColor = r == MinerStopReason.UserStopped ? Color.DarkGreen : Color.Firebrick;
+            _status.ForeColor = r == MinerStopReason.UserStopped ? Theme.Good : Theme.Bad;
             if (r != MinerStopReason.UserStopped) Append("dừng: " + msg);
             SetRunningUi(false);
         });
 
         _status.Text = "Đang cày";
-        _status.ForeColor = Color.DarkBlue;
+        _status.ForeColor = Theme.Accent;
         SetRunningUi(true);
         Append("--- bắt đầu cày ---");
         _bot.Start();
@@ -213,10 +256,7 @@ internal sealed class MinerPanel : UserControl
 
     private void Append(string line)
     {
-        var stamp = DateTime.Now.ToString("HH:mm:ss");
-        if (_log.Lines.Length > 600)
-            _log.Lines = _log.Lines.Skip(200).ToArray();
-        _log.AppendText($"[{stamp}] {line}{Environment.NewLine}");
+        _log.Append(line);
 
         try
         {

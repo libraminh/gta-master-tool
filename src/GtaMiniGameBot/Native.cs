@@ -201,6 +201,30 @@ internal static class Native
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
 
+    // ================= DWM / theme =================
+    // Thanh tieu de va vien cua so do Windows ve, khong phai minh — khong goi
+    // may cai nay thi cua so nen toi van co mot dai trang o tren.
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmSetWindowAttribute(IntPtr hWnd, int attr, ref int value, int size);
+
+    /// <summary>20 tu Windows 10 20H1; ban cu hon dung 19. Goi ca hai, cai nao sai thi tra loi != 0.</summary>
+    public const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+    public const int DWMWA_USE_IMMERSIVE_DARK_MODE_OLD = 19;
+    public const int DWMWA_BORDER_COLOR = 34;
+    public const int DWMWA_CAPTION_COLOR = 35;
+    public const int DWMWA_TEXT_COLOR = 36;
+
+    /// <summary>DWM nhan mau dang COLORREF (0x00BBGGRR), khong phai RGB.</summary>
+    public static int ColorRef(Color c) => c.R | (c.G << 8) | (c.B << 16);
+
+    /// <summary>
+    /// Thanh cuon cua Panel do Windows ve, khong theo BackColor. Gan theme
+    /// "DarkMode_Explorer" la cach duy nhat lam no toi ma khong phai tu ve
+    /// mot thanh cuon rieng.
+    /// </summary>
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetWindowTheme(IntPtr hWnd, string subApp, string subIdList);
+
     // ---------------------------------------------------------------
     /// <summary>
     /// Chuyen toa do man hinh that -> he 0..65535 cua SendInput.

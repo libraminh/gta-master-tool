@@ -279,6 +279,13 @@ internal sealed class TrunkDumper : IDisposable
 
         if (moved > 0)
         {
+            // Xoa lich su NGAY TRUOC lan doc nay. Keo xong thi KG chac chan giam, ma WeightReader
+            // co cong chan "giam ma chua do cop" — de nguyen thi no tu choi dung lan doc quan
+            // trong nhat, va BagBaseKg khong bao gio hoc duoc. Do chinh la thu da xay ra suot:
+            // log ghi "ba lo 8.7 -> -1.0 kg" roi moi luot do deu keu "chua biet cho ca nang bao
+            // nhieu", keo theo ca cua chan "khong lot cop" lan che do do tung con deu chet.
+            _bagWeight.ResetHistory();
+
             double after = ReadBagWeightNow();
             if (before >= 0 && after >= 0 && before - after < _cfg.MinDropKg)
                 _log($"cảnh báo: kéo {moved} ô nhưng KG chỉ giảm {before - after:F1} " +
@@ -366,6 +373,9 @@ internal sealed class TrunkDumper : IDisposable
     {
         if (!OcrHealthy) return -1;
         var r = _bagWeight.Read();
+        // Noi ro vi sao hong. Truoc day cho nay nuot lang le, nen log chi hien "-1.0 kg" va
+        // khong ai lan ra duoc rang cong chan giam moi la thu dang tu choi.
+        if (!r.Ok) _log($"không đọc được KG ba lô ({r.Reason}) — “{r.Text}”");
         return r.Ok ? r.Value : -1;
     }
 
@@ -423,15 +433,21 @@ internal sealed class TrunkDumper : IDisposable
                 if (cell is null || cell.IsEmpty) continue;
 
                 var guess = _catalog.Classify(gray, cell.Rect.Width, cell.Rect.Height);
-                if (guess.Name is null)
+
+                // Hoi "co phai ca" chu khong hoi "loai gi" — xem ItemGuess.FishName.
+                string fishName = guess.FishName(_fishItems, _cfg.ItemNccMin);
+                if (fishName is null)
                 {
-                    unknown.Add($"{label} #{cell.Index} {guess}");
+                    // Ro ma khong phai ca thi im lang bo qua; chi ke ra o thuc su khong ro.
+                    if (guess.Name is null) unknown.Add($"{label} #{cell.Index} {guess}");
                     continue;
                 }
-                if (!_fishItems.Contains(guess.Name)) continue;
 
                 foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
-                note = $"kéo {label} #{cell.Index} — {guess}";
+                note = guess.Name is null
+                    ? $"kéo {label} #{cell.Index} — {guess.Best} {guess.Score:F2}, lẫn với " +
+                      $"{guess.Runner} {guess.RunnerScore:F2} — cả hai đều là cá nên vẫn kéo"
+                    : $"kéo {label} #{cell.Index} — {guess}";
                 return (scanner, cell);
             }
         }

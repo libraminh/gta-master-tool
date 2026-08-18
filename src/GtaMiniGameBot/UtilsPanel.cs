@@ -9,12 +9,12 @@ internal sealed class UtilsPanel : UserControl
 
     private readonly Label _title = new();
     private readonly Label _status = new();
-    private readonly Button _btnToggle = new();
+    private readonly DarkButton _btnToggle = new();
     private readonly Label _autoRun = new();
     private readonly Label _sprint = new();
     private readonly Label _ctrlHold = new();
     private readonly Label _focus = new();
-    private readonly Button _btnTestOverlay = new();
+    private readonly DarkButton _btnTestOverlay = new();
     private readonly Label _note = new();
     private readonly Dictionary<Hk, Label> _keyLabels = new();
 
@@ -29,9 +29,9 @@ internal sealed class UtilsPanel : UserControl
 
     public UtilsPanel()
     {
-        Font = new Font("Segoe UI", 9F);
+        Font = Theme.Body;
         Dock = DockStyle.Fill;
-        BackColor = Color.White;
+        BackColor = Theme.Ground;
         AutoScroll = true;
 
         BuildUi();
@@ -53,14 +53,14 @@ internal sealed class UtilsPanel : UserControl
         int y = 12;
         const int w = 796;
 
-        _title.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+        _title.Font = Theme.StateBig;
         _title.AutoSize = false;
         _title.SetBounds(12, y, w, 28);
         Controls.Add(_title);
         y += 36;
 
         _status.SetBounds(14, y, 360, 30);
-        _status.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+        _status.Font = Theme.StateBig;
         Controls.Add(_status);
 
         _btnToggle.SetBounds(390, y, 288, 32);
@@ -68,31 +68,31 @@ internal sealed class UtilsPanel : UserControl
         Controls.Add(_btnToggle);
         y += 44;
 
-        var box = new GroupBox { Text = "Trạng thái", Location = new Point(12, y), Size = new Size(w, 122) };
+        var box = new DarkGroup { Title = "Trạng thái", Location = new Point(12, y), Size = new Size(w, 122) };
         Controls.Add(box);
 
         _focus.SetBounds(16, 24, 760, 20);
-        _focus.Font = new Font("Consolas", 10F);
+        _focus.Font = Theme.DataMd;
         box.Controls.Add(_focus);
 
         _autoRun.SetBounds(16, 46, 760, 20);
-        _autoRun.Font = new Font("Consolas", 10F);
+        _autoRun.Font = Theme.DataMd;
         box.Controls.Add(_autoRun);
 
         _sprint.SetBounds(16, 68, 760, 20);
-        _sprint.Font = new Font("Consolas", 10F);
+        _sprint.Font = Theme.DataMd;
         box.Controls.Add(_sprint);
 
         _ctrlHold.SetBounds(16, 90, 760, 20);
-        _ctrlHold.Font = new Font("Consolas", 10F);
+        _ctrlHold.Font = Theme.DataMd;
         box.Controls.Add(_ctrlHold);
         y += 138;
 
-        var help = new GroupBox { Text = "Cách dùng", Location = new Point(12, y), Size = new Size(w, 188) };
+        var help = new DarkGroup { Title = "Cách dùng", Location = new Point(12, y), Size = new Size(w, 188) };
         Controls.Add(help);
 
         _note.AutoSize = false;
-        _note.Font = new Font("Segoe UI", 9.5F);
+        _note.Font = Theme.Body;
         _note.SetBounds(16, 24, 760, 150);
         help.Controls.Add(_note);
         y += 196;
@@ -107,7 +107,7 @@ internal sealed class UtilsPanel : UserControl
             Text = "Hiện badge ● ON ở góc màn hình game. Kết quả ghi vào overlay-log.txt cạnh exe.",
             Location = new Point(244, y + 6),
             AutoSize = true,
-            ForeColor = Color.DimGray
+            ForeColor = Theme.Dim
         });
         y += 40;
 
@@ -116,7 +116,7 @@ internal sealed class UtilsPanel : UserControl
 
     private void BuildHotkeyBox(int y, int w)
     {
-        var box = new GroupBox { Text = "Phím tắt", Location = new Point(12, y), Size = new Size(w, 254) };
+        var box = new DarkGroup { Title = "Phím tắt", Location = new Point(12, y), Size = new Size(w, 254) };
         Controls.Add(box);
 
         AddHotkeyRow(box, 26, Hk.Job, "Bật/tắt job (Dầu khí, Câu cá, Thợ mỏ)");
@@ -129,13 +129,13 @@ internal sealed class UtilsPanel : UserControl
         {
             Text = "Ba phím dưới đi qua hook và bị chặn không cho tới game khi tiện ích đang bật — "
                  + "đừng chọn phím vẫn cần dùng lúc chơi. Hai phím trên nhận được tổ hợp Ctrl/Shift/Alt.",
-            ForeColor = Color.DimGray,
+            ForeColor = Theme.Dim,
             AutoSize = false,
             Bounds = new Rectangle(16, 210, 760, 36)
         });
     }
 
-    private void AddHotkeyRow(GroupBox box, int rowY, Hk kind, string desc)
+    private void AddHotkeyRow(DarkGroup box, int rowY, Hk kind, string desc)
     {
         box.Controls.Add(new Label
         {
@@ -146,7 +146,7 @@ internal sealed class UtilsPanel : UserControl
 
         var key = new Label
         {
-            Font = new Font("Consolas", 10F, FontStyle.Bold),
+            Font = Theme.DataMd,
             AutoSize = false,
             Bounds = new Rectangle(312, rowY + 5, 150, 20)
         };
@@ -291,38 +291,38 @@ internal sealed class UtilsPanel : UserControl
         string holdKey = ("giữ " + KeyText(Hk.HoldCtrl)).PadRight(9);
 
         _status.Text = on ? $"{utilsKey} đang BẬT" : $"{utilsKey} đang TẮT";
-        _status.ForeColor = on ? Color.DarkGreen : Color.Firebrick;
+        _status.ForeColor = on ? Theme.Good : Theme.Bad;
         _btnToggle.Text = on ? $"Tắt  ({utilsKey})" : $"Bật  ({utilsKey})";
 
         _focus.Text = _svc.GameFocused
             ? "cửa sổ : game đang focus"
             : "cửa sổ : chưa focus game (PlayXGTA)";
-        _focus.ForeColor = _svc.GameFocused ? Color.DarkGreen : Color.DimGray;
+        _focus.ForeColor = _svc.GameFocused ? Theme.Good : Theme.Dim;
 
         if (!on)
         {
             _autoRun.Text = $"{autoKey}: --  (bật {utilsKey} trước)";
-            _autoRun.ForeColor = Color.DimGray;
+            _autoRun.ForeColor = Theme.Dim;
             _sprint.Text = $"{sprintKey}: --  (bật {utilsKey} trước)";
-            _sprint.ForeColor = Color.DimGray;
+            _sprint.ForeColor = Theme.Dim;
             _ctrlHold.Text = $"{holdKey}: --  (bật {utilsKey} trước)";
-            _ctrlHold.ForeColor = Color.DimGray;
+            _ctrlHold.ForeColor = Theme.Dim;
             return;
         }
 
         _autoRun.Text = _svc.AutoRun
             ? $"{autoKey}: đang tự chạy (giữ W)"
             : $"{autoKey}: tắt — nhấn {KeyText(Hk.AutoRun)} để chạy";
-        _autoRun.ForeColor = _svc.AutoRun ? Color.DarkGreen : Color.DimGray;
+        _autoRun.ForeColor = _svc.AutoRun ? Theme.Good : Theme.Dim;
 
         _sprint.Text = _svc.Sprint
             ? $"{sprintKey}: đang nước rút (giữ W + Left Shift)"
             : $"{sprintKey}: tắt — nhấn {KeyText(Hk.Sprint)} để nước rút";
-        _sprint.ForeColor = _svc.Sprint ? Color.DarkGreen : Color.DimGray;
+        _sprint.ForeColor = _svc.Sprint ? Theme.Good : Theme.Dim;
 
         _ctrlHold.Text = _svc.CtrlHeld
             ? $"{holdKey}: đang thêm Left Ctrl"
             : $"{holdKey}: chờ — giữ {KeyText(Hk.HoldCtrl)} > 200 ms để thêm Ctrl";
-        _ctrlHold.ForeColor = _svc.CtrlHeld ? Color.DarkGreen : Color.DimGray;
+        _ctrlHold.ForeColor = _svc.CtrlHeld ? Theme.Good : Theme.Dim;
     }
 }

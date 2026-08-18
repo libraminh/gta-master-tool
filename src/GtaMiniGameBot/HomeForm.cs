@@ -1,4 +1,4 @@
-namespace GtaMiniGameBot;
+﻿namespace GtaMiniGameBot;
 
 internal sealed class HomeForm : Form
 {
@@ -6,12 +6,13 @@ internal sealed class HomeForm : Form
 
     private const int HOTKEY_TOGGLE = 1;
     private const int HOTKEY_UTILS = 2;
-    private const int SidebarW = 200;
 
-    private readonly Button _btnOil = new();
-    private readonly Button _btnFish = new();
-    private readonly Button _btnMine = new();
-    private readonly Button _btnUtils = new();
+    private static readonly int RailW = Theme.Px(60);
+
+    private readonly RailButton _btnOil = new("Dầu", RailIcon.Oil);
+    private readonly RailButton _btnFish = new("Câu", RailIcon.Fish);
+    private readonly RailButton _btnMine = new("Mỏ", RailIcon.Mine);
+    private readonly RailButton _btnUtils = new("Tiện ích", RailIcon.Utils);
     private readonly Panel _host = new();
     private readonly OilWellPanel _oil = new();
     private readonly FishingPanel _fish = new();
@@ -26,14 +27,16 @@ internal sealed class HomeForm : Form
     public HomeForm()
     {
         Text = "GTA Master Tool";
-        Font = new Font("Segoe UI", 9F);
-        ClientSize = new Size(SidebarW + 820, 760);
-        MinimumSize = new Size(SidebarW + 760, 620);
+        Font = Theme.Body;
+        BackColor = Theme.Ground;
+        ForeColor = Theme.Text;
+        ClientSize = new Size(RailW + Theme.Px(880), Theme.Px(780));
+        MinimumSize = new Size(RailW + Theme.Px(820), Theme.Px(640));
         StartPosition = FormStartPosition.CenterScreen;
 
-        BuildSidebar();
+        BuildRail();
         BuildHost();
-        ShowOil();
+        Apply(TabKind.Oil);
 
         _oil.RunningChanged += OnJobRunning;
         _fish.RunningChanged += OnJobRunning;
@@ -41,6 +44,8 @@ internal sealed class HomeForm : Form
         _utils.TestOverlayRequested += OnTestOverlay;
         _utils.HotkeysSuspend += UnregisterHotkeys;
         _utils.HotkeysApplied += OnHotkeysApplied;
+
+        _fish.StateChanged += _overlay.Update;
 
         _overlayTest.Interval = 5000;
         _overlayTest.Tick += (_, _) => StopOverlayTest();
@@ -58,6 +63,7 @@ internal sealed class HomeForm : Form
             _overlay.Hide();
             Text = "GTA Master Tool";
         }
+        RefreshRail();
     }
 
     private void OnTestOverlay()
@@ -74,150 +80,125 @@ internal sealed class HomeForm : Form
             _overlay.Hide();
     }
 
-    private void BuildSidebar()
+    private void BuildRail()
     {
-        var side = new Panel
+        var side = new DrawPanel
         {
             Dock = DockStyle.Left,
-            Width = SidebarW,
-            BackColor = Color.FromArgb(245, 246, 248)
+            Width = RailW,
+            BackColor = Theme.Sunk
         };
         Controls.Add(side);
 
-        var title = new Label
+        int y = Theme.Px(12);
+        foreach (var (b, act) in new (RailButton, Action)[]
+                 {
+                     (_btnOil, ShowOil), (_btnFish, ShowFishing), (_btnMine, ShowMining)
+                 })
         {
-            Text = "GTA Master Tool",
-            Font = new Font("Segoe UI", 11F, FontStyle.Bold),
-            AutoSize = false
+            b.SetBounds(Theme.Px(6), y, RailW - Theme.Px(12), Theme.Px(52));
+            b.Click += (_, _) => act();
+            side.Controls.Add(b);
+            y += Theme.Px(56);
+        }
+
+        // Ba job dung lien nhau, Tiện ích xuong duoi — no khong phai job.
+        y += Theme.Px(10);
+        var sep = new DrawPanel
+        {
+            BackColor = Theme.Line,
+            Bounds = new Rectangle(Theme.Px(18), y, RailW - Theme.Px(36), 1)
         };
-        title.SetBounds(12, 16, SidebarW - 24, 48);
-        side.Controls.Add(title);
+        side.Controls.Add(sep);
+        y += Theme.Px(12);
 
-        StyleNav(_btnOil, "Dầu khí", 76);
-        _btnOil.Click += (_, _) => ShowOil();
-        side.Controls.Add(_btnOil);
-
-        StyleNav(_btnFish, "Câu cá", 118);
-        _btnFish.Click += (_, _) => ShowFishing();
-        side.Controls.Add(_btnFish);
-
-        // Ba job dung lien nhau, Tiện ích xuong duoi cung — no khong phai job.
-        StyleNav(_btnMine, "Thợ mỏ", 160);
-        _btnMine.Click += (_, _) => ShowMining();
-        side.Controls.Add(_btnMine);
-
-        StyleNav(_btnUtils, "Tiện ích", 202);
+        _btnUtils.SetBounds(Theme.Px(6), y, RailW - Theme.Px(12), Theme.Px(52));
         _btnUtils.Click += (_, _) => ShowUtils();
         side.Controls.Add(_btnUtils);
-    }
-
-    private static void StyleNav(Button b, string text, int y)
-    {
-        b.Text = text;
-        b.SetBounds(12, y, SidebarW - 24, 36);
-        b.FlatStyle = FlatStyle.Flat;
-        b.FlatAppearance.BorderSize = 0;
-        b.TextAlign = ContentAlignment.MiddleLeft;
-        b.Padding = new Padding(8, 0, 0, 0);
-        b.Cursor = Cursors.Hand;
     }
 
     private void BuildHost()
     {
         _host.Dock = DockStyle.Fill;
-        _host.BackColor = Color.White;
+        _host.BackColor = Theme.Ground;
         Controls.Add(_host);
         _host.BringToFront();
 
-        _oil.Dock = DockStyle.Fill;
-        _host.Controls.Add(_oil);
-
-        _fish.Dock = DockStyle.Fill;
-        _host.Controls.Add(_fish);
-
-        _mine.Dock = DockStyle.Fill;
-        _host.Controls.Add(_mine);
-
-        _utils.Dock = DockStyle.Fill;
-        _host.Controls.Add(_utils);
+        foreach (Control c in new Control[] { _oil, _fish, _mine, _utils })
+        {
+            c.Dock = DockStyle.Fill;
+            _host.Controls.Add(c);
+        }
     }
 
-    private void ShowOil()
+    /// <summary>
+    /// Doi tab la TAT job dang chay — <see cref="OilWellPanel.StopWork"/> va ban cua
+    /// hai panel kia deu bi goi vo dieu kien. Truoc day no im lang, tuc bam lech mot
+    /// icon la mat ca phien. Gio hoi lai.
+    /// </summary>
+    private bool MayLeaveRunningJob()
     {
-        _fish.StopWork();
-        _mine.StopWork();
-        _fish.Hide();
-        _mine.Hide();
-        _utils.Hide();
-        _oil.Show();
-        _oil.BringToFront();
-        _tab = TabKind.Oil;
-        HighlightNav();
+        string what =
+            _oil.IsRunning ? "Dầu khí" :
+            _fish.IsRunning ? "Câu cá" :
+            _mine.IsRunning ? "Thợ mỏ" : null;
+        if (what is null) return true;
+
+        return MessageBox.Show(this,
+            $"Job “{what}” đang chạy. Đổi tab sẽ tắt nó.\r\n\r\nĐổi tab?",
+            "Đang chạy", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
     }
 
-    private void ShowFishing()
-    {
-        if (_oil.IsRunning)
-            _oil.StopWork();
-        _mine.StopWork();
+    private void ShowOil() => Select(TabKind.Oil);
+    private void ShowFishing() => Select(TabKind.Fish);
+    private void ShowMining() => Select(TabKind.Mine);
+    private void ShowUtils() => Select(TabKind.Utils);
 
-        _oil.Hide();
-        _mine.Hide();
-        _utils.Hide();
-        _fish.Show();
-        _fish.BringToFront();
-        _tab = TabKind.Fish;
-        HighlightNav();
+    private void Select(TabKind t)
+    {
+        if (_tab == t) return;
+        if (!MayLeaveRunningJob()) return;
+        Apply(t);
     }
 
-    private void ShowMining()
+    private void Apply(TabKind t)
     {
-        if (_oil.IsRunning)
-            _oil.StopWork();
-        _fish.StopWork();
+        // Oil giu chot IsRunning nhu ban cu; ba panel kia StopWork() vo dieu kien
+        // vi no chi huy bot roi nha phim, goi khi dang dung la vo hai.
+        if (t != TabKind.Oil && _oil.IsRunning) _oil.StopWork();
+        if (t != TabKind.Fish) _fish.StopWork();
+        if (t != TabKind.Mine) _mine.StopWork();
 
-        _oil.Hide();
-        _fish.Hide();
-        _utils.Hide();
-        _mine.Show();
-        _mine.BringToFront();
-        _tab = TabKind.Mine;
-        HighlightNav();
+        _oil.Visible = t == TabKind.Oil;
+        _fish.Visible = t == TabKind.Fish;
+        _mine.Visible = t == TabKind.Mine;
+        _utils.Visible = t == TabKind.Utils;
+
+        Control front = t switch
+        {
+            TabKind.Oil => _oil,
+            TabKind.Fish => _fish,
+            TabKind.Mine => _mine,
+            _ => _utils
+        };
+        front.BringToFront();
+
+        _tab = t;
+        RefreshRail();
     }
 
-    private void ShowUtils()
+    private void RefreshRail()
     {
-        if (_oil.IsRunning)
-            _oil.StopWork();
-        _fish.StopWork();
-        _mine.StopWork();
-
-        _oil.Hide();
-        _fish.Hide();
-        _mine.Hide();
-        _utils.Show();
-        _utils.BringToFront();
-        _tab = TabKind.Utils;
-        HighlightNav();
-    }
-
-    private void HighlightNav()
-    {
-        PaintNav(_btnOil, _tab == TabKind.Oil);
-        PaintNav(_btnFish, _tab == TabKind.Fish);
-        PaintNav(_btnMine, _tab == TabKind.Mine);
-        PaintNav(_btnUtils, _tab == TabKind.Utils);
-    }
-
-    private static void PaintNav(Button b, bool on)
-    {
-        b.BackColor = on ? Color.White : Color.Transparent;
-        b.Font = new Font("Segoe UI", 9F, on ? FontStyle.Bold : FontStyle.Regular);
+        _btnOil.SetState(_tab == TabKind.Oil, _oil.IsRunning);
+        _btnFish.SetState(_tab == TabKind.Fish, _fish.IsRunning);
+        _btnMine.SetState(_tab == TabKind.Mine, _mine.IsRunning);
+        _btnUtils.SetState(_tab == TabKind.Utils, false);
     }
 
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        Theme.DarkTitleBar(this);
         RegisterHotkeys(warn: true);
     }
 
@@ -303,6 +284,7 @@ internal sealed class HomeForm : Form
         _oil.RunningChanged -= OnJobRunning;
         _fish.RunningChanged -= OnJobRunning;
         _mine.RunningChanged -= OnJobRunning;
+        _fish.StateChanged -= _overlay.Update;
         _utils.TestOverlayRequested -= OnTestOverlay;
         _utils.HotkeysSuspend -= UnregisterHotkeys;
         _utils.HotkeysApplied -= OnHotkeysApplied;
@@ -315,5 +297,134 @@ internal sealed class HomeForm : Form
         _mine.Shutdown();
         _utils.Shutdown();
         base.OnFormClosing(e);
+    }
+}
+
+// ------------------------------------------------------------------ rail
+
+internal enum RailIcon { Oil, Fish, Mine, Utils }
+
+/// <summary>
+/// Mot o tren rail: icon + nhan ngan, cham xanh khi job do dang chay.
+///
+/// Ban cu dung Button voi BackColor/Font doi qua lai, va ham PaintNav tao mot
+/// Font moi moi lan doi tab ma khong bao gio dispose.
+/// </summary>
+internal sealed class RailButton : DrawPanel
+{
+    private readonly string _label;
+    private readonly RailIcon _icon;
+    private bool _on;
+    private bool _running;
+    private bool _hot;
+
+    public RailButton(string label, RailIcon icon)
+    {
+        _label = label;
+        _icon = icon;
+        BackColor = Theme.Sunk;
+        Cursor = Cursors.Hand;
+    }
+
+    public void SetState(bool selected, bool running)
+    {
+        if (_on == selected && _running == running) return;
+        _on = selected;
+        _running = running;
+        Invalidate();
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hot = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hot = false; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        Theme.Prep(g);
+
+        var r = new Rectangle(0, 0, Width, Height);
+        if (_on) Theme.Fill(g, r, Theme.AccentWash);
+        else if (_hot) Theme.Fill(g, r, Theme.Surface);
+
+        if (_on)
+            Theme.Fill(g, new Rectangle(0, Theme.Px(8), Theme.Px(2), Height - Theme.Px(16)), Theme.Accent);
+
+        Color ink = _on ? Theme.Accent : _hot ? Theme.Text : Theme.Dimmer;
+
+        int s = Theme.Px(20);
+        var box = new Rectangle((Width - s) / 2, Theme.Px(8), s, s);
+        Icon(g, box, ink);
+
+        TextRenderer.DrawText(g, _label, Theme.Nav,
+            new Rectangle(0, Theme.Px(32), Width, Theme.Px(16)), ink, Theme.Centre);
+
+        if (!_running) return;
+        using var b = new SolidBrush(Theme.Good);
+        g.FillEllipse(b, Width - Theme.Px(11), Theme.Px(5), Theme.Px(6), Theme.Px(6));
+    }
+
+    private void Icon(Graphics g, Rectangle b, Color ink)
+    {
+        using var p = new Pen(ink, Math.Max(1.4f, Theme.Px(2) * 0.8f));
+        float x = b.X, y = b.Y, w = b.Width, h = b.Height;
+
+        switch (_icon)
+        {
+            case RailIcon.Oil:
+                // Gian khoan: mot thap.
+                g.DrawLines(p, new[]
+                {
+                    new PointF(x + w * 0.1f, y + h),
+                    new PointF(x + w * 0.5f, y),
+                    new PointF(x + w * 0.9f, y + h)
+                });
+                g.DrawLine(p, x + w * 0.26f, y + h * 0.6f, x + w * 0.74f, y + h * 0.6f);
+                break;
+
+            case RailIcon.Fish:
+                // Con ca: than + duoi.
+                g.DrawCurve(p, new[]
+                {
+                    new PointF(x + w * 0.08f, y + h * 0.5f),
+                    new PointF(x + w * 0.4f, y + h * 0.2f),
+                    new PointF(x + w * 0.72f, y + h * 0.5f),
+                    new PointF(x + w * 0.4f, y + h * 0.8f),
+                    new PointF(x + w * 0.08f, y + h * 0.5f)
+                });
+                g.DrawLines(p, new[]
+                {
+                    new PointF(x + w * 0.72f, y + h * 0.5f),
+                    new PointF(x + w, y + h * 0.24f),
+                    new PointF(x + w, y + h * 0.76f),
+                    new PointF(x + w * 0.72f, y + h * 0.5f)
+                });
+                break;
+
+            case RailIcon.Mine:
+                // Cai bua: can + dau.
+                g.DrawLine(p, x + w * 0.1f, y + h * 0.9f, x + w * 0.58f, y + h * 0.42f);
+                g.DrawCurve(p, new[]
+                {
+                    new PointF(x + w * 0.44f, y + h * 0.28f),
+                    new PointF(x + w * 0.72f, y + h * 0.06f),
+                    new PointF(x + w * 0.96f, y + h * 0.3f)
+                });
+                g.DrawLine(p, x + w * 0.44f, y + h * 0.28f, x + w * 0.72f, y + h * 0.56f);
+                g.DrawLine(p, x + w * 0.96f, y + h * 0.3f, x + w * 0.72f, y + h * 0.56f);
+                break;
+
+            default:
+                // Banh rang gian luoc: vong tron + bon nan hoa.
+                g.DrawEllipse(p, x + w * 0.3f, y + h * 0.3f, w * 0.4f, h * 0.4f);
+                for (int i = 0; i < 4; i++)
+                {
+                    double a = Math.PI / 2 * i;
+                    float cx = x + w / 2, cy = y + h / 2;
+                    g.DrawLine(p,
+                        cx + (float)Math.Cos(a) * w * 0.26f, cy + (float)Math.Sin(a) * h * 0.26f,
+                        cx + (float)Math.Cos(a) * w * 0.48f, cy + (float)Math.Sin(a) * h * 0.48f);
+                }
+                break;
+        }
     }
 }

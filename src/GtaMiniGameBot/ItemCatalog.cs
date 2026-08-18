@@ -22,6 +22,36 @@ internal sealed class ItemGuess
     /// <summary>Tên chốt được, null nếu chưa đủ tự tin.</summary>
     public string Name => Sure ? Best : null;
 
+    /// <summary>
+    /// Tên cá chốt được khi câu hỏi CHỈ là "ô này có phải cá", không phải "loài gì".
+    /// Trả null nếu không phải cá, hoặc chưa đủ tự tin để nói là cá.
+    ///
+    /// Khác <see cref="Name"/> ở một chỗ: hai loài CÁ lẫn nhau thì cách biệt không còn
+    /// quan trọng, vì mọi ứng viên đều dẫn tới cùng một hành động — kéo sang cốp. Luật
+    /// cách biệt vẫn giữ nguyên cho ca cá-vs-không-phải-cá, đó mới là chỗ nó cần: kéo
+    /// cần câu sang cốp mới là hỏng.
+    ///
+    /// Vì sao cần: catfish / danglemouth_catfish / striped_bass đều là thân dài bạc.
+    /// Log 18/08 có ô catfish 0.73 với striped_bass 0.70 — cách biệt 0.03 dưới ngưỡng
+    /// 0.05 nên kết luận "không rõ", và con cá đó không bao giờ được kéo. Trước đó chỉ
+    /// perch 0.87, carp 0.85, trout 0.78 đi qua nên lỗi này nằm im.
+    ///
+    /// Còn lại một rủi ro không đóng được ở đây: nếu vật thật là đồ KHÔNG phải cá mà
+    /// chấm dưới sàn, trong khi hai loài cá lại vượt sàn, thì ô đó bị kéo oan. Cái đó
+    /// do sàn <see cref="FishingConfig.ItemNccMin"/> gác, không phải luật cách biệt.
+    /// </summary>
+    public string FishName(ISet<string> fish, double nccMin)
+    {
+        if (fish is null || Best is null) return null;
+        if (Name is not null) return fish.Contains(Name) ? Name : null;
+        if (Runner is null || Score < nccMin) return null;
+        return fish.Contains(Best) && fish.Contains(Runner) ? Best : null;
+    }
+
+    /// <summary>Có phải trường hợp chốt được nhờ bỏ qua cách biệt giữa hai loài cá.</summary>
+    public bool FishByTie(ISet<string> fish, double nccMin) =>
+        Name is null && FishName(fish, nccMin) is not null;
+
     public override string ToString() =>
         (Sure ? $"{Best} {Score:F2}" : $"không rõ (cao nhất {Best ?? "–"} {Score:F2})") +
         (Runner is null ? "" : $", nhì {Runner} {RunnerScore:F2}");

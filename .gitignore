@@ -16,6 +16,7 @@ app/*.deps.json
 # Runtime logs / dumps
 app/debug/
 app/bot-log.txt
+app/overlay-log.txt
 **/verify-report.txt
 **/pick-car-template.txt
 

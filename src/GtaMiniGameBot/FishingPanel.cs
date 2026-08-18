@@ -8,50 +8,66 @@ internal sealed class FishingPanel : UserControl
     private FishingReader _reader;
     private FishingBot _bot;
 
-    private readonly ComboBox _screens = new();
+    /// <summary>Phiên vừa rồi kết thúc vì hết chỗ chứa — cú bấm kế tiếp chỉ để xác nhận, không chạy.</summary>
+    private bool _finished;
+
+    private readonly DarkPick _screens = new();
     private readonly Label _profile = new();
     private readonly Label _status = new();
-    private readonly Label _hud = new();
-    private readonly Label _fill = new();
-    private readonly Label _fish = new();
-    private readonly Label _reject = new();
-    private readonly Label _keep = new();
-    private readonly CheckBox _watch = new();
-    private readonly Button _btnToggle = new();
-    private readonly Button _btnBar = new();
-    private readonly Button _btnFish = new();
-    private readonly Button _btnReject = new();
-    private readonly Button _btnKeep = new();
-    private readonly Button _btnKeepBand = new();
-    private readonly Button _btnAltProbe = new();
-    private readonly Button _btnTrunkSetup = new();
-    private readonly CheckBox _dumpEnabled = new();
-    private readonly NumericUpDown _everyN = new();
-    private readonly NumericUpDown _dumpEvery = new();
-    private readonly NumericUpDown _turnMs = new();
+    private readonly Label _ctx = new();
+    private readonly DarkCheck _watch = new();
+    private readonly DarkButton _btnToggle = new();
+    private readonly DarkButton _btnBar = new();
+    private readonly DarkButton _btnFish = new();
+    private readonly DarkButton _btnReject = new();
+    private readonly DarkButton _btnKeep = new();
+    private readonly DarkButton _btnKeepBand = new();
+    private readonly DarkButton _btnAltProbe = new();
+    private readonly DarkButton _btnTrunkSetup = new();
+    private readonly DarkCheck _dumpEnabled = new();
+    private readonly DarkSpin _everyN = new();
+    private readonly DarkSpin _dumpEvery = new();
+    private readonly DarkSpin _turnMs = new();
     private readonly Label _dumpStatus = new();
     private readonly PictureBox _thumbBar = new();
     private readonly PictureBox _thumbFish = new();
     private readonly PictureBox _thumbReject = new();
     private readonly PictureBox _thumbKeep = new();
     private readonly PictureBox _thumbKeepBand = new();
-    private readonly TextBox _log = new();
+    private readonly LogView _log = new();
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _jobKey = HotkeyText.Job();
     private bool _syncingDumpUi;
 
+    // ---------------- phan hien so lieu ----------------
+    private readonly PhaseTrack _phase = new();
+    private readonly MeterList _meters = new();
+    private readonly MetricTile _tileCatch = new();
+    private readonly MetricTile _tileRate = new();
+    private readonly MetricTile _tileUptime = new();
+    private readonly MetricTile _tileHit = new();
+    private readonly CapacityBar _capBag = new();
+    private readonly CapacityBar _capTrunk = new();
+
+    private MeterList.Row _mHud, _mFill, _mFish, _mReject, _mKeep;
+    private FishingState _state = FishingState.Idle;
+    private int _sparkAt = -1;
+
+    /// <summary>Chuyen tiep trang thai bot ra ngoai — HomeForm dua thang cho badge overlay.</summary>
+    public event Action<FishingState> StateChanged;
+
     public FishingPanel()
     {
-        Font = new Font("Segoe UI", 9F);
+        Font = Theme.Body;
         Dock = DockStyle.Fill;
-        BackColor = Color.White;
-        AutoScroll = true;
+        BackColor = Theme.Ground;
 
         BuildUi();
         FillScreens();
         RefreshProfileLabel();
         RefreshDumpStatus();
         LoadThumbs();
+        ShowState(FishingState.Idle);
 
         _timer.Interval = 100;
         _timer.Tick += (_, _) => Tick();
@@ -102,185 +118,308 @@ internal sealed class FishingPanel : UserControl
         DisposeThumb(_thumbKeepBand);
     }
 
+    /// <summary>
+    /// Bo cuc: thanh lenh — so do vong cau — dai chi so — hai cot (so lieu | dien bien).
+    ///
+    /// Khung tho dung Dock nen khong con so 796 va cong thuc `760 - y - 12` an theo
+    /// chieu cao cua so nhu ban cu. Ben trong moi khung nho van dat tuyet doi, dung
+    /// loi cu cua repo, va cot trai co AutoScroll de khong bi cat.
+    ///
+    /// Thu tu Add quan trong: WinForms dock theo thu tu NGUOC z-order, nen control
+    /// Fill phai them TRUOC, roi cac control Top them theo thu tu nguoc voi thu tu
+    /// nhin thay.
+    /// </summary>
     private void BuildUi()
     {
-        int y = 12;
-        const int w = 796;
+        var split = new DrawPanel { Dock = DockStyle.Fill, BackColor = Theme.Ground };
+        Controls.Add(split);
 
-        var title = new Label
+        var tiles = BuildTiles();
+        Controls.Add(tiles);
+
+        _phase.Dock = DockStyle.Top;
+        Controls.Add(_phase);
+
+        Controls.Add(BuildCommandBar());
+
+        // --- trong split: cot phai la log, cot trai la so lieu ---
+        _log.Dock = DockStyle.Fill;
+        split.Controls.Add(_log);
+
+        var left = new DrawPanel
         {
-            Text = "Câu cá — khoanh vùng + bot",
-            Font = new Font("Segoe UI", 13F, FontStyle.Bold),
-            AutoSize = false
+            Dock = DockStyle.Left,
+            Width = Theme.Px(438),
+            BackColor = Theme.Ground,
+            AutoScroll = true
         };
-        title.SetBounds(12, y, w, 28);
-        Controls.Add(title);
-        y += 34;
+        split.Controls.Add(left);
 
-        Controls.Add(new Label { Text = "Màn hình game:", Location = new Point(14, y + 4), AutoSize = true });
-        _screens.SetBounds(130, y, 420, 24);
-        _screens.DropDownStyle = ComboBoxStyle.DropDownList;
-        _screens.SelectedIndexChanged += (_, _) => OnScreenChanged();
-        Controls.Add(_screens);
-        y += 34;
-
-        _profile.SetBounds(14, y, w, 22);
-        _profile.Font = new Font("Consolas", 10F);
-        Controls.Add(_profile);
-        y += 28;
-
-        _watch.SetBounds(14, y, 280, 22);
-        _watch.Text = "Theo dõi (chỉ đọc, không bấm)";
-        _watch.Checked = true;
-        Controls.Add(_watch);
-        y += 28;
-
-        _status.SetBounds(14, y, 360, 26);
-        _status.Font = new Font("Segoe UI", 12F, FontStyle.Bold);
-        _status.Text = "Đang dừng";
-        Controls.Add(_status);
-
-        _btnToggle.SetBounds(390, y, 288, 30);
-        _btnToggle.Text = $"Bật  ({_jobKey})";
-        _btnToggle.Click += (_, _) => Toggle();
-        Controls.Add(_btnToggle);
-        y += 38;
-
-        var box = new GroupBox { Text = "Đọc HUD", Location = new Point(12, y), Size = new Size(w, 122) };
-        Controls.Add(box);
-        _hud.SetBounds(16, 24, 760, 20);
-        _hud.Font = new Font("Consolas", 10F);
-        _hud.Text = "HUD : --";
-        box.Controls.Add(_hud);
-        _fill.SetBounds(16, 46, 760, 20);
-        _fill.Font = new Font("Consolas", 10F);
-        _fill.Text = "thanh : --";
-        box.Controls.Add(_fill);
-        _fish.SetBounds(16, 68, 370, 20);
-        _fish.Font = new Font("Consolas", 10F);
-        _fish.Text = "cá cắn : --";
-        box.Controls.Add(_fish);
-        _reject.SetBounds(400, 68, 380, 20);
-        _reject.Font = new Font("Consolas", 10F);
-        _reject.Text = "chê mồi : --";
-        box.Controls.Add(_reject);
-        _keep.SetBounds(16, 90, 760, 20);
-        _keep.Font = new Font("Consolas", 10F);
-        _keep.Text = "cất vào : --";
-        box.Controls.Add(_keep);
-        y += 134;
-
-        _btnBar.SetBounds(12, y, 130, 32);
-        _btnBar.Text = "Khoanh thanh";
-        _btnBar.Click += (_, _) => Pick(FishingSlot.Bar);
-        Controls.Add(_btnBar);
-
-        _btnFish.SetBounds(150, y, 120, 32);
-        _btnFish.Text = "Khoanh cá";
-        _btnFish.Click += (_, _) => Pick(FishingSlot.Fish);
-        Controls.Add(_btnFish);
-
-        _btnReject.SetBounds(278, y, 150, 32);
-        _btnReject.Text = "Khoanh thông báo";
-        _btnReject.Click += (_, _) => Pick(FishingSlot.Reject);
-        Controls.Add(_btnReject);
-
-        _btnKeep.SetBounds(436, y, 160, 32);
-        _btnKeep.Text = "Khoanh CẤT VÀO";
-        _btnKeep.Click += (_, _) => Pick(FishingSlot.Keep);
-        Controls.Add(_btnKeep);
-
-        _btnKeepBand.SetBounds(604, y, 190, 32);
-        _btnKeepBand.Text = "Khoanh vùng quét nút";
-        _btnKeepBand.Click += (_, _) => Pick(FishingSlot.KeepBand);
-        Controls.Add(_btnKeepBand);
-        y += 44;
-
-        AddThumb(_thumbBar, 12, y, "Thanh");
-        AddThumb(_thumbFish, 172, y, "Cá");
-        AddThumb(_thumbReject, 332, y, "Thông báo");
-        AddThumb(_thumbKeep, 492, y, "CẤT VÀO");
-        AddThumb(_thumbKeepBand, 652, y, "Vùng quét");
-        y += 130;
-
-        var dump = new GroupBox
+        var edge = new DrawPanel
         {
-            Text = "Đổ cá vào cốp xe",
-            Location = new Point(12, y),
-            Size = new Size(w, 104)
+            Dock = DockStyle.Left,
+            Width = 1,
+            BackColor = Theme.Line
         };
-        Controls.Add(dump);
+        split.Controls.Add(edge);
 
-        _dumpEnabled.SetBounds(16, 24, 330, 22);
-        _dumpEnabled.Text = "Tự đổ cá vào cốp khi ba lô gần đầy";
-        _dumpEnabled.CheckedChanged += (_, _) => OnDumpEnabledChanged();
-        dump.Controls.Add(_dumpEnabled);
-
-        dump.Controls.Add(new Label { Text = "Kiểm tra KG mỗi", Location = new Point(360, 26), AutoSize = true });
-        _everyN.SetBounds(468, 22, 60, 24);
-        _everyN.Minimum = 1;
-        _everyN.Maximum = 50;
-        _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, 1, 50);
-        _everyN.ValueChanged += (_, _) => OnEveryNChanged();
-        dump.Controls.Add(_everyN);
-        dump.Controls.Add(new Label { Text = "con cá", Location = new Point(534, 26), AutoSize = true });
-
-        dump.Controls.Add(new Label { Text = "· đổ mỗi", Location = new Point(596, 26), AutoSize = true });
-        _dumpEvery.SetBounds(654, 22, 56, 24);
-        _dumpEvery.Minimum = 0;
-        _dumpEvery.Maximum = 50;
-        _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, 0, 50);
-        _dumpEvery.ValueChanged += (_, _) => OnDumpEveryChanged();
-        dump.Controls.Add(_dumpEvery);
-        dump.Controls.Add(new Label { Text = "con (0=tắt)", Location = new Point(716, 26), AutoSize = true });
-
-        _dumpStatus.SetBounds(16, 52, 760, 18);
-        _dumpStatus.Font = new Font("Consolas", 9F);
-        dump.Controls.Add(_dumpStatus);
-
-        _btnTrunkSetup.SetBounds(16, 72, 190, 26);
-        _btnTrunkSetup.Text = "Cấu hình đổ cốp…";
-        _btnTrunkSetup.Click += (_, _) => OpenTrunkSetup();
-        dump.Controls.Add(_btnTrunkSetup);
-
-        _btnAltProbe.SetBounds(214, 72, 210, 26);
-        _btnAltProbe.Text = "Test giữ Alt (menu xe)";
-        _btnAltProbe.Click += (_, _) => DoAltProbe();
-        dump.Controls.Add(_btnAltProbe);
-
-        dump.Controls.Add(new Label
-        {
-            Text = "Quay mặt sau khi đổ: giữ S",
-            Location = new Point(444, 76),
-            AutoSize = true
-        });
-        _turnMs.SetBounds(600, 72, 70, 24);
-        _turnMs.Minimum = 0;
-        _turnMs.Maximum = 3000;
-        _turnMs.Increment = 50;
-        _turnMs.Value = Math.Clamp(_cfg.AfterDumpTurnMs, 0, 3000);
-        _turnMs.ValueChanged += (_, _) => OnTurnMsChanged();
-        dump.Controls.Add(_turnMs);
-        dump.Controls.Add(new Label { Text = "ms (0=tắt)", Location = new Point(676, 76), AutoSize = true });
-        y += 116;
-
-        _log.SetBounds(12, y, w, 760 - y - 12);
-        _log.Multiline = true;
-        _log.ReadOnly = true;
-        _log.ScrollBars = ScrollBars.Vertical;
-        _log.Font = new Font("Consolas", 9F);
-        _log.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom;
-        Controls.Add(_log);
+        BuildLeftColumn(left);
     }
 
-    private void AddThumb(PictureBox box, int x, int y, string caption)
+    private DrawPanel BuildCommandBar()
     {
-        Controls.Add(new Label { Text = caption, Location = new Point(x, y), AutoSize = true });
-        box.SetBounds(x, y + 18, 148, 96);
+        var bar = new DrawPanel
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.Px(62),
+            BackColor = Theme.Surface,
+            Padding = new Padding(0, 0, 0, 1)
+        };
+
+        _status.SetBounds(Theme.Px(16), Theme.Px(8), Theme.Px(240), Theme.Px(24));
+        _status.Font = Theme.StateBig;
+        _status.BackColor = Theme.Surface;
+        _status.ForeColor = Theme.Head;
+        _status.Text = "Đang dừng";
+        bar.Controls.Add(_status);
+
+        _ctx.SetBounds(Theme.Px(16), Theme.Px(34), Theme.Px(520), Theme.Px(20));
+        _ctx.Font = Theme.DataSm;
+        _ctx.BackColor = Theme.Surface;
+        _ctx.ForeColor = Theme.Dim;
+        bar.Controls.Add(_ctx);
+
+        _btnToggle.Text = $"Bật  ({_jobKey})";
+        _btnToggle.Primary = true;
+        _btnToggle.Font = Theme.PhaseBig;
+        _btnToggle.Click += (_, _) => Toggle();
+        _btnToggle.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _btnToggle.SetBounds(bar.Width - Theme.Px(180), Theme.Px(16), Theme.Px(164), Theme.Px(32));
+        bar.Controls.Add(_btnToggle);
+
+        var kbd = new Label
+        {
+            Text = _jobKey,
+            Font = Theme.DataSm,
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Dimmer,
+            TextAlign = ContentAlignment.MiddleRight,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right
+        };
+        kbd.SetBounds(bar.Width - Theme.Px(240), Theme.Px(22), Theme.Px(52), Theme.Px(20));
+        bar.Controls.Add(kbd);
+
+        return bar;
+    }
+
+    private DrawPanel BuildTiles()
+    {
+        var host = new DrawPanel
+        {
+            Dock = DockStyle.Top,
+            Height = Theme.Px(78),
+            BackColor = Theme.Surface
+        };
+
+        _tileCatch.Caption = "Cá phiên này";
+        _tileCatch.Kind = SparkKind.Line;
+        _tileCatch.Ink = Theme.Accent;
+
+        _tileRate.Caption = "Cá / giờ";
+        _tileRate.Kind = SparkKind.Line;
+        _tileRate.Ink = Theme.Good;
+
+        _tileUptime.Caption = "Chạy liên tục";
+        _tileUptime.Kind = SparkKind.None;
+
+        _tileHit.Caption = "Thả câu ăn";
+        _tileHit.Kind = SparkKind.Stack;
+        _tileHit.Divider = false;
+
+        var all = new[] { _tileCatch, _tileRate, _tileUptime, _tileHit };
+        foreach (var t in all) host.Controls.Add(t);
+
+        void Place()
+        {
+            int w = host.ClientSize.Width / 4;
+            for (int i = 0; i < all.Length; i++)
+                all[i].SetBounds(i * w, 0, i == all.Length - 1 ? host.ClientSize.Width - i * w : w,
+                                 host.ClientSize.Height);
+        }
+
+        host.Resize += (_, _) => Place();
+        Place();
+        return host;
+    }
+
+    private void BuildLeftColumn(Control host)
+    {
+        // Cot rong Px(438). Thanh cuon doc cua AutoScroll an mat ~17 px, nen khung
+        // phai hep hon the — khong thi WinForms them ca thanh cuon NGANG.
+        int w = Theme.Px(438) - Theme.Px(12) - SystemInformation.VerticalScrollBarWidth - Theme.Px(4);
+        int y = Theme.Px(10);
+
+        // ---- Doc HUD ----
+        var hud = new DarkGroup { Title = "Đọc HUD", Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(160)) };
+        host.Controls.Add(hud);
+
+        _watch.Text = "Theo dõi (chỉ đọc, không bấm)";
+        _watch.SetCheckedQuiet(true);
+        _watch.BackColor = Theme.Surface;
+        _watch.SetBounds(Theme.Px(12), Theme.Px(22), Theme.Px(260), Theme.Px(22));
+        hud.Controls.Add(_watch);
+
+        _mHud = _meters.Add("HUD");
+        _mFill = _meters.Add("thanh");
+        _mFish = _meters.Add("cá cắn");
+        _mReject = _meters.Add("chê mồi");
+        _mKeep = _meters.Add("cất vào");
+        _meters.SetBounds(Theme.Px(12), Theme.Px(48), w - Theme.Px(24), Theme.Px(106));
+        hud.Controls.Add(_meters);
+        y += Theme.Px(170);
+
+        // ---- Ba lo / cop ----
+        var kg = new DarkGroup { Title = "Ba lô & cốp xe", Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(152)) };
+        host.Controls.Add(kg);
+
+        _capBag.Label = "ba lô";
+        _capBag.SetBounds(Theme.Px(12), Theme.Px(22), w - Theme.Px(24), Theme.Px(56));
+        kg.Controls.Add(_capBag);
+
+        _capTrunk.Label = "cốp xe";
+        _capTrunk.SetBounds(Theme.Px(12), Theme.Px(84), w - Theme.Px(24), Theme.Px(56));
+        kg.Controls.Add(_capTrunk);
+        y += Theme.Px(162);
+
+        // ---- Vung da khoanh ----
+        var reg = new DarkGroup
+        {
+            Title = "Vùng đã khoanh",
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(250))
+        };
+        host.Controls.Add(reg);
+
+        Lab(reg, "Màn hình game:", Theme.Px(12), Theme.Px(25), Theme.Px(104));
+        _screens.SetBounds(Theme.Px(118), Theme.Px(21), w - Theme.Px(130), Theme.Px(24));
+        _screens.SelectedIndexChanged += OnScreenChanged;
+        reg.Controls.Add(_screens);
+
+        _profile.SetBounds(Theme.Px(12), Theme.Px(52), w - Theme.Px(24), Theme.Px(18));
+        _profile.Font = Theme.DataSm;
+        _profile.BackColor = Theme.Surface;
+        reg.Controls.Add(_profile);
+
+        int tw = (w - Theme.Px(24) - Theme.Px(16)) / 5;
+        AddThumb(reg, _thumbBar, Theme.Px(12) + 0 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Thanh");
+        AddThumb(reg, _thumbFish, Theme.Px(12) + 1 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Cá");
+        AddThumb(reg, _thumbReject, Theme.Px(12) + 2 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Thông báo");
+        AddThumb(reg, _thumbKeep, Theme.Px(12) + 3 * (tw + Theme.Px(4)), Theme.Px(78), tw, "CẤT VÀO");
+        AddThumb(reg, _thumbKeepBand, Theme.Px(12) + 4 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Vùng quét");
+
+        int by = Theme.Px(158);
+        int bw = (w - Theme.Px(24) - Theme.Px(8)) / 3;
+        Btn(reg, _btnBar, Theme.Px(12), by, bw, "Khoanh thanh", () => Pick(FishingSlot.Bar));
+        Btn(reg, _btnFish, Theme.Px(12) + bw + Theme.Px(4), by, bw, "Khoanh cá", () => Pick(FishingSlot.Fish));
+        Btn(reg, _btnReject, Theme.Px(12) + (bw + Theme.Px(4)) * 2, by, bw, "Khoanh thông báo",
+            () => Pick(FishingSlot.Reject));
+
+        by += Theme.Px(34);
+        int bw2 = (w - Theme.Px(24) - Theme.Px(4)) / 2;
+        Btn(reg, _btnKeep, Theme.Px(12), by, bw2, "Khoanh CẤT VÀO", () => Pick(FishingSlot.Keep));
+        Btn(reg, _btnKeepBand, Theme.Px(12) + bw2 + Theme.Px(4), by, bw2, "Khoanh vùng quét nút",
+            () => Pick(FishingSlot.KeepBand));
+        y += Theme.Px(260);
+
+        // ---- Do ca vao cop xe ----
+        var dump = new DarkGroup
+        {
+            Title = "Đổ cá vào cốp xe",
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(206))
+        };
+        host.Controls.Add(dump);
+
+        _dumpEnabled.Text = "Tự đổ cá vào cốp khi ba lô gần đầy";
+        _dumpEnabled.BackColor = Theme.Surface;
+        _dumpEnabled.SetBounds(Theme.Px(12), Theme.Px(22), w - Theme.Px(24), Theme.Px(22));
+        _dumpEnabled.CheckedChanged += OnDumpEnabledChanged;
+        dump.Controls.Add(_dumpEnabled);
+
+        int ry = Theme.Px(50);
+        Lab(dump, "Kiểm tra KG mỗi", Theme.Px(12), ry + Theme.Px(4), Theme.Px(120));
+        _everyN.SetBounds(Theme.Px(138), ry, Theme.Px(62), Theme.Px(24));
+        _everyN.Min = 1;
+        _everyN.Max = 50;
+        _everyN.SetValueQuiet(Math.Clamp(_cfg.WeightCheckEveryCatches, 1, 50));
+        _everyN.ValueChanged += OnEveryNChanged;
+        dump.Controls.Add(_everyN);
+        Lab(dump, "con cá", Theme.Px(206), ry + Theme.Px(4), Theme.Px(60));
+
+        Lab(dump, "· đổ mỗi", Theme.Px(266), ry + Theme.Px(4), Theme.Px(66));
+        _dumpEvery.SetBounds(Theme.Px(332), ry, Theme.Px(56), Theme.Px(24));
+        _dumpEvery.Min = 0;
+        _dumpEvery.Max = 50;
+        _dumpEvery.SetValueQuiet(Math.Clamp(_cfg.DumpEveryCatches, 0, 50));
+        _dumpEvery.ValueChanged += OnDumpEveryChanged;
+        dump.Controls.Add(_dumpEvery);
+
+        ry += Theme.Px(30);
+        Lab(dump, "Quay mặt sau khi đổ: giữ S", Theme.Px(12), ry + Theme.Px(4), Theme.Px(190));
+        _turnMs.SetBounds(Theme.Px(206), ry, Theme.Px(70), Theme.Px(24));
+        _turnMs.Min = 0;
+        _turnMs.Max = 3000;
+        _turnMs.Step = 50;
+        _turnMs.SetValueQuiet(Math.Clamp(_cfg.AfterDumpTurnMs, 0, 3000));
+        _turnMs.ValueChanged += OnTurnMsChanged;
+        dump.Controls.Add(_turnMs);
+        Lab(dump, "ms (0=tắt)", Theme.Px(282), ry + Theme.Px(4), Theme.Px(90));
+
+        ry += Theme.Px(32);
+        _dumpStatus.SetBounds(Theme.Px(12), ry, w - Theme.Px(24), Theme.Px(34));
+        _dumpStatus.Font = Theme.DataSm;
+        _dumpStatus.BackColor = Theme.Surface;
+        dump.Controls.Add(_dumpStatus);
+
+        ry += Theme.Px(40);
+        Btn(dump, _btnTrunkSetup, Theme.Px(12), ry, Theme.Px(184), "Cấu hình đổ cốp…", OpenTrunkSetup);
+        Btn(dump, _btnAltProbe, Theme.Px(202), ry, Theme.Px(184), "Test giữ Alt (menu xe)", DoAltProbe);
+    }
+
+    private static void Lab(Control host, string text, int x, int y, int w)
+    {
+        host.Controls.Add(new Label
+        {
+            Text = text,
+            Font = Theme.Body,
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Text,
+            Bounds = new Rectangle(x, y, w, Theme.Px(18))
+        });
+    }
+
+    private static void Btn(Control host, DarkButton b, int x, int y, int w, string text, Action onClick)
+    {
+        b.Text = text;
+        b.SetBounds(x, y, w, Theme.Px(30));
+        b.Click += (_, _) => onClick();
+        host.Controls.Add(b);
+    }
+
+    private static void AddThumb(Control host, PictureBox box, int x, int y, int w, string caption)
+    {
+        host.Controls.Add(new Label
+        {
+            Text = caption,
+            Font = Theme.DataSm,
+            BackColor = Theme.Surface,
+            ForeColor = Theme.Dim,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Bounds = new Rectangle(x, y, w, Theme.Px(14))
+        });
+        box.SetBounds(x, y + Theme.Px(16), w, Theme.Px(58));
         box.BorderStyle = BorderStyle.FixedSingle;
         box.SizeMode = PictureBoxSizeMode.Zoom;
-        box.BackColor = Color.FromArgb(245, 245, 245);
-        Controls.Add(box);
+        box.BackColor = Theme.Well;
+        host.Controls.Add(box);
     }
 
     private sealed class ScreenItem
@@ -304,8 +443,8 @@ internal sealed class FishingPanel : UserControl
         int select = 0;
         foreach (var s in Screen.AllScreens)
         {
-            int i = _screens.Items.Add(new ScreenItem(s));
-            if (s.DeviceName == prefer.DeviceName) select = i;
+            _screens.Items.Add(new ScreenItem(s));
+            if (s.DeviceName == prefer.DeviceName) select = _screens.Items.Count - 1;
         }
         if (_screens.Items.Count > 0)
             _screens.SelectedIndex = select;
@@ -329,26 +468,28 @@ internal sealed class FishingPanel : UserControl
         var screen = SelectedScreen;
         var p = screen is null ? null : _cfg.TryGet(screen);
 
+        // Control tu ve co ban Quiet rieng, nhung van giu co _syncingDumpUi: nhanh
+        // veto trong OnDumpEnabledChanged dua vao no, va bo di la mo duong cho de quy.
         _syncingDumpUi = true;
         try
         {
-            _dumpEnabled.Checked = p?.TrunkDumpEnabled == true;
-            _everyN.Value = Math.Clamp(_cfg.WeightCheckEveryCatches, (int)_everyN.Minimum, (int)_everyN.Maximum);
-            _dumpEvery.Value = Math.Clamp(_cfg.DumpEveryCatches, (int)_dumpEvery.Minimum, (int)_dumpEvery.Maximum);
-            _turnMs.Value = Math.Clamp(_cfg.AfterDumpTurnMs, (int)_turnMs.Minimum, (int)_turnMs.Maximum);
+            _dumpEnabled.SetCheckedQuiet(p?.TrunkDumpEnabled == true);
+            _everyN.SetValueQuiet(Math.Clamp(_cfg.WeightCheckEveryCatches, _everyN.Min, _everyN.Max));
+            _dumpEvery.SetValueQuiet(Math.Clamp(_cfg.DumpEveryCatches, _dumpEvery.Min, _dumpEvery.Max));
+            _turnMs.SetValueQuiet(Math.Clamp(_cfg.AfterDumpTurnMs, _turnMs.Min, _turnMs.Max));
         }
         finally { _syncingDumpUi = false; }
 
         if (p is null)
         {
             _dumpStatus.Text = "chưa có hồ sơ cho màn hình này";
-            _dumpStatus.ForeColor = Color.DimGray;
+            _dumpStatus.ForeColor = Theme.Dim;
             return;
         }
 
         string gaps = p.DescribeTrunkGaps();
         _dumpStatus.Text = gaps;
-        _dumpStatus.ForeColor = gaps.StartsWith("đủ") ? Color.DarkGreen : Color.DimGray;
+        _dumpStatus.ForeColor = gaps.StartsWith("đủ") ? Theme.Good : Theme.Warn;
     }
 
     private void OnDumpEnabledChanged()
@@ -363,7 +504,7 @@ internal sealed class FishingPanel : UserControl
         {
             Append("chưa bật được: " + p.DescribeTrunkGaps());
             _syncingDumpUi = true;
-            try { _dumpEnabled.Checked = false; }
+            try { _dumpEnabled.SetCheckedQuiet(false); }
             finally { _syncingDumpUi = false; }
             return;
         }
@@ -376,14 +517,14 @@ internal sealed class FishingPanel : UserControl
     private void OnEveryNChanged()
     {
         if (_syncingDumpUi) return;
-        _cfg.WeightCheckEveryCatches = (int)_everyN.Value;
+        _cfg.WeightCheckEveryCatches = _everyN.Value;
         try { _cfg.Save(); } catch { }
     }
 
     private void OnDumpEveryChanged()
     {
         if (_syncingDumpUi) return;
-        _cfg.DumpEveryCatches = (int)_dumpEvery.Value;
+        _cfg.DumpEveryCatches = _dumpEvery.Value;
         try { _cfg.Save(); } catch { }
         Append(_cfg.DumpEveryCatches == 0
             ? "trần cứng theo số con: tắt — chỉ đổ theo cân nặng"
@@ -393,7 +534,7 @@ internal sealed class FishingPanel : UserControl
     private void OnTurnMsChanged()
     {
         if (_syncingDumpUi) return;
-        _cfg.AfterDumpTurnMs = (int)_turnMs.Value;
+        _cfg.AfterDumpTurnMs = _turnMs.Value;
         try { _cfg.Save(); } catch { }
         Append(_cfg.AfterDumpTurnMs == 0
             ? "quay mặt sau khi đổ: tắt"
@@ -418,13 +559,23 @@ internal sealed class FishingPanel : UserControl
     private void RefreshProfileLabel()
     {
         var screen = SelectedScreen;
-        if (screen is null) { _profile.Text = "không thấy màn hình"; return; }
+        if (screen is null)
+        {
+            _profile.Text = "không thấy màn hình";
+            _ctx.Text = $"game: {_cfg.WindowMatch}";
+            return;
+        }
         var p = _cfg.TryGet(screen);
         _profile.Text = p is null
             ? $"{screen.Bounds.Width}x{screen.Bounds.Height} — chưa khoanh"
             : p.DescribeGaps();
         _profile.ForeColor = p is { Bar.IsSet: true, Fish.IsSet: true, Reject.IsSet: true, Keep.IsSet: true }
-            ? Color.DarkGreen : Color.DimGray;
+            ? Theme.Good : Theme.Dim;
+
+        // Thanh lenh nhac lai cua so game va man hinh dang nham vao: hai thu nay sai
+        // la bot doc vao khoang khong, ma truoc day chung nam mat trong combo box.
+        var b = screen.Bounds;
+        _ctx.Text = $"game: {_cfg.WindowMatch}   ·   {screen.DeviceName}  {b.Width}×{b.Height}   ·   {_profile.Text}";
     }
 
     private enum FishingSlot { Bar, Fish, Reject, Keep, KeepBand }
@@ -574,6 +725,23 @@ internal sealed class FishingPanel : UserControl
     private void StartBot()
     {
         if (IsRunning) return;
+
+        // Phien truoc da chay het muc (cop day + ba lo day) thi cu bam dau tien khong chay lai.
+        //
+        // Vi sao chan: bot tu ngat, nguoi dung thay ba lo day nen bam F4 de "tat" — nhung no
+        // dung san roi, va cu bam do hoa ra BAT LEN. Log 17/08 co dung canh nay: 20:59:13 ngat
+        // vi ba lo day, 20:59:14 chay lai, roi cau tiep vao cai ba lo khong con cho. Nhin tu
+        // ngoai thi giong het "bot khong chiu tu ngat".
+        if (_finished)
+        {
+            _finished = false;
+            _status.Text = "Phiên trước đã xong — bấm lần nữa để câu tiếp";
+            _status.ForeColor = Theme.Good;
+            Append("phiên trước đã xong: cốp đầy và ba lô đầy. Đi bán cá đi — " +
+                   "muốn câu tiếp ngay thì bấm lần nữa.");
+            return;
+        }
+
         var screen = SelectedScreen;
         if (screen is null) { Append("không chọn được màn hình"); return; }
 
@@ -593,23 +761,36 @@ internal sealed class FishingPanel : UserControl
 
         try { _cfg.Save(); } catch { }
 
+        // Dat lai o chi so: so cua phien truoc de lai la sai, va sparkline phai bat
+        // dau lai tu day chu khong noi tiep duong cu.
+        foreach (var t in new[] { _tileCatch, _tileRate, _tileUptime, _tileHit }) t.Reset();
+        _sparkAt = -1;
+        ShowState(FishingState.Idle);
+
         _bot = new FishingBot(_cfg, screen, profile);
         _bot.Log += s => Post(() => Append(s));
         _bot.SnapshotReady += s => Post(() => ShowSnapshot(s));
+        _bot.StateChanged += s => Post(() => ShowState(s));
         _bot.Stopped += (r, msg) => Post(() =>
         {
             _status.Text = "Đã dừng — " + FishingBot.TenLyDo(r);
             // BagFull la phien chay het muc chu khong phai su co — dung to do cho no.
             _status.ForeColor = r is FishingStopReason.UserStopped or FishingStopReason.BagFull
-                ? Color.DarkGreen
-                : Color.Firebrick;
+                ? Theme.Good
+                : Theme.Bad;
             SetRunningUi(false);
             if (!string.IsNullOrEmpty(msg) && r != FishingStopReason.UserStopped)
                 Append(msg);
+
+            _finished = r == FishingStopReason.BagFull;
+            // Keu mot tieng: luc nay nguoi dung gan nhu chac chan dang o cua so khac (log day
+            // dong "cho cua so PlayXGTA — dang focus Chrome/Discord"), nen mot cai nhan xanh
+            // trong panel nen sau la thu khong ai thay.
+            if (_finished) { try { System.Media.SystemSounds.Exclamation.Play(); } catch { } }
         });
 
         _status.Text = "Đang câu";
-        _status.ForeColor = Color.DarkBlue;
+        _status.ForeColor = Theme.Accent;
         SetRunningUi(true);
         Append("--- bắt đầu câu ---");
         _bot.Start();
@@ -862,95 +1043,208 @@ internal sealed class FishingPanel : UserControl
         }
         catch (Exception ex)
         {
-            _hud.Text = "lỗi đọc: " + ex.Message;
+            // Ban cu nhet loi vao nhan HUD roi de do mai. Nhan gio la thanh do nen
+            // khong cho chu dai duoc — day vao log, va tat cac hang ve "--".
+            ClearLive();
+            _meters.Footer = "lỗi đọc: " + ex.Message;
+            _meters.Invalidate();
         }
     }
 
+    /// <summary>
+    /// Cung con so nhu nam nhan Consolas cu, nhung moi hang gio co mot thanh do va
+    /// mot vach nguong. Doc "ncc=0.873" mot minh thi khong biet la cao hay thap;
+    /// canh vach 0.75 thi biet ngay.
+    /// </summary>
     private void ShowSnapshot(FishingSnapshot s)
     {
         if (!s.BarConfigured)
         {
-            _hud.Text = "HUD : chưa khoanh thanh";
-            _hud.ForeColor = Color.DimGray;
-            _fill.Text = "thanh : --";
-            _fill.ForeColor = Color.DimGray;
+            Set(_mHud, -1, -1, "chưa khoanh", Theme.Dimmer, Theme.Dimmer);
+            Set(_mFill, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
         }
         else
         {
-            _hud.Text = "HUD : " + (s.UiOpen ? "MỞ" : "đóng");
-            _hud.ForeColor = s.UiOpen ? Color.DarkGreen : Color.DimGray;
-            _fill.Text = s.BlueFill01 < 0
-                ? "thanh : không đọc được"
-                : $"thanh : {s.BlueFill01 * 100,5:0.0}%";
-            _fill.ForeColor = s.UiOpen ? Color.DarkBlue : Color.DimGray;
+            Set(_mHud, s.UiOpen ? 1 : 0.02, -1, s.UiOpen ? "MỞ" : "đóng",
+                s.UiOpen ? Theme.Good : Theme.Dimmer, s.UiOpen ? Theme.Good : Theme.Dimmer);
+
+            if (s.BlueFill01 < 0)
+                Set(_mFill, -1, _cfg.DoneFill01, "không đọc được", Theme.Dimmer, Theme.Dimmer);
+            else
+                Set(_mFill, s.BlueFill01, _cfg.DoneFill01,
+                    $"{s.BlueFill01 * 100,5:0.0}% /{_cfg.DoneFill01 * 100:0}",
+                    s.UiOpen ? Theme.Accent : Theme.Dimmer, s.UiOpen ? Theme.Head : Theme.Dimmer);
         }
 
         if (!s.FishConfigured)
-        {
-            _fish.Text = "cá cắn : chưa khoanh / chưa có mẫu";
-            _fish.ForeColor = Color.DimGray;
-        }
+            Set(_mFish, -1, -1, "chưa có mẫu", Theme.Dimmer, Theme.Dimmer);
         else
-        {
-            _fish.Text = $"cá cắn : {(s.FishBite ? "CÓ" : "không")}   ncc={s.FishScore:F3}";
-            _fish.ForeColor = s.FishBite ? Color.DarkGreen : Color.DimGray;
-        }
+            Set(_mFish, Ncc(s.FishScore), _cfg.FishNccMin,
+                $"{(s.FishBite ? "CÓ" : "không")} {s.FishScore:F3}",
+                s.FishBite ? Theme.Good : Theme.Dimmer, s.FishBite ? Theme.Good : Theme.Text);
 
         if (!s.RejectConfigured)
-        {
-            _reject.Text = "chê mồi : chưa khoanh / chưa có mẫu";
-            _reject.ForeColor = Color.DimGray;
-        }
+            Set(_mReject, -1, -1, "chưa có mẫu", Theme.Dimmer, Theme.Dimmer);
         else
-        {
-            _reject.Text = $"chê mồi : {(s.FailNotice ? "CÓ" : "không")}   ncc={s.RejectScore:F3}";
-            _reject.ForeColor = s.FailNotice ? Color.Firebrick : Color.DimGray;
-        }
+            Set(_mReject, Ncc(s.RejectScore), _cfg.RejectNccMin,
+                $"{(s.FailNotice ? "CÓ" : "không")} {s.RejectScore:F3}",
+                s.FailNotice ? Theme.Bad : Theme.Dimmer, s.FailNotice ? Theme.Bad : Theme.Text);
 
         if (!s.KeepConfigured)
         {
-            _keep.Text = "cất vào : chưa khoanh / chưa có mẫu";
-            _keep.ForeColor = Color.DimGray;
+            Set(_mKeep, -1, -1, "chưa có mẫu", Theme.Dimmer, Theme.Dimmer);
+            _meters.Footer = "";
         }
         else
         {
+            Set(_mKeep, Ncc(s.KeepScore), _cfg.KeepNccMin,
+                $"{(s.KeepVisible ? "CÓ" : "không")} {s.KeepScore:F3}",
+                s.KeepVisible ? Theme.Good : Theme.Dimmer, s.KeepVisible ? Theme.Good : Theme.Text);
+
             if (s.KeepVisible)
-                _keep.Text = $"cất vào : CÓ @ {s.KeepClick.X},{s.KeepClick.Y}  {s.KeepRect.Width}×{s.KeepRect.Height}" +
-                             $"  dens={s.KeepDensity:F2}  ncc={s.KeepScore:F3}";
+                _meters.Footer = $"nút @ {s.KeepClick.X},{s.KeepClick.Y}  " +
+                                 $"{s.KeepRect.Width}×{s.KeepRect.Height}  dens={s.KeepDensity:F2}";
             else if (s.KeepDensity >= 0)
                 // Có khối đúng màu nhưng NCC dưới ngưỡng — hiện số ra để còn chỉnh KeepNccMin,
                 // đừng để lẫn với "chẳng thấy gì".
-                _keep.Text = $"cất vào : loại vì ncc={s.KeepScore:F3} < {_cfg.KeepNccMin:F2}" +
-                             $"  (dens={s.KeepDensity:F2})";
+                _meters.Footer = $"loại vì ncc={s.KeepScore:F3} < {_cfg.KeepNccMin:F2}  " +
+                                 $"(dens={s.KeepDensity:F2})";
             else
-                _keep.Text = "cất vào : không";
-            _keep.ForeColor = s.KeepVisible ? Color.DarkGreen : Color.DimGray;
+                _meters.Footer = "không thấy khối đúng màu";
         }
+
+        _meters.Invalidate();
+    }
+
+    /// <summary>NCC chay tu -1..1; thanh do chi nhan 0..1 nen cat phan am.</summary>
+    private static double Ncc(double v) => v < 0 ? 0 : Math.Min(1, v);
+
+    private static void Set(MeterList.Row r, double fill, double thr, string value,
+                            Color ink, Color valueInk)
+    {
+        if (r is null) return;
+        r.Fill01 = fill;
+        r.Thr01 = thr;
+        r.Value = value;
+        r.Ink = ink;
+        r.ValueInk = valueInk;
     }
 
     private void ClearLive()
     {
-        _hud.Text = "HUD : --";
-        _hud.ForeColor = Color.DimGray;
-        _fill.Text = "thanh : --";
-        _fill.ForeColor = Color.DimGray;
-        _fish.Text = "cá cắn : --";
-        _fish.ForeColor = Color.DimGray;
-        _reject.Text = "chê mồi : --";
-        _reject.ForeColor = Color.DimGray;
-        _keep.Text = "cất vào : --";
-        _keep.ForeColor = Color.DimGray;
+        Set(_mHud, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        Set(_mFill, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        Set(_mFish, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        Set(_mReject, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        Set(_mKeep, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        _meters.Footer = "";
+        _meters.Invalidate();
+    }
+
+    // ---------------------------------------------------------------- trang thai bot
+
+    /// <summary>
+    /// Ve pha + so dem. Duoc goi ca tu event cua bot lan tu cho dat lai luc dung,
+    /// nen phai chiu duoc <see cref="FishingState.Idle"/>.
+    /// </summary>
+    private void ShowState(FishingState s)
+    {
+        _state = s ?? FishingState.Idle;
+
+        _phase.Update(_state, _cfg);
+
+        _tileCatch.Value = _state.Catches.ToString();
+        _tileCatch.Foot = _state.CatchesSinceDump > 0 ? $"chưa đổ: {_state.CatchesSinceDump} con" : "";
+
+        _tileRate.Value = _state.CatchesPerHour < 0 ? "--" : $"{_state.CatchesPerHour:0}";
+        _tileRate.Unit = _state.CatchesPerHour < 0 ? "" : "con";
+
+        long sec = _state.SessionMs / 1000;
+        _tileUptime.Value = _state.SessionMs <= 0 ? "--" : $"{sec / 60}:{sec % 60:00}";
+        _tileUptime.Foot = _state.SecondsPerCatch < 0 ? "" : $"{_state.SecondsPerCatch:0} s / con";
+
+        if (_state.BiteRate01 < 0)
+        {
+            _tileHit.Value = "--";
+            _tileHit.Unit = "";
+            _tileHit.SetStack();
+        }
+        else
+        {
+            _tileHit.Value = $"{_state.BiteRate01 * 100:0}";
+            _tileHit.Unit = "%";
+            double n = Math.Max(1, _state.Casts);
+            _tileHit.SetStack(
+                (_state.Bites / n, Theme.Good),
+                (_state.Rejects / n, Theme.Warn),
+                (_state.BiteTimeouts / n, Theme.Bad),
+                (_state.CastMissed / n, Theme.Dimmer));
+        }
+
+        // Sparkline chi lay mot diem moi khi bat duoc them mot con — lay theo tick
+        // thi duong se phang lì roi giat, khong noi len duoc gi.
+        if (_state.Catches != _sparkAt)
+        {
+            _sparkAt = _state.Catches;
+            _tileCatch.Push(_state.Catches);
+            if (_state.CatchesPerHour >= 0) _tileRate.Push(_state.CatchesPerHour);
+        }
+
+        ShowCapacity();
+
+        foreach (var t in new[] { _tileCatch, _tileRate, _tileUptime, _tileHit }) t.Invalidate();
+
+        StateChanged?.Invoke(_state);
+    }
+
+    private void ShowCapacity()
+    {
+        var s = _state;
+
+        double bagCap = s.BagCapKg > 0 ? s.BagCapKg : _cfg.BagCapKg;
+        _capBag.ValueText = s.BagKg < 0 ? "-- / " + $"{bagCap:F0} kg" : $"{s.BagKg:F1} / {bagCap:F0} kg";
+        _capBag.Fill01 = s.BagKg < 0 ? -1 : Math.Min(1, s.BagKg / bagCap);
+        _capBag.Pending01 = s.PendingFishKg <= 0 ? -1 : Math.Min(1, s.PendingFishKg / bagCap);
+        _capBag.Thr01 = Math.Min(1, _cfg.BagFullStopKg / bagCap);
+        _capBag.Note = s.PendingFishKg > 0
+            ? $"chỗ cá ≈ {s.PendingFishKg:F1} kg · dừng ở {_cfg.BagFullStopKg:F1}"
+            : $"dừng phiên ở {_cfg.BagFullStopKg:F1} kg";
+        _capBag.Invalidate();
+
+        double trunkCap = s.TrunkCapKg > 0 ? s.TrunkCapKg : _cfg.TrunkCapKg;
+        if (s.TrunkFreeKg < 0)
+        {
+            _capTrunk.ValueText = s.TrunkFull ? "đầy" : $"-- / {trunkCap:F0} kg";
+            _capTrunk.Fill01 = s.TrunkFull ? 1 : -1;
+        }
+        else
+        {
+            _capTrunk.ValueText = $"còn trống {s.TrunkFreeKg:F1} / {trunkCap:F0} kg";
+            _capTrunk.Fill01 = Math.Clamp(1 - s.TrunkFreeKg / trunkCap, 0, 1);
+        }
+        _capTrunk.Pending01 = -1;
+        _capTrunk.Thr01 = _cfg.TrunkTightKg > 0
+            ? Math.Clamp(1 - _cfg.TrunkTightKg / trunkCap, 0, 1)
+            : -1;
+        _capTrunk.Note = s.DumpOn
+            ? $"lượt hỏng {s.TrunkFullStrikes}/{s.TrunkFullTries}" +
+              (s.OcrHealthy ? "" : " · đọc KG đã tắt, đang đếm cá")
+            : "tự đổ cốp: tắt";
+        _capTrunk.Invalidate();
     }
 
     private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "bot-log.txt");
     private static readonly Encoding LogEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
 
+    /// <summary>
+    /// LogView tu dong dau gio va tu cat bot khi day, nen o day khong con phai
+    /// viet lai toan bo noi dung nhu ban TextBox cu. Duong ra file khong doi:
+    /// UTF-8 CO BOM de Notepad doc duoc dau, va tag [câu] de phan biet voi
+    /// dong cua job khac trong cung mot bot-log.txt.
+    /// </summary>
     private void Append(string line)
     {
-        var stamp = DateTime.Now.ToString("HH:mm:ss");
-        if (_log.Lines.Length > 400)
-            _log.Lines = _log.Lines.Skip(150).ToArray();
-        _log.AppendText($"[{stamp}] {line}{Environment.NewLine}");
+        _log.Append(line);
         try
         {
             File.AppendAllText(LogPath,
