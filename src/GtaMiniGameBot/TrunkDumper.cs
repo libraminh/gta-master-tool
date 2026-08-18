@@ -37,6 +37,8 @@ internal sealed class TrunkDumper : IDisposable
     private readonly GridScanner _bag;
     private readonly GridScanner _trunk;
     private readonly Point _park;
+    private readonly ItemCatalog _catalog;
+    private readonly HashSet<string> _fishItems;
 
     private int _ocrFails;
     private int _trunkFullStrikes;
@@ -66,7 +68,8 @@ internal sealed class TrunkDumper : IDisposable
 
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
                         TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
-                        GridScanner hotbar, GridScanner bag, GridScanner trunk)
+                        GridScanner hotbar, GridScanner bag, GridScanner trunk,
+                        ItemCatalog catalog)
     {
         _cfg = cfg;
         _screen = screen;
@@ -78,6 +81,9 @@ internal sealed class TrunkDumper : IDisposable
         _hotbar = hotbar;
         _bag = bag;
         _trunk = trunk;
+        _catalog = catalog;
+        _fishItems = new HashSet<string>(profile.FishItems ?? new List<string>(),
+                                         StringComparer.OrdinalIgnoreCase);
 
         // Cho do chuot trung tinh truoc moi lan chup kiem tra: o duoi con tro duoc ve sang hon,
         // quen buoc nay la moi phep do deu nhiem.
@@ -103,12 +109,22 @@ internal sealed class TrunkDumper : IDisposable
             problem = "chưa khoanh ô số KG ba lô";
             return null;
         }
-        if (p.FishSlots is not { Count: > 0 })
+        // Hai duong deu chap nhan duoc: nhan ca theo icon, hoac tin may o da khai bao. Khong
+        // co duong nao thi dung han — bot khong duoc phep tu chon o de keo.
+        var catalog = ItemCatalog.Load(cfg);
+        bool byIcon = catalog.Count > 0 && p.FishItems is { Count: > 0 };
+        if (!byIcon && p.FishSlots is not { Count: > 0 })
         {
             opener.Dispose();
-            problem = "chưa chọn ô chứa cá";
+            problem = catalog.Count > 0
+                ? "chưa tích vật phẩm nào là cá, cũng chưa chọn ô chứa cá"
+                : "chưa chọn ô chứa cá (hoặc trích icon từ game rồi tích loài cá)";
             return null;
         }
+        log(byIcon
+            ? $"nhận cá theo icon: {catalog.Count} vật phẩm trong bộ mẫu, " +
+              $"{p.FishItems.Count} loại được tính là cá — quét cả ba lô, không cần ô khai báo"
+            : $"nhận cá theo ô khai báo ({p.FishSlots.Count} ô)");
 
         var atlas = DigitAtlas.Load(p.Key);
         var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg);
@@ -121,7 +137,8 @@ internal sealed class TrunkDumper : IDisposable
         return new TrunkDumper(cfg, screen, p, log, opener, weight, trunkWeight,
             new GridScanner(cfg, screen, p.Hotbar),
             new GridScanner(cfg, screen, p.Bag),
-            new GridScanner(cfg, screen, p.Trunk));
+            new GridScanner(cfg, screen, p.Trunk),
+            catalog);
     }
 
     // ---------------------------------------------------------------- đọc KG
@@ -265,8 +282,11 @@ internal sealed class TrunkDumper : IDisposable
             double after = ReadBagWeightNow();
             if (before >= 0 && after >= 0 && before - after < _cfg.MinDropKg)
                 _log($"cảnh báo: kéo {moved} ô nhưng KG chỉ giảm {before - after:F1} " +
-                     $"(chờ ít nhất {_cfg.MinDropKg:F1}) — nhiều khả năng cá đã tràn sang một ô " +
-                     "chưa khai báo, vào Chọn ô chứa cá thêm ô đó");
+                     $"(chờ ít nhất {_cfg.MinDropKg:F1}) — " +
+                     (ByIcon
+                         ? "ô vừa kéo có thể không phải cá, xem lại danh sách đã tích"
+                         : "nhiều khả năng cá đã tràn sang một ô chưa khai báo, " +
+                           "vào Chọn ô chứa cá thêm ô đó"));
             else if (after >= 0)
             {
                 // Moi o ca da khai bao deu trong, nen can nang bay gio CHINH LA can nang khong co ca.
@@ -367,14 +387,66 @@ internal sealed class TrunkDumper : IDisposable
     }
 
     /// <summary>
-    /// Ô cá đầu tiên trong danh sách khai báo mà đang có đồ. Không dò icon: người dùng đã cam
-    /// kết ô đó luôn là cá, nên ở đây chỉ cần biết ô rỗng hay không.
+    /// Ô cá tiếp theo cần kéo.
+    ///
+    /// Hai chế độ. Có bộ icon moi từ cache game và người dùng đã tích vật phẩm nào là cá thì
+    /// quét CẢ phím nhanh lẫn ba lô rồi nhận cá theo icon — cá nằm đâu cũng thấy. Chưa có thì
+    /// quay về lối cũ: chỉ tin mấy ô người dùng khai báo, không nhìn icon.
     /// </summary>
     private (GridScanner Scanner, CellInfo Cell)? NextFish(out string note)
     {
         note = null;
         InputSender.MoveCursorOnly(_park.X, _park.Y);
         Thread.Sleep(120);
+
+        return ByIcon ? NextFishByIcon(out note) : NextFishBySlot(out note);
+    }
+
+    /// <summary>Có đủ bộ icon và danh sách cá thì mới nhận diện được; thiếu một trong hai là về lối cũ.</summary>
+    public bool ByIcon => _catalog is { Count: > 0 } && _fishItems.Count > 0;
+
+    /// <summary>
+    /// Quét mọi ô đang có đồ, kéo ô đầu tiên nhận ra là cá.
+    ///
+    /// Ô không nhận ra thì ĐỂ YÊN. Đó là lựa chọn có chủ ý: đoán bừa một ô lạ rồi kéo đi có
+    /// thể là ném cả cần câu, mồi hay tiền vào cốp, mà thứ mất đi thì không kéo ngược lại được.
+    /// </summary>
+    private (GridScanner Scanner, CellInfo Cell)? NextFishByIcon(out string note)
+    {
+        note = null;
+        var unknown = new List<string>();
+
+        foreach (var (label, scanner) in new[] { ("phím nhanh", _hotbar), ("ba lô", _bag) })
+        {
+            foreach (var (cell, gray) in scanner.ScanScreenPixels())
+            {
+                if (cell is null || cell.IsEmpty) continue;
+
+                var guess = _catalog.Classify(gray, cell.Rect.Width, cell.Rect.Height);
+                if (guess.Name is null)
+                {
+                    unknown.Add($"{label} #{cell.Index} {guess}");
+                    continue;
+                }
+                if (!_fishItems.Contains(guess.Name)) continue;
+
+                foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
+                note = $"kéo {label} #{cell.Index} — {guess}";
+                return (scanner, cell);
+            }
+        }
+
+        foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
+        return null;
+    }
+
+    /// <summary>
+    /// Ô cá đầu tiên trong danh sách khai báo mà đang có đồ. Không dò icon: người dùng đã cam
+    /// kết ô đó luôn là cá, nên ở đây chỉ cần biết ô rỗng hay không.
+    /// </summary>
+    private (GridScanner Scanner, CellInfo Cell)? NextFishBySlot(out string note)
+    {
+        note = null;
 
         foreach (var slot in _profile.FishSlots)
         {

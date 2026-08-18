@@ -94,20 +94,27 @@ internal sealed class GridScanner : IDisposable
 
     public Rectangle Cell(int index) => _grid.CellInset(_screen, index, _cfg.CellInsetFrac);
 
-    public List<CellInfo> ScanScreen()
+    public List<CellInfo> ScanScreen() => ScanScreenPixels().Select(p => p.Cell).ToList();
+
+    /// <summary>
+    /// Quét lưới và GIỮ LUÔN mảng xám từng ô. Phép đo trống/có đồ chỉ cần độ lệch chuẩn, nhưng
+    /// nhận diện icon thì cần chính mảng pixel đó — chụp lại lần nữa vừa tốn vừa có nguy cơ ảnh
+    /// đã đổi giữa hai lần chụp.
+    /// </summary>
+    public List<(CellInfo Cell, byte[] Gray)> ScanScreenPixels()
     {
         var area = FishingConfig.ToAbsolute(_screen, _grid.Area);
         _reader ??= new RegionReader(area);
         _reader.Refresh();
 
-        var outp = new List<CellInfo>(_grid.Count);
+        var outp = new List<(CellInfo, byte[])>(_grid.Count);
         for (int i = 0; i < _grid.Count; i++)
         {
             var cell = Cell(i);
             var gray = _reader.GrayBuffer(cell);
             int chroma = _reader.CountMatch(cell, CellSignature.IsChromatic);
-            outp.Add(Classify(i, cell, gray, cell.Width, cell.Height,
-                              chroma / (double)Math.Max(1, cell.Width * cell.Height)));
+            outp.Add((Classify(i, cell, gray, cell.Width, cell.Height,
+                               chroma / (double)Math.Max(1, cell.Width * cell.Height)), gray));
         }
         return outp;
     }
@@ -120,9 +127,12 @@ internal sealed class GridScanner : IDisposable
     }
 
     /// <summary>Quét trên ảnh tĩnh — tinh chỉnh ngưỡng và chọn ô không cần đứng trong game.</summary>
-    public List<CellInfo> ScanStill(Bitmap still)
+    public List<CellInfo> ScanStill(Bitmap still) => ScanStillPixels(still).Select(p => p.Cell).ToList();
+
+    /// <summary>Như <see cref="ScanScreenPixels"/> nhưng đọc từ ảnh tĩnh — thử nhận diện nguội.</summary>
+    public List<(CellInfo Cell, byte[] Gray)> ScanStillPixels(Bitmap still)
     {
-        var outp = new List<CellInfo>(_grid.Count);
+        var outp = new List<(CellInfo, byte[])>(_grid.Count);
         var origin = _screen.Bounds.Location;
 
         for (int i = 0; i < _grid.Count; i++)
@@ -132,7 +142,7 @@ internal sealed class GridScanner : IDisposable
             var inImage = new Rectangle(cell.X - origin.X, cell.Y - origin.Y, cell.Width, cell.Height);
             var gray = GlyphSeg.GrayOf(still, inImage, out int w, out int h);
             double chroma = ChromaOf(still, inImage);
-            outp.Add(Classify(i, cell, gray, w, h, chroma));
+            outp.Add((Classify(i, cell, gray, w, h, chroma), gray));
         }
         return outp;
     }
