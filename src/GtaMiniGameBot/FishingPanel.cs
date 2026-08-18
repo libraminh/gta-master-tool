@@ -8,6 +8,9 @@ internal sealed class FishingPanel : UserControl
     private FishingReader _reader;
     private FishingBot _bot;
 
+    /// <summary>Phiên vừa rồi kết thúc vì hết chỗ chứa — cú bấm kế tiếp chỉ để xác nhận, không chạy.</summary>
+    private bool _finished;
+
     private readonly ComboBox _screens = new();
     private readonly Label _profile = new();
     private readonly Label _status = new();
@@ -574,6 +577,23 @@ internal sealed class FishingPanel : UserControl
     private void StartBot()
     {
         if (IsRunning) return;
+
+        // Phien truoc da chay het muc (cop day + ba lo day) thi cu bam dau tien khong chay lai.
+        //
+        // Vi sao chan: bot tu ngat, nguoi dung thay ba lo day nen bam F4 de "tat" — nhung no
+        // dung san roi, va cu bam do hoa ra BAT LEN. Log 17/08 co dung canh nay: 20:59:13 ngat
+        // vi ba lo day, 20:59:14 chay lai, roi cau tiep vao cai ba lo khong con cho. Nhin tu
+        // ngoai thi giong het "bot khong chiu tu ngat".
+        if (_finished)
+        {
+            _finished = false;
+            _status.Text = "Phiên trước đã xong — bấm lần nữa để câu tiếp";
+            _status.ForeColor = Color.DarkGreen;
+            Append("phiên trước đã xong: cốp đầy và ba lô đầy. Đi bán cá đi — " +
+                   "muốn câu tiếp ngay thì bấm lần nữa.");
+            return;
+        }
+
         var screen = SelectedScreen;
         if (screen is null) { Append("không chọn được màn hình"); return; }
 
@@ -606,6 +626,12 @@ internal sealed class FishingPanel : UserControl
             SetRunningUi(false);
             if (!string.IsNullOrEmpty(msg) && r != FishingStopReason.UserStopped)
                 Append(msg);
+
+            _finished = r == FishingStopReason.BagFull;
+            // Keu mot tieng: luc nay nguoi dung gan nhu chac chan dang o cua so khac (log day
+            // dong "cho cua so PlayXGTA — dang focus Chrome/Discord"), nen mot cai nhan xanh
+            // trong panel nen sau la thu khong ai thay.
+            if (_finished) { try { System.Media.SystemSounds.Exclamation.Play(); } catch { } }
         });
 
         _status.Text = "Đang câu";
