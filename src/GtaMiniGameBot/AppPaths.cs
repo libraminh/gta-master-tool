@@ -42,18 +42,25 @@ internal static class AppPaths
         {
             CopyIfMissing(Path.Combine(exeDir, "fishing.json"), Path.Combine(Root, "fishing.json"));
             CopyIfMissing(Path.Combine(exeDir, "config.json"), Path.Combine(Root, "config.json"));
+            CopyIfMissing(Path.Combine(exeDir, "wood.json"), Path.Combine(Root, "wood.json"));
 
-            var oldFishing = new DirectoryInfo(Path.Combine(exeDir, "fishing"));
-            if (oldFishing.Exists)
-            {
-                foreach (var file in oldFishing.EnumerateFiles("*", SearchOption.AllDirectories))
-                {
-                    string rel = Path.GetRelativePath(oldFishing.FullName, file.FullName);
-                    CopyIfMissing(file.FullName, Path.Combine(Root, "fishing", rel));
-                }
-            }
+            CopyTree(exeDir, "fishing");
+            CopyTree(exeDir, "wood");
         }
         catch { /* di tru that bai thi chay tiep voi config rong, khong chan app */ }
+    }
+
+    /// <summary>Chuyen ca cay anh mau cua mot job (fishing\, wood\...) sang Root.</summary>
+    private static void CopyTree(string exeDir, string name)
+    {
+        var src = new DirectoryInfo(Path.Combine(exeDir, name));
+        if (!src.Exists) return;
+
+        foreach (var file in src.EnumerateFiles("*", SearchOption.AllDirectories))
+        {
+            string rel = Path.GetRelativePath(src.FullName, file.FullName);
+            CopyIfMissing(file.FullName, Path.Combine(Root, name, rel));
+        }
     }
 
     private static void CopyIfMissing(string from, string to)

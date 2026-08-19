@@ -102,7 +102,27 @@ if ($SyncDefaults) {
         $copied = Copy-TreeFiltered -From $srcFishing -To $dstFishing
     }
 
-    Write-Host "Da dong bo ROI ve $DefaultsDir ($copied file, da bo shots/ va debug-*)."
+    Write-Host "Da dong bo ROI cau ca ve $DefaultsDir ($copied file, da bo shots/ va debug-*)."
+
+    # Job tho moc: tuy chon. Chua khoanh thi bo qua, khong chan viec dong bo job cau ca.
+    $srcWoodJson = Join-Path $UserDataDir 'wood.json'
+    $srcWood = Join-Path $UserDataDir 'wood'
+    $dstWood = Join-Path $DefaultsDir 'wood'
+
+    if (Test-Path $srcWoodJson) {
+        Copy-Item -Path $srcWoodJson -Destination (Join-Path $DefaultsDir 'wood.json') -Force
+        if (Test-Path $dstWood) { Remove-Item -Path $dstWood -Recurse -Force }
+
+        $woodCopied = 0
+        if (Test-Path $srcWood) {
+            $woodCopied = Copy-TreeFiltered -From $srcWood -To $dstWood
+        }
+        Write-Host "Da dong bo ROI tho moc ($woodCopied file)."
+    }
+    else {
+        Write-Host "Chua co wood.json - bo qua ROI tho moc."
+    }
+
     Write-Host "Xem lai bang 'git status' roi commit."
     return
 }
@@ -168,6 +188,23 @@ if (Test-Path $defaultsFishing) {
     $roiCount = Copy-TreeFiltered -From $defaultsFishing -To (Join-Path $Staging 'fishing')
 }
 Write-Host "Da gom $roiCount file ROI job cau ca."
+
+# ROI tho moc: khong bat buoc. Thieu thi ban share van chay, chi la nguoi nhan phai
+# tu khoanh lai - job tu ha xuong che do go E mu.
+$defaultsWoodJson = Join-Path $DefaultsDir 'wood.json'
+if (Test-Path $defaultsWoodJson) {
+    Copy-Item -Path $defaultsWoodJson -Destination $Staging -Force
+
+    $defaultsWood = Join-Path $DefaultsDir 'wood'
+    $woodCount = 0
+    if (Test-Path $defaultsWood) {
+        $woodCount = Copy-TreeFiltered -From $defaultsWood -To (Join-Path $Staging 'wood')
+    }
+    Write-Host "Da gom $woodCount file ROI job tho moc."
+}
+else {
+    Write-Host "Khong co ROI tho moc trong defaults - nguoi nhan se phai tu khoanh."
+}
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $zip = Join-Path $OutDir "GtaMiniGameBot-portable-$stamp-$sha.zip"

@@ -43,6 +43,21 @@ internal static class Program
             return rc;
         }
 
+        if (args.Length > 0 && args[0].Equals("--verify-wood", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifyWood.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-wood.txt"), report.ToString());
+            return rc;
+        }
+
         // Trich icon khong can UI: chay duoc tu terminal de kiem chung phep doc cache truoc khi
         // dung no trong game.
         if (args.Length > 0 && args[0].Equals("--harvest-icons", StringComparison.OrdinalIgnoreCase))

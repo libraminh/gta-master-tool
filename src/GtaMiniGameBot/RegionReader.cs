@@ -8,7 +8,7 @@ namespace GtaMiniGameBot;
 /// Chu y: khong bao gio chup ca 2560x1440 - chi chup dung vung can (vai chuc KB),
 /// nho vay poll duoc 20 lan/giay ma khong lam game giat.
 /// </summary>
-internal sealed class RegionReader : IDisposable
+internal sealed class RegionReader : IPixelSource
 {
     public Rectangle Region { get; private set; }
 
