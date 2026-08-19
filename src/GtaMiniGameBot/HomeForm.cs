@@ -2,7 +2,7 @@
 
 internal sealed class HomeForm : Form
 {
-    private enum TabKind { Oil, Fish, Mine, Utils }
+    private enum TabKind { Oil, Fish, Mine, Wood, Utils }
 
     private const int HOTKEY_TOGGLE = 1;
     private const int HOTKEY_UTILS = 2;
@@ -12,11 +12,13 @@ internal sealed class HomeForm : Form
     private readonly RailButton _btnOil = new("Dầu", RailIcon.Oil);
     private readonly RailButton _btnFish = new("Câu", RailIcon.Fish);
     private readonly RailButton _btnMine = new("Mỏ", RailIcon.Mine);
+    private readonly RailButton _btnWood = new("Mộc", RailIcon.Wood);
     private readonly RailButton _btnUtils = new("Tiện ích", RailIcon.Utils);
     private readonly Panel _host = new();
     private readonly OilWellPanel _oil = new();
     private readonly FishingPanel _fish = new();
     private readonly MinerPanel _mine = new();
+    private readonly WoodPanel _wood = new();
     private readonly UtilsPanel _utils = new();
     private readonly StatusOverlay _overlay = new();
     private readonly System.Windows.Forms.Timer _overlayTest = new();
@@ -41,6 +43,7 @@ internal sealed class HomeForm : Form
         _oil.RunningChanged += OnJobRunning;
         _fish.RunningChanged += OnJobRunning;
         _mine.RunningChanged += OnJobRunning;
+        _wood.RunningChanged += OnJobRunning;
         _utils.TestOverlayRequested += OnTestOverlay;
         _utils.HotkeysSuspend += UnregisterHotkeys;
         _utils.HotkeysApplied += OnHotkeysApplied;
@@ -76,7 +79,7 @@ internal sealed class HomeForm : Form
     private void StopOverlayTest()
     {
         _overlayTest.Stop();
-        if (!_oil.IsRunning && !_fish.IsRunning && !_mine.IsRunning)
+        if (!_oil.IsRunning && !_fish.IsRunning && !_mine.IsRunning && !_wood.IsRunning)
             _overlay.Hide();
     }
 
@@ -93,7 +96,8 @@ internal sealed class HomeForm : Form
         int y = Theme.Px(12);
         foreach (var (b, act) in new (RailButton, Action)[]
                  {
-                     (_btnOil, ShowOil), (_btnFish, ShowFishing), (_btnMine, ShowMining)
+                     (_btnOil, ShowOil), (_btnFish, ShowFishing),
+                     (_btnMine, ShowMining), (_btnWood, ShowWood)
                  })
         {
             b.SetBounds(Theme.Px(6), y, RailW - Theme.Px(12), Theme.Px(52));
@@ -102,7 +106,7 @@ internal sealed class HomeForm : Form
             y += Theme.Px(56);
         }
 
-        // Ba job dung lien nhau, Tiện ích xuong duoi — no khong phai job.
+        // Cac job dung lien nhau, Tiện ích xuong duoi — no khong phai job.
         y += Theme.Px(10);
         var sep = new DrawPanel
         {
@@ -124,7 +128,7 @@ internal sealed class HomeForm : Form
         Controls.Add(_host);
         _host.BringToFront();
 
-        foreach (Control c in new Control[] { _oil, _fish, _mine, _utils })
+        foreach (Control c in new Control[] { _oil, _fish, _mine, _wood, _utils })
         {
             c.Dock = DockStyle.Fill;
             _host.Controls.Add(c);
@@ -141,7 +145,8 @@ internal sealed class HomeForm : Form
         string what =
             _oil.IsRunning ? "Dầu khí" :
             _fish.IsRunning ? "Câu cá" :
-            _mine.IsRunning ? "Thợ mỏ" : null;
+            _mine.IsRunning ? "Thợ mỏ" :
+            _wood.IsRunning ? "Thợ mộc" : null;
         if (what is null) return true;
 
         return MessageBox.Show(this,
@@ -152,6 +157,7 @@ internal sealed class HomeForm : Form
     private void ShowOil() => Select(TabKind.Oil);
     private void ShowFishing() => Select(TabKind.Fish);
     private void ShowMining() => Select(TabKind.Mine);
+    private void ShowWood() => Select(TabKind.Wood);
     private void ShowUtils() => Select(TabKind.Utils);
 
     private void Select(TabKind t)
@@ -168,10 +174,12 @@ internal sealed class HomeForm : Form
         if (t != TabKind.Oil && _oil.IsRunning) _oil.StopWork();
         if (t != TabKind.Fish) _fish.StopWork();
         if (t != TabKind.Mine) _mine.StopWork();
+        if (t != TabKind.Wood) _wood.StopWork();
 
         _oil.Visible = t == TabKind.Oil;
         _fish.Visible = t == TabKind.Fish;
         _mine.Visible = t == TabKind.Mine;
+        _wood.Visible = t == TabKind.Wood;
         _utils.Visible = t == TabKind.Utils;
 
         Control front = t switch
@@ -179,6 +187,7 @@ internal sealed class HomeForm : Form
             TabKind.Oil => _oil,
             TabKind.Fish => _fish,
             TabKind.Mine => _mine,
+            TabKind.Wood => _wood,
             _ => _utils
         };
         front.BringToFront();
@@ -192,6 +201,7 @@ internal sealed class HomeForm : Form
         _btnOil.SetState(_tab == TabKind.Oil, _oil.IsRunning);
         _btnFish.SetState(_tab == TabKind.Fish, _fish.IsRunning);
         _btnMine.SetState(_tab == TabKind.Mine, _mine.IsRunning);
+        _btnWood.SetState(_tab == TabKind.Wood, _wood.IsRunning);
         _btnUtils.SetState(_tab == TabKind.Utils, false);
     }
 
@@ -212,6 +222,7 @@ internal sealed class HomeForm : Form
         _oil.SetJobHotkeyText(jobKey);
         _fish.SetJobHotkeyText(jobKey);
         _mine.SetJobHotkeyText(jobKey);
+        _wood.SetJobHotkeyText(jobKey);
     }
 
     /// <summary>
@@ -273,6 +284,11 @@ internal sealed class HomeForm : Form
                     if (_mine.IsRunning) _mine.StopFromHotkey();
                     else _mine.StartFromHotkey();
                 }
+                else if (_tab == TabKind.Wood)
+                {
+                    if (_wood.IsRunning) _wood.StopFromHotkey();
+                    else _wood.StartFromHotkey();
+                }
             }
         }
         base.WndProc(ref m);
@@ -284,6 +300,7 @@ internal sealed class HomeForm : Form
         _oil.RunningChanged -= OnJobRunning;
         _fish.RunningChanged -= OnJobRunning;
         _mine.RunningChanged -= OnJobRunning;
+        _wood.RunningChanged -= OnJobRunning;
         _fish.StateChanged -= _overlay.Update;
         _utils.TestOverlayRequested -= OnTestOverlay;
         _utils.HotkeysSuspend -= UnregisterHotkeys;
@@ -295,6 +312,7 @@ internal sealed class HomeForm : Form
         _oil.Shutdown();
         _fish.Shutdown();
         _mine.Shutdown();
+        _wood.Shutdown();
         _utils.Shutdown();
         base.OnFormClosing(e);
     }
@@ -302,7 +320,7 @@ internal sealed class HomeForm : Form
 
 // ------------------------------------------------------------------ rail
 
-internal enum RailIcon { Oil, Fish, Mine, Utils }
+internal enum RailIcon { Oil, Fish, Mine, Wood, Utils }
 
 /// <summary>
 /// Mot o tren rail: icon + nhan ngan, cham xanh khi job do dang chay.
@@ -411,6 +429,20 @@ internal sealed class RailButton : DrawPanel
                 });
                 g.DrawLine(p, x + w * 0.44f, y + h * 0.28f, x + w * 0.72f, y + h * 0.56f);
                 g.DrawLine(p, x + w * 0.96f, y + h * 0.3f, x + w * 0.72f, y + h * 0.56f);
+                break;
+
+            case RailIcon.Wood:
+                // Cai riu bo vao khuc go: luoi riu + can, tren mot khuc nam ngang.
+                // Khac icon Mine (bua) o cho luoi la mang TAM GIAC dac chu khong phai cung mo.
+                g.DrawLine(p, x + w * 0.16f, y + h * 0.62f, x + w * 0.6f, y + h * 0.18f);
+                using (var blade = new SolidBrush(ink))
+                    g.FillPolygon(blade, new[]
+                    {
+                        new PointF(x + w * 0.54f, y + h * 0.12f),
+                        new PointF(x + w * 0.94f, y + h * 0.06f),
+                        new PointF(x + w * 0.88f, y + h * 0.46f)
+                    });
+                g.DrawLine(p, x + w * 0.06f, y + h * 0.88f, x + w * 0.94f, y + h * 0.88f);
                 break;
 
             default:

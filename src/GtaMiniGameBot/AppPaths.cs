@@ -36,7 +36,7 @@ internal static class AppPaths
     /// tin may o da khai bao, va o khai bao trong ban ship co the tro vao o MOI chu khong phai
     /// ca, tuc keo moi vao cop. Nen no phai di theo ban portable.
     /// </summary>
-    private static readonly string[] MigrateDirs = { "fishing", "items" };
+    private static readonly string[] MigrateDirs = { "fishing", "items", "wood" };
 
     /// <summary>
     /// Chuyen du lieu cu nam canh exe sang Root. Chi chep file nao Root CHUA co,
@@ -58,18 +58,22 @@ internal static class AppPaths
                 CopyIfMissing(Path.Combine(exeDir, name), Path.Combine(Root, name));
 
             foreach (string dir in MigrateDirs)
-            {
-                var src = new DirectoryInfo(Path.Combine(exeDir, dir));
-                if (!src.Exists) continue;
-
-                foreach (var file in src.EnumerateFiles("*", SearchOption.AllDirectories))
-                {
-                    string rel = Path.GetRelativePath(src.FullName, file.FullName);
-                    CopyIfMissing(file.FullName, Path.Combine(Root, dir, rel));
-                }
-            }
+                CopyTree(exeDir, dir);
         }
         catch { /* di tru that bai thi chay tiep voi config rong, khong chan app */ }
+    }
+
+    /// <summary>Chuyen ca cay anh mau cua mot job (fishing\, wood\...) sang Root.</summary>
+    private static void CopyTree(string exeDir, string name)
+    {
+        var src = new DirectoryInfo(Path.Combine(exeDir, name));
+        if (!src.Exists) return;
+
+        foreach (var file in src.EnumerateFiles("*", SearchOption.AllDirectories))
+        {
+            string rel = Path.GetRelativePath(src.FullName, file.FullName);
+            CopyIfMissing(file.FullName, Path.Combine(Root, name, rel));
+        }
     }
 
     private static void CopyIfMissing(string from, string to)
