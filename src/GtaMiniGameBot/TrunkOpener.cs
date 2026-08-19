@@ -171,6 +171,10 @@ internal sealed class TrunkOpener : IDisposable
             _log($"dò được {hits.Count} khối:");
             foreach (var h in hits)
                 _log($"   {h}   {_menu.DescribeScores(h)}");
+            if (_menu.ScanNote is { Length: > 0 } note) _log("   " + note);
+
+            try { _log("ảnh mặt nạ mẫu (hồng = bị bỏ khỏi phép chấm): " + _menu.DumpMasks(_profile.Key)); }
+            catch (Exception ex) { _log("không lưu được ảnh mặt nạ: " + ex.Message); }
 
             foreach (string label in new[] { "Tương tác", "Cốp xe", "Bơm nhiên liệu" })
             {
@@ -216,7 +220,39 @@ internal sealed class TrunkOpener : IDisposable
                 ClickAt(reclickAt.Value, ct);
             }
         }
+
+        LogCandidates(label);
         return null;
+    }
+
+    /// <summary>
+    /// Bảng ứng viên lúc dò trượt.
+    ///
+    /// Trước đây trượt chỉ ghi "không thấy nút Tương tác" — không dens, không ncc, không biết
+    /// dò được mấy khối, nên không phân biệt được hai lỗi hoàn toàn khác nhau: MẤT khối (băng
+    /// hàng bị nhập lại nên không khối nào được tạo) và ĐỦ khối mà điểm thấp. Dùng lại đúng
+    /// hai dòng mà <see cref="Diagnose"/> đã in.
+    /// </summary>
+    private void LogCandidates(string label)
+    {
+        try
+        {
+            var hits = FindMenu();
+            _log($"   dò trượt “{label}” — dò được {hits.Count} khối:");
+            foreach (var h in hits)
+                _log($"      {h}   {_menu.DescribeScores(h)}");
+            if (hits.Count == 0)
+                _log($"      (không khối nào — vùng quét {MenuBand.Width}×{MenuBand.Height}" +
+                     $" @ {MenuBand.X},{MenuBand.Y}, màu nút" +
+                     $" #{PillColor.R:X2}{PillColor.G:X2}{PillColor.B:X2} ±{_cfg.MenuColorTol})");
+            if (_menu.ScanNote is { Length: > 0 } note)
+                _log("      " + note);
+        }
+        catch (Exception ex)
+        {
+            // Chan doan khong duoc phep lam do buoc chinh — no chi la log.
+            _log("      (không lấy được bảng ứng viên: " + ex.Message + ")");
+        }
     }
 
     private bool WaitFor(Func<bool> done, int timeoutMs, CancellationToken ct, out string last)
