@@ -281,8 +281,9 @@ internal sealed class ItemCatalogForm : Form
 
         foreach (var (label, tag, grid) in new[]
                  {
-                     ("phím nhanh", "hotbar", _profile.Hotbar),
-                     ("ba lô", "bag", _profile.Bag)
+                     ("phím nhanh", FishSlot.GridHotbar, _profile.Hotbar),
+                     ("trên người", FishSlot.GridPockets, _profile.Pockets),
+                     ("ba lô", FishSlot.GridBag, _profile.Bag)
                  })
         {
             if (!grid.IsSet) { Append($"{label}: chưa khoanh lưới"); continue; }

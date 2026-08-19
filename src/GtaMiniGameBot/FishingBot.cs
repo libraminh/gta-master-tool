@@ -539,8 +539,9 @@ internal sealed class FishingBot
         // Khong thay o ca nao ma ba lo van bao gan day: khong the cau tiep, se cau vao cai
         // ba lo day ma log van trong binh thuong.
         throw new TrunkStepException(_dumper.ByIcon
-            ? "ba lô gần đầy nhưng không nhận ra ô nào là cá — xem log mấy ô “không rõ”, " +
-              "loài mới thì vào Vật phẩm & cá tích thêm"
+            ? "ba lô gần đầy nhưng không nhận ra ô nào là cá — xem mấy dòng “bỏ qua” trong log: " +
+              "“RÕ nhưng không có trong danh sách cá” thì vào Vật phẩm & cá tích thêm loài đó; " +
+              "“không rõ” thì loài đó chưa có icon trong bộ mẫu; “trống” thì hạ ngưỡng ô trống"
             : "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
               "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
     }

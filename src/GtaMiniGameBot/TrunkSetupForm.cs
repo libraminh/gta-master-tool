@@ -14,7 +14,7 @@ internal sealed class TrunkSetupForm : Form
     {
         BagWeight, TrunkWeight, BagHeader, TrunkHeader, PauseMarker,
         AltInteract, AltTrunk, AltFuel, AltBand,
-        GridHotbar, GridBag, GridTrunk
+        GridHotbar, GridBag, GridPockets, GridTrunk
     }
 
     /// <param name="Shot">Ảnh tĩnh cần có trước.</param>
@@ -68,6 +68,11 @@ internal sealed class TrunkSetupForm : Form
             "rồi chỉnh số cột/hàng cho các đường kẻ trùng khe giữa các ô.", true, null),
         [Slot.GridBag] = new("Lưới ba lô", "bag",
             "Khoanh trùm cả lưới BA LÔ, mép ngoài tới mép ngoài. Chỉnh cột/hàng cho khớp.", true, null),
+        [Slot.GridPockets] = new("Lưới trên người", "bag",
+            "Khoanh trùm hàng 5 ô dưới chữ TRÊN NGƯỜI, ngay dưới lưới ba lô — cùng bề ngang " +
+            "với nó. Cột/hàng = 5×1. Bỏ qua được, nhưng bỏ qua thì cá rơi vào hàng này bot " +
+            "không thấy. Lưu ý hàng này thường chứa MỒI: chỉ nên để bot kéo từ đây khi đang " +
+            "nhận cá theo icon, đừng khai báo nó thành ô chứa cá.", true, null),
         [Slot.GridTrunk] = new("Lưới cốp", "trunk",
             "Khoanh trùm cả lưới CỐP PHƯƠNG TIỆN. Chỉnh cột/hàng cho khớp.", true, null)
     };
@@ -100,7 +105,7 @@ internal sealed class TrunkSetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(940, 920);
+        ClientSize = new Size(940, 964);
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.White;
 
@@ -160,7 +165,8 @@ internal sealed class TrunkSetupForm : Form
         {
             Text = "2 · Khoanh vùng trên ảnh đã chụp",
             Location = new Point(12, y),
-            Size = new Size(916, 286)
+            // 13 o, 2 cot => 7 hang. Hang cuoi ket thuc o 26 + 6*42 + 30 = 308.
+            Size = new Size(916, 330)
         };
         Controls.Add(boxCrop);
 
@@ -182,7 +188,7 @@ internal sealed class TrunkSetupForm : Form
             _slotLabels[slot] = lbl;
             i2++;
         }
-        y += 298;
+        y += 342;
 
         var boxOcr = new GroupBox
         {
@@ -272,7 +278,9 @@ internal sealed class TrunkSetupForm : Form
         boxItems.Controls.Add(_itemStatus);
         y += 82;
 
-        _log.SetBounds(12, y, 916, 920 - y - 12);
+        // Lay tu ClientSize chu khong go lai con so: truoc day 920 bi lap o hai cho, sua mot
+        // cho la o log lang le thut di.
+        _log.SetBounds(12, y, 916, ClientSize.Height - y - 12);
         _log.Multiline = true;
         _log.ReadOnly = true;
         _log.ScrollBars = ScrollBars.Vertical;
@@ -391,7 +399,11 @@ internal sealed class TrunkSetupForm : Form
         Slot.AltBand => (_profile.AltBand.ToRectangle(), 1, 1),
         Slot.GridHotbar => (_profile.Hotbar.Area.ToRectangle(), _profile.Hotbar.Cols, _profile.Hotbar.Rows),
         Slot.GridBag => (_profile.Bag.Area.ToRectangle(), _profile.Bag.Cols, _profile.Bag.Rows),
-        _ => (_profile.Trunk.Area.ToRectangle(), _profile.Trunk.Cols, _profile.Trunk.Rows)
+        Slot.GridPockets => (_profile.Pockets.Area.ToRectangle(), _profile.Pockets.Cols, _profile.Pockets.Rows),
+        // Tung la nhanh `_`. Ghi ro ra: them mot o moi vao enum ma quen sua day thi no lang le
+        // tro thanh "luoi cop", va ben Apply thi lang le GHI DE luoi cop cua nguoi dung.
+        Slot.GridTrunk => (_profile.Trunk.Area.ToRectangle(), _profile.Trunk.Cols, _profile.Trunk.Rows),
+        _ => (Rectangle.Empty, 1, 1)
     };
 
     private void Apply(Slot slot, StillCropResult r)
@@ -410,7 +422,8 @@ internal sealed class TrunkSetupForm : Form
             case Slot.AltBand: _profile.AltBand = rect; break;
             case Slot.GridHotbar: _profile.Hotbar = Grid(r); break;
             case Slot.GridBag: _profile.Bag = Grid(r); break;
-            default: _profile.Trunk = Grid(r); break;
+            case Slot.GridPockets: _profile.Pockets = Grid(r); break;
+            case Slot.GridTrunk: _profile.Trunk = Grid(r); break;
         }
     }
 
@@ -473,6 +486,7 @@ internal sealed class TrunkSetupForm : Form
     private IEnumerable<(string Label, string Shot, string GridName, GridSpec Grid)> Grids()
     {
         yield return ("phím nhanh", "bag", FishSlot.GridHotbar, _profile.Hotbar);
+        yield return ("trên người", "bag", FishSlot.GridPockets, _profile.Pockets);
         yield return ("ba lô     ", "bag", FishSlot.GridBag, _profile.Bag);
         yield return ("cốp       ", "trunk", null, _profile.Trunk);
     }
