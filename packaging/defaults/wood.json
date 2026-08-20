@@ -1,0 +1,39 @@
+{
+  "NccMin": 0.72,
+  "InkMinBright": 200,
+  "InkSpreadTol": 45,
+  "InkRowMin": 3,
+  "RowMaxFrac": 0.5,
+  "RowGapMerge": 2,
+  "LineBandMaxRatio": 8,
+  "MaxLines": 6,
+  "PollMs": 120,
+  "AfterTapBlindMs": 900,
+  "MaxChopMs": 90000,
+  "NoPromptMs": 6000,
+  "TapEveryMs": 200,
+  "TapHoldMs": 60,
+  "ShotCountdownSec": 5,
+  "WindowMatch": "PlayXGTA",
+  "Profiles": {
+    "2560x1440": {
+      "Device": "\\\\.\\DISPLAY1",
+      "Width": 2560,
+      "Height": 1440,
+      "Band": {
+        "X": 1312,
+        "Y": 727,
+        "W": 557,
+        "H": 460
+      },
+      "Ready": {
+        "X": 0,
+        "Y": 0,
+        "W": 0,
+        "H": 0
+      },
+      "TextH": 0,
+      "GapSplit": 0
+    }
+  }
+}

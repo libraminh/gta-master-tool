@@ -28,7 +28,7 @@
         "W": 187,
         "H": 65
       },
-      "TrunkDumpEnabled": true,
+      "TrunkDumpEnabled": false,
       "BagWeight": {
         "X": 945,
         "Y": 223,
@@ -123,12 +123,7 @@
         "Cols": 5,
         "Rows": 5
       },
-      "FishSlots": [
-        {
-          "Grid": "hotbar",
-          "Index": 1
-        }
-      ],
+      "FishSlots": [],
       "FishItems": [
         "bass_largemouth",
         "bluegill",
