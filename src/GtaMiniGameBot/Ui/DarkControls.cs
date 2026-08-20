@@ -205,6 +205,7 @@ internal sealed class DarkCheck : DarkBase
 /// <summary>
 /// O nhap so. Chi lam viec voi int — moi cho dung trong app deu ep
 /// (int)NumericUpDown.Value roi, nen decimal chi la buoc trung gian vo ich.
+/// Go so truc tiep; Enter / mat focus chot, Escape huy. Mui ten va banh xe van dung.
 /// </summary>
 internal sealed class DarkSpin : DarkBase
 {
@@ -212,6 +213,12 @@ internal sealed class DarkSpin : DarkBase
     private int _min;
     private int _max = 100;
     private Rectangle _up, _down;
+
+    /// <summary>Chu dang go. Null = khong sua, ve Value.</summary>
+    private string _edit;
+
+    /// <summary>So dang duoc chon het — chu so dau thay ca chuoi.</summary>
+    private bool _replace;
 
     public event Action ValueChanged;
 
@@ -264,11 +271,14 @@ internal sealed class DarkSpin : DarkBase
 
     public void SetValueQuiet(int value)
     {
+        DropEdit();
         _value = Clamp(value);
         Invalidate();
     }
 
     private int Clamp(int v) => _max < _min ? _min : Math.Clamp(v, _min, _max);
+
+    private int MaxDigits => Math.Max(1, _max.ToString(System.Globalization.CultureInfo.InvariantCulture).Length);
 
     /// <summary>
     /// Keo Value ve trong khoang moi, KHONG ban ValueChanged: doi khoang la sua rang
@@ -277,7 +287,82 @@ internal sealed class DarkSpin : DarkBase
     /// </summary>
     private void Reclamp()
     {
+        DropEdit();
         _value = Clamp(_value);
+        Invalidate();
+    }
+
+    private void DropEdit()
+    {
+        _edit = null;
+        _replace = false;
+    }
+
+    private void BeginReplace()
+    {
+        if (!Enabled) return;
+        _edit ??= _value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        _replace = true;
+        Invalidate();
+    }
+
+    private void CommitEdit()
+    {
+        if (_edit == null)
+        {
+            _replace = false;
+            return;
+        }
+
+        string s = _edit;
+        DropEdit();
+        if (s.Length > 0 && int.TryParse(s, System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out int v))
+            Value = v;
+        else
+            Invalidate();
+    }
+
+    private void CancelEdit()
+    {
+        if (_edit == null) return;
+        DropEdit();
+        Invalidate();
+    }
+
+    private void StepBy(int delta)
+    {
+        CommitEdit();
+        Value += delta;
+    }
+
+    private void TypeDigit(char d)
+    {
+        if (!Enabled) return;
+        if (_edit == null || _replace)
+        {
+            _edit = d.ToString();
+            _replace = false;
+        }
+        else if (_edit.Length < MaxDigits)
+        {
+            _edit += d;
+        }
+        Invalidate();
+    }
+
+    private void Backspace()
+    {
+        if (!Enabled) return;
+        if (_edit == null || _replace)
+        {
+            _edit = "";
+            _replace = false;
+        }
+        else if (_edit.Length > 0)
+        {
+            _edit = _edit[..^1];
+        }
         Invalidate();
     }
 
@@ -289,30 +374,99 @@ internal sealed class DarkSpin : DarkBase
         _down = new Rectangle(Width - bw - 1, half, bw, Height - half - 1);
     }
 
+    protected override void OnGotFocus(EventArgs e)
+    {
+        BeginReplace();
+        base.OnGotFocus(e);
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        CommitEdit();
+        base.OnLostFocus(e);
+    }
+
     protected override void OnMouseDown(MouseEventArgs e)
     {
         LayoutButtons();
         Focus();
-        if (_up.Contains(e.Location)) Value += Step;
-        else if (_down.Contains(e.Location)) Value -= Step;
+        if (_up.Contains(e.Location))
+        {
+            StepBy(Step);
+            BeginReplace();
+        }
+        else if (_down.Contains(e.Location))
+        {
+            StepBy(-Step);
+            BeginReplace();
+        }
+        else
+        {
+            BeginReplace();
+        }
         base.OnMouseDown(e);
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         if (!Focused) return;
-        Value += e.Delta > 0 ? Step : -Step;
+        StepBy(e.Delta > 0 ? Step : -Step);
+        BeginReplace();
+    }
+
+    protected override void OnKeyPress(KeyPressEventArgs e)
+    {
+        if (e.KeyChar is >= '0' and <= '9')
+        {
+            TypeDigit(e.KeyChar);
+            e.Handled = true;
+        }
+        base.OnKeyPress(e);
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (e.KeyCode == Keys.Up) { Value += Step; e.Handled = true; }
-        else if (e.KeyCode == Keys.Down) { Value -= Step; e.Handled = true; }
+        if (e.KeyCode == Keys.Up)
+        {
+            StepBy(Step);
+            BeginReplace();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+        else if (e.KeyCode == Keys.Down)
+        {
+            StepBy(-Step);
+            BeginReplace();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+        else if (e.KeyCode == Keys.Back)
+        {
+            Backspace();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+        else if (e.KeyCode == Keys.Enter)
+        {
+            CommitEdit();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
+        else if (e.KeyCode == Keys.Escape)
+        {
+            CancelEdit();
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+        }
         base.OnKeyDown(e);
     }
 
-    protected override bool IsInputKey(Keys keyData) =>
-        keyData is Keys.Up or Keys.Down || base.IsInputKey(keyData);
+    protected override bool IsInputKey(Keys keyData)
+    {
+        Keys k = keyData & Keys.KeyCode;
+        return k is Keys.Up or Keys.Down or Keys.Enter or Keys.Escape or Keys.Back
+            || base.IsInputKey(keyData);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -324,9 +478,29 @@ internal sealed class DarkSpin : DarkBase
         Theme.Fill(g, r, Enabled ? Theme.Well : Theme.Sunk);
         Theme.Frame(g, r, !Enabled ? Theme.Line : Hot || Focused ? Theme.AccentDim : Theme.Line2);
 
-        TextRenderer.DrawText(g, _value.ToString(), Font,
-            new Rectangle(Theme.Px(7), 0, Width - _up.Width - Theme.Px(10), Height),
-            Enabled ? Theme.Head : Theme.Dimmer, Theme.Left);
+        string shown = _edit ?? _value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var textBox = new Rectangle(Theme.Px(7), 0, Width - _up.Width - Theme.Px(10), Height);
+        Color ink = Enabled ? Theme.Head : Theme.Dimmer;
+
+        if (Enabled && Focused && _replace && shown.Length > 0)
+        {
+            var sz = TextRenderer.MeasureText(g, shown, Font, textBox.Size, Theme.Left);
+            int top = textBox.Y + Math.Max(0, (textBox.Height - sz.Height) / 2);
+            Theme.Fill(g, new Rectangle(textBox.X, top, sz.Width, sz.Height), Theme.AccentDim);
+        }
+
+        TextRenderer.DrawText(g, shown, Font, textBox, ink, Theme.Left);
+
+        if (Enabled && Focused && _edit != null && !_replace)
+        {
+            int cx = textBox.X;
+            if (shown.Length > 0)
+                cx += TextRenderer.MeasureText(g, shown, Font, textBox.Size, Theme.Left).Width;
+            int y1 = textBox.Y + Theme.Px(4);
+            int y2 = textBox.Bottom - Theme.Px(4);
+            using var p = new Pen(Theme.Accent, Math.Max(1, Theme.Px(1)));
+            g.DrawLine(p, cx, y1, cx, y2);
+        }
 
         if (!Enabled) return;
         Arrow(g, _up, true);
