@@ -35,7 +35,15 @@ internal sealed class TrunkDumper : IDisposable
     private readonly WeightReader _trunkWeight;
     private readonly GridScanner _hotbar;
     private readonly GridScanner _bag;
+    /// <summary>Hàng "TRÊN NGƯỜI". null = người dùng chưa khoanh vùng đó.</summary>
+    private readonly GridScanner _pockets;
     private readonly GridScanner _trunk;
+
+    /// <summary>
+    /// Các lưới được quét tìm cá, ĐÚNG thứ tự quét. Giữ ở một chỗ để thứ tự không lệch giữa
+    /// vòng quét và phần ghi log. Lưới chưa khoanh bị lọc ra ngay từ đây.
+    /// </summary>
+    private readonly (string Label, GridScanner Scanner)[] _sources;
     private readonly Point _park;
     private readonly ItemCatalog _catalog;
     private readonly HashSet<string> _fishItems;
@@ -68,8 +76,8 @@ internal sealed class TrunkDumper : IDisposable
 
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
                         TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
-                        GridScanner hotbar, GridScanner bag, GridScanner trunk,
-                        ItemCatalog catalog)
+                        GridScanner hotbar, GridScanner bag, GridScanner pockets,
+                        GridScanner trunk, ItemCatalog catalog)
     {
         _cfg = cfg;
         _screen = screen;
@@ -80,8 +88,16 @@ internal sealed class TrunkDumper : IDisposable
         _trunkWeight = trunkWeight;
         _hotbar = hotbar;
         _bag = bag;
+        _pockets = pockets;
         _trunk = trunk;
         _catalog = catalog;
+
+        // Thu tu: hai luoi NHO truoc, ba lo sau. Moi lan do bi chan tren boi MaxDragsPerDump
+        // (12), ma ba lo co 25 o — de ba lo truoc thi mot ba lo day co the an het luot keo va
+        // bo doi hai hang nho hoi qua nhieu lan do lien tiep, dung cai dang di sua.
+        _sources = new[] { ("phím nhanh", hotbar), ("trên người", pockets), ("ba lô", bag) }
+            .Where(s => s.Item2 is not null)
+            .ToArray();
         _fishItems = new HashSet<string>(profile.FishItems ?? new List<string>(),
                                          StringComparer.OrdinalIgnoreCase);
 
@@ -123,8 +139,16 @@ internal sealed class TrunkDumper : IDisposable
         }
         log(byIcon
             ? $"nhận cá theo icon: {catalog.Count} vật phẩm trong bộ mẫu, " +
-              $"{p.FishItems.Count} loại được tính là cá — quét cả ba lô, không cần ô khai báo"
+              $"{p.FishItems.Count} loại được tính là cá — quét phím nhanh, trên người và " +
+              "ba lô, không cần ô khai báo"
             : $"nhận cá theo ô khai báo ({p.FishSlots.Count} ô)");
+
+        // Bay: cac o khai bao nam im khi che do icon dang bat, nhung mat bo icon (doi
+        // ItemCachePath, xoa thu muc items) la bot lang le roi ve che do nay va keo BAT KY thu
+        // gi trong nhung o do. Khong tu xoa — do la du lieu nguoi dung — chi noi ra.
+        if (byIcon && p.FishSlots is { Count: > 0 })
+            log($"ô chứa cá đã khai báo ({string.Join(", ", p.FishSlots.Select(s => s.Label))}) " +
+                "chỉ dùng khi mất bộ icon — kiểm lại nếu nó không còn là ô cá");
 
         var atlas = DigitAtlas.Load(p.Key);
         var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg);
@@ -134,9 +158,15 @@ internal sealed class TrunkDumper : IDisposable
         if (trunkWeight is null)
             log("chưa khoanh ô số KG cốp — bot sẽ không biết cốp còn trống bao nhiêu");
 
+        // CO Y de luoi "trên người" ngoai phep kiem bat buoc o tren: moi cau hinh dang co deu
+        // thieu vung nay, chan cung o day la tat do cop cua tat ca nguoi dung.
+        if (!p.Pockets.IsSet)
+            log("chưa khoanh lưới TRÊN NGƯỜI — cá rơi vào hàng đó bot sẽ không thấy");
+
         return new TrunkDumper(cfg, screen, p, log, opener, weight, trunkWeight,
             new GridScanner(cfg, screen, p.Hotbar),
             new GridScanner(cfg, screen, p.Bag),
+            p.Pockets.IsSet ? new GridScanner(cfg, screen, p.Pockets) : null,
             new GridScanner(cfg, screen, p.Trunk),
             catalog);
     }
@@ -424,13 +454,25 @@ internal sealed class TrunkDumper : IDisposable
     private (GridScanner Scanner, CellInfo Cell)? NextFishByIcon(out string note)
     {
         note = null;
-        var unknown = new List<string>();
 
-        foreach (var (label, scanner) in new[] { ("phím nhanh", _hotbar), ("ba lô", _bag) })
+        // MOI o bi bo qua deu phai co ly do. Truoc day chi o "khong ro" duoc ghi, con hai
+        // duong kia im lang: o doc ra trong, va o nhan RO nhung khong phai ca. Hau qua that:
+        // 19/08 co 5 con ca o phim 6 khong duoc keo, ma log khong he co dong nao ve o do, nen
+        // khong cach nao biet no bi doc thanh trong hay bi nhan thanh mot mon KHONG phai ca.
+        var skipped = new List<string>();
+
+        foreach (var (label, scanner) in _sources)
         {
             foreach (var (cell, gray) in scanner.ScanScreenPixels())
             {
-                if (cell is null || cell.IsEmpty) continue;
+                if (cell is null) continue;
+                if (cell.IsEmpty)
+                {
+                    // In ca so do va nguong: o co do ma bi doc thanh trong thi thay ngay.
+                    skipped.Add($"{label} #{cell.Index} trống " +
+                                $"(lệch={cell.Std:F1} ≤ {_cfg.CellEmptyStdMax:F1})");
+                    continue;
+                }
 
                 var guess = _catalog.Classify(gray, cell.Rect.Width, cell.Rect.Height);
 
@@ -438,12 +480,14 @@ internal sealed class TrunkDumper : IDisposable
                 string fishName = guess.FishName(_fishItems, _cfg.ItemNccMin);
                 if (fishName is null)
                 {
-                    // Ro ma khong phai ca thi im lang bo qua; chi ke ra o thuc su khong ro.
-                    if (guess.Name is null) unknown.Add($"{label} #{cell.Index} {guess}");
+                    skipped.Add(guess.Name is null
+                        ? $"{label} #{cell.Index} {guess}"
+                        : $"{label} #{cell.Index} {guess.Name} {guess.Score:F2} — RÕ nhưng " +
+                          "không có trong danh sách cá");
                     continue;
                 }
 
-                foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
+                Flush(skipped);
                 note = guess.Name is null
                     ? $"kéo {label} #{cell.Index} — {guess.Best} {guess.Score:F2}, lẫn với " +
                       $"{guess.Runner} {guess.RunnerScore:F2} — cả hai đều là cá nên vẫn kéo"
@@ -452,8 +496,19 @@ internal sealed class TrunkDumper : IDisposable
             }
         }
 
-        foreach (string u in unknown) _log("   bỏ qua ô không rõ: " + u);
+        Flush(skipped);
         return null;
+    }
+
+    /// <summary>
+    /// Xả danh sách ô bị bỏ qua. Gom lại rồi mới ghi chứ không ghi ngay lúc gặp: ô nào cũng
+    /// bị bỏ qua cho tới khi gặp con cá, nên ghi ngay sẽ đẩy dòng "kéo …" xuống dưới một đống
+    /// dòng phụ, khó đọc.
+    /// </summary>
+    private void Flush(List<string> skipped)
+    {
+        foreach (string s in skipped) _log("   bỏ qua: " + s);
+        skipped.Clear();
     }
 
     /// <summary>
@@ -467,7 +522,12 @@ internal sealed class TrunkDumper : IDisposable
         foreach (var slot in _profile.FishSlots)
         {
             var scanner = ScannerFor(slot.Grid);
-            if (scanner is null) continue;
+            if (scanner is null)
+            {
+                // Nguoi dung KHAI BAO o nay, nen im lang bo qua la sai — noi ro vi sao.
+                note = $"ô {slot.Label} nằm ở lưới chưa khoanh — bỏ qua";
+                continue;
+            }
             if (slot.Index < 0 || slot.Index >= scanner.Count)
             {
                 note = $"ô {slot.Label} nằm ngoài lưới ({scanner.Count} ô) — bỏ qua";
@@ -487,6 +547,7 @@ internal sealed class TrunkDumper : IDisposable
     {
         FishSlot.GridHotbar => _hotbar,
         FishSlot.GridBag => _bag,
+        FishSlot.GridPockets => _pockets,
         _ => null
     };
 
@@ -586,6 +647,7 @@ internal sealed class TrunkDumper : IDisposable
         _trunkWeight?.Dispose();
         _hotbar?.Dispose();
         _bag?.Dispose();
+        _pockets?.Dispose();
         _trunk?.Dispose();
     }
 }

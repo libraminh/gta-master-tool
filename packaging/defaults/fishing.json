@@ -28,7 +28,7 @@
         "W": 187,
         "H": 65
       },
-      "TrunkDumpEnabled": true,
+      "TrunkDumpEnabled": false,
       "BagWeight": {
         "X": 945,
         "Y": 223,
@@ -85,23 +85,33 @@
       },
       "Hotbar": {
         "Area": {
-          "X": 171,
-          "Y": 310,
-          "W": 108,
-          "H": 588
+          "X": 164,
+          "Y": 304,
+          "W": 120,
+          "H": 600
         },
         "Cols": 1,
         "Rows": 5
       },
       "Bag": {
         "Area": {
-          "X": 483,
-          "Y": 308,
-          "W": 588,
-          "H": 583
+          "X": 477,
+          "Y": 301,
+          "W": 600,
+          "H": 600
         },
         "Cols": 5,
         "Rows": 5
+      },
+      "Pockets": {
+        "Area": {
+          "X": 473,
+          "Y": 990,
+          "W": 600,
+          "H": 120
+        },
+        "Cols": 5,
+        "Rows": 1
       },
       "Trunk": {
         "Area": {
@@ -113,11 +123,20 @@
         "Cols": 5,
         "Rows": 5
       },
-      "FishSlots": [
-        {
-          "Grid": "hotbar",
-          "Index": 1
-        }
+      "FishSlots": [],
+      "FishItems": [
+        "bass_largemouth",
+        "bluegill",
+        "brightscale_zander",
+        "carp",
+        "catfish",
+        "crayfish",
+        "danglemouth_catfish",
+        "perch",
+        "pike",
+        "river_sturgeon",
+        "striped_bass",
+        "trout"
       ],
       "KeepBand": {
         "X": 933,
@@ -131,8 +150,13 @@
   "RejectNccMin": 0.75,
   "KeepColorTol": 20,
   "KeepDensityMin": 0.55,
+  "KeepNccMin": 0.3,
   "KeepClickRetries": 2,
+  "KeepAnchorTolPx": 40,
   "WaitBiteMs": 25000,
+  "CastConfirmMs": 4000,
+  "CastConfirmRetries": 2,
+  "AfterKeepCastMs": 0,
   "FightTimeoutMs": 40000,
   "AfterReleaseMs": 1200,
   "CastCooldownMs": 1500,
@@ -142,18 +166,25 @@
   "BiteDebounceFrames": 3,
   "DoneFill01": 0.95,
   "WaitKeepMs": 8000,
+  "BlindKeepClick": true,
   "KeepAppearMs": 400,
   "KeepGoneMs": 1500,
   "KeepHoverMs": 320,
   "KeepMoveSteps": 8,
   "WindowMatch": "PlayXGTA",
-  "WeightCheckEveryCatches": 3,
+  "WeightCheckEveryCatches": 2,
   "BagCapKg": 30,
   "TrunkCapKg": 60,
   "DumpMarginKg": 3,
   "CatchesPerDumpFallback": 20,
   "DumpEveryCatches": 5,
+  "TrunkTightKg": 10,
+  "BagFullStopKg": 29,
+  "TrunkFullTries": 2,
   "MinDropKg": 0.5,
+  "ItemNccMin": 0.7,
+  "ItemMarginMin": 0.05,
+  "AllowIconDownload": true,
   "WeightOcrFailMax": 3,
   "MaxWeightJumpKg": 5,
   "DigitNccMin": 0.8,
@@ -181,7 +212,7 @@
   "EscCloseMs": 1500,
   "AfterEscMs": 300,
   "AfterDumpMs": 600,
-  "AfterDumpTurnMs": 400,
+  "AfterDumpTurnMs": 200,
   "DumpRetryGapMs": 1500,
   "MaxDumpMs": 60000,
   "DragGrabMs": 140,

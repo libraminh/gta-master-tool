@@ -25,9 +25,23 @@ internal static class AppPaths
         }
     }
 
+    /// <summary>Config nam ngay canh exe trong ban portable, mot file moi job.</summary>
+    private static readonly string[] MigrateFiles =
+    {
+        "fishing.json", "config.json", "hotkeys.json", "miner.json", "wood.json"
+    };
+
     /// <summary>
-    /// Chuyen du lieu cu nam canh exe sang Root. Chi chay khi Root chua co gi,
-    /// nen goi bao nhieu lan cung khong de len ban moi.
+    /// Thu muc du lieu di kem. "items" la bo icon vat pham — THIEU no thi bot tut ve che do
+    /// tin may o da khai bao, va o khai bao trong ban ship co the tro vao o MOI chu khong phai
+    /// ca, tuc keo moi vao cop. Nen no phai di theo ban portable.
+    /// </summary>
+    private static readonly string[] MigrateDirs = { "fishing", "items" };
+
+    /// <summary>
+    /// Chuyen du lieu cu nam canh exe sang Root. Chi chep file nao Root CHUA co,
+    /// nen goi bao nhieu lan cung khong de len ban moi, va chay ban portable tren
+    /// may da co du lieu thi khong lam mat hieu chinh dang dung.
     /// </summary>
     public static void MigrateFromExeFolder()
     {
@@ -40,16 +54,18 @@ internal static class AppPaths
 
         try
         {
-            CopyIfMissing(Path.Combine(exeDir, "fishing.json"), Path.Combine(Root, "fishing.json"));
-            CopyIfMissing(Path.Combine(exeDir, "config.json"), Path.Combine(Root, "config.json"));
+            foreach (string name in MigrateFiles)
+                CopyIfMissing(Path.Combine(exeDir, name), Path.Combine(Root, name));
 
-            var oldFishing = new DirectoryInfo(Path.Combine(exeDir, "fishing"));
-            if (oldFishing.Exists)
+            foreach (string dir in MigrateDirs)
             {
-                foreach (var file in oldFishing.EnumerateFiles("*", SearchOption.AllDirectories))
+                var src = new DirectoryInfo(Path.Combine(exeDir, dir));
+                if (!src.Exists) continue;
+
+                foreach (var file in src.EnumerateFiles("*", SearchOption.AllDirectories))
                 {
-                    string rel = Path.GetRelativePath(oldFishing.FullName, file.FullName);
-                    CopyIfMissing(file.FullName, Path.Combine(Root, "fishing", rel));
+                    string rel = Path.GetRelativePath(src.FullName, file.FullName);
+                    CopyIfMissing(file.FullName, Path.Combine(Root, dir, rel));
                 }
             }
         }

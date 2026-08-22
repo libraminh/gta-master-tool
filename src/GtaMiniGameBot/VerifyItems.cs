@@ -43,7 +43,9 @@ internal static class VerifyItems
         Directory.CreateDirectory(dumpDir);
 
         int hit = 0, seen = 0;
-        foreach (var (label, grid) in new[] { ("hotbar", profile.Hotbar), ("bag", profile.Bag) })
+        foreach (var (label, grid) in new[] { ("hotbar", profile.Hotbar),
+                                              ("pockets", profile.Pockets),
+                                              ("bag", profile.Bag) })
         {
             if (!grid.IsSet) { Console.WriteLine($"{label}: chưa khoanh lưới"); continue; }
 

@@ -15,6 +15,7 @@ internal sealed class FishSlotForm : Form
     private static readonly Source[] Sources =
     {
         new("Phím nhanh", "bag", FishSlot.GridHotbar, p => p.Hotbar),
+        new("Trên người (thường là MỒI — cẩn thận)", "bag", FishSlot.GridPockets, p => p.Pockets),
         new("Ba lô", "bag", FishSlot.GridBag, p => p.Bag)
     };
 

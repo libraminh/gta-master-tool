@@ -116,8 +116,16 @@ internal sealed class RegionReader : IDisposable
     /// Pixel nam ngoai vung dang doc tra ve 0.
     /// </summary>
     public byte[] GrayBuffer(Rectangle screenRect)
+        => GrayBuffer(screenRect, new byte[screenRect.Width * screenRect.Height]);
+
+    /// <summary>
+    /// Như trên nhưng ghi vào mảng có sẵn — dùng khi phải chấm cùng một cỡ ô nhiều lần liền
+    /// (quét lệch vài pixel), để không cấp phát lại mỗi lượt.
+    /// </summary>
+    public byte[] GrayBuffer(Rectangle screenRect, byte[] into)
     {
-        var outp = new byte[screenRect.Width * screenRect.Height];
+        int need = screenRect.Width * screenRect.Height;
+        var outp = into is not null && into.Length == need ? into : new byte[need];
         int k = 0;
         for (int y = screenRect.Top; y < screenRect.Bottom; y++)
         for (int x = screenRect.Left; x < screenRect.Right; x++)

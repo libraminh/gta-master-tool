@@ -1,0 +1,7 @@
+{
+  "TapEveryMs": 1500,
+  "TapHoldMs": 60,
+  "HoldShift": false,
+  "PollMs": 50,
+  "WindowMatch": "PlayXGTA"
+}

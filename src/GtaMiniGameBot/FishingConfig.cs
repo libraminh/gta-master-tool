@@ -98,15 +98,21 @@ internal sealed class FishSlot
 {
     public const string GridHotbar = "hotbar";
     public const string GridBag = "bag";
+    public const string GridPockets = "pockets";
 
     public string Grid { get; set; } = GridHotbar;
     public int Index { get; set; }
 
     [JsonIgnore]
-    public bool IsValid => Index >= 0 && Grid is GridHotbar or GridBag;
+    public bool IsValid => Index >= 0 && Grid is GridHotbar or GridBag or GridPockets;
 
     [JsonIgnore]
-    public string Label => (Grid == GridBag ? "ba lô" : "phím nhanh") + " #" + Index;
+    public string Label => Grid switch
+    {
+        GridBag => "ba lô",
+        GridPockets => "trên người",
+        _ => "phím nhanh"
+    } + " #" + Index;
 }
 
 internal sealed class FishingProfile
@@ -142,6 +148,12 @@ internal sealed class FishingProfile
 
     public GridSpec Hotbar { get; set; } = new();
     public GridSpec Bag { get; set; } = new();
+    /// <summary>
+    /// Hàng "TRÊN NGƯỜI" — 5 ô ngay dưới lưới ba lô, cùng bề ngang. Cá rơi vào đây khi ba lô
+    /// hết ô, nên không quét nó là mất cá. Tuỳ chọn: mọi cấu hình cũ đều thiếu vùng này, thiếu
+    /// thì bỏ qua chứ KHÔNG được chặn đổ cốp.
+    /// </summary>
+    public GridSpec Pockets { get; set; } = new();
     public GridSpec Trunk { get; set; } = new();
 
     /// <summary>
@@ -225,9 +237,11 @@ internal sealed class FishingProfile
 
         Hotbar ??= new GridSpec();
         Bag ??= new GridSpec();
+        Pockets ??= new GridSpec();
         Trunk ??= new GridSpec();
         Hotbar.Normalize(1, 5);
         Bag.Normalize(5, 5);
+        Pockets.Normalize(5, 1);
         Trunk.Normalize(5, 5);
 
         FishSlots ??= new List<FishSlot>();
@@ -249,9 +263,18 @@ internal sealed class FishingProfile
         if (!Trunk.IsSet) missing.Add("lưới cốp");
         if (FishSlots is not { Count: > 0 }) missing.Add("ô chứa cá");
 
-        if (missing.Count == 0)
-            return PauseMarker.IsSet ? "đủ cấu hình đổ cốp" : "đủ cấu hình đổ cốp (chưa khoanh menu tạm dừng)";
-        return "thiếu " + string.Join(", ", missing);
+        if (missing.Count > 0) return "thiếu " + string.Join(", ", missing);
+
+        // Hai vung nay la TUY CHON, khong duoc goi la "thieu": moi ben doc chi kiem
+        // StartsWith("đủ") de bat/tat do cop (FishingPanel, TrunkSetupForm), nen dua chung
+        // vao "missing" se lang le tat do cop cua MOI cau hinh dang co.
+        var notes = new List<string>();
+        if (!PauseMarker.IsSet) notes.Add("chưa khoanh menu tạm dừng");
+        if (!Pockets.IsSet) notes.Add("chưa khoanh lưới trên người");
+
+        return notes.Count == 0
+            ? "đủ cấu hình đổ cốp"
+            : "đủ cấu hình đổ cốp (" + string.Join(", ", notes) + ")";
     }
 
     public string DescribeGaps()
