@@ -441,6 +441,11 @@ internal sealed class FishingBot
             : "dồn đổ khi cốp sắp đầy: TẮT (TrunkTightKg = 0)");
         Emit($"cốp đầy hẳn thì thôi mở cốp, câu tiếp tới khi ba lô ≥ {_cfg.BagFullStopKg:F1} kg " +
              "rồi dừng phiên");
+        Emit(_cfg.ScanRetries > 0
+            ? $"icon tải chậm: ô trống mà lệch ≥ {_cfg.CellFaintStdMin:F1} thì coi như đang tải, " +
+              $"quét lại tối đa {_cfg.ScanRetries} lượt cách nhau {_cfg.ScanRetryGapMs} ms"
+            : "quét lại khi icon tải chậm: TẮT (ScanRetries = 0)");
+        Emit($"không thấy ô cá nào thì mở cốp lại, đủ {_cfg.NoFishTries} lượt mới dừng phiên");
     }
 
     /// <summary>
@@ -517,10 +522,26 @@ internal sealed class FishingBot
 
         Emit("--- đổ cá vào cốp ---");
         SetPhase(FishingPhase.Dumping);
-        var r = _dumper.Dump(ct);
-        _catchesSinceDump = 0;
-        // Cop vua doi, phat lai ngay de so kg tren UI khong tre mot luot.
-        Publish(force: true);
+
+        // Thu lai NGAY chu khong doi con ca sau: vao duoc tan day nghia la ba lo dang sat tran,
+        // cau them mot con nua thi no co the khong cat vao duoc va KG dung yen. Luot thu lai mo
+        // lai cop tu dau nen no vao lai duoc ca tu mot trang thai lech.
+        DumpResult r;
+        while (true)
+        {
+            r = _dumper.Dump(ct);
+            _catchesSinceDump = 0;
+            // Cop vua doi, phat lai ngay de so kg tren UI khong tre mot luot.
+            Publish(force: true);
+
+            // Bo dem strike nam trong TrunkDumper, khong nhan ban o day: no con dung strike de
+            // biet co nen quay mat khoi xe hay khong, hai cho dem rieng la lech nhau.
+            if (r != DumpResult.NothingToMove || _dumper.NoFishGivenUp) break;
+
+            Emit($"mở cốp lại thử một lượt nữa sau {_cfg.DumpRetryGapMs} ms " +
+                 "(nhân vật còn hướng vào xe)");
+            Sleep(ct, _cfg.DumpRetryGapMs);
+        }
 
         if (r == DumpResult.Ok)
         {
@@ -539,10 +560,12 @@ internal sealed class FishingBot
         // Khong thay o ca nao ma ba lo van bao gan day: khong the cau tiep, se cau vao cai
         // ba lo day ma log van trong binh thuong.
         throw new TrunkStepException(_dumper.ByIcon
-            ? "ba lô gần đầy nhưng không nhận ra ô nào là cá — xem mấy dòng “bỏ qua” trong log: " +
-              "“RÕ nhưng không có trong danh sách cá” thì vào Vật phẩm & cá tích thêm loài đó; " +
-              "“không rõ” thì loài đó chưa có icon trong bộ mẫu; “trống” thì hạ ngưỡng ô trống"
-            : "ba lô gần đầy nhưng mọi ô chứa cá đã khai báo đều trống — " +
+            ? $"mở cốp {_cfg.NoFishTries} lượt mà không nhận ra ô nào là cá — xem mấy dòng " +
+              "“bỏ qua” trong log: “RÕ nhưng không có trong danh sách cá” thì vào Vật phẩm & cá " +
+              "tích thêm loài đó; “không rõ” thì loài đó chưa có icon trong bộ mẫu; “như đang " +
+              "tải icon” thì nới ScanRetries / ScanRetryGapMs cho đường truyền chậm; còn “trống” " +
+              "trơn thì hạ ngưỡng ô trống"
+            : $"mở cốp {_cfg.NoFishTries} lượt mà mọi ô chứa cá đã khai báo đều trống — " +
               "cá nằm ở ô khác, vào Chọn ô chứa cá thêm ô đó");
     }
 
