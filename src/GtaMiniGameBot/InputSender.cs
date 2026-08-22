@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace GtaMiniGameBot;
@@ -125,6 +126,72 @@ internal static class InputSender
         {
             LeftUp();
         }
+    }
+
+    /// <summary>
+    /// Kéo thả cho panel MINIGAME (đi dây điện): nhấn giữ, đi theo đường gia tốc mượt, rồi nhả.
+    ///
+    /// Vì sao không dùng <see cref="DragSmooth"/>: hai màn khác nhau cần hai trình tự khác nhau, và
+    /// cả hai đều là số ĐO ĐƯỢC chứ không phải khẩu vị.
+    ///   - Kho đồ (DragSmooth): phải NHẢ chuột tại chỗ trước khi nhấn, và chờ tới 80 ms mỗi mốc,
+    ///     vì UI kho đồ chỉ chốt trạng thái hover sau một cú nhả.
+    ///   - Panel đi dây: bản Python đo được là KHÔNG cần cú nhả mồi đó, và cả cú kéo gói trong
+    ///     24 ms / 3 bước. Thêm 80 ms×3 vào đây thì một lượt 5 dây tốn thêm hơn một giây, mà mỗi
+    ///     lượt sai đã phải trả nửa giây khoá tương tác rồi.
+    ///
+    /// Đường đi dùng gia tốc cubic <c>3t²−2t³</c> (chậm ở hai đầu, nhanh ở giữa) đúng như bản
+    /// Python: game theo dõi chuyển động để biết đang kéo cái gì, nhảy một phát tới đích thì cú
+    /// nhả rơi vào khoảng trống.
+    /// </summary>
+    public static void DragEased(Point from, Point to, int steps, int durationMs,
+                                 int preDownMs, int downHoldMs, int preUpMs)
+    {
+        steps = Math.Max(1, steps);
+
+        MoveTo(from.X, from.Y);
+        SleepTight(preDownMs);
+
+        LeftDown();
+        try
+        {
+            SleepTight(downHoldMs);
+
+            double stepMs = durationMs / (double)steps;
+            for (int i = 1; i <= steps; i++)
+            {
+                double t = i / (double)steps;
+                double e = 3 * t * t - 2 * t * t * t;
+                MoveTo((int)Math.Round(from.X + (to.X - from.X) * e),
+                       (int)Math.Round(from.Y + (to.Y - from.Y) * e));
+                SleepTight(stepMs);
+            }
+            SleepTight(preUpMs);
+        }
+        finally
+        {
+            LeftUp();
+        }
+    }
+
+    /// <summary>
+    /// Chờ một khoảng NGẮN cho đúng.
+    ///
+    /// <see cref="Thread.Sleep(int)"/> chỉ chính xác tới độ phân giải timer của hệ thống — mặc
+    /// định ~15.6 ms, nên <c>Sleep(1)</c> có thể ngủ 15 ms thật. Bản Python xin
+    /// <c>timeBeginPeriod(1)</c> để tránh chuyện đó; ở đây quay bận cho các khoảng dưới một khung
+    /// hình thay vì đổi timer TOÀN HỆ THỐNG cho cả máy — cái giá là vài ms CPU mỗi cú kéo, đổi
+    /// lấy việc không làm thay đổi hành vi hẹn giờ của mọi tiến trình khác.
+    ///
+    /// Bảng Water &amp; Power cũng dùng: vòng closed-loop của nó chạy nhịp 2 ms, mà
+    /// <c>Sleep(2)</c> ngủ 15 ms thì bộ theo dõi đầu dây bỏ mất phần lớn quãng đường.
+    /// </summary>
+    public static void SleepTight(double ms)
+    {
+        if (ms <= 0) return;
+        if (ms >= 12) { Thread.Sleep((int)Math.Round(ms)); return; }
+
+        var sw = Stopwatch.StartNew();
+        while (sw.Elapsed.TotalMilliseconds < ms) Thread.SpinWait(60);
     }
 
     private static void MouseButton(uint flag)

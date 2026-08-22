@@ -531,6 +531,14 @@ internal sealed class DarkPick : DarkBase
     private readonly List<object> _items = new();
     private int _index = -1;
 
+    /// <summary>
+    /// Menu của control này, dựng một lần và sống hết đời control. Chỉ <c>Items</c> được dựng lại
+    /// mỗi lần mở.
+    ///
+    /// Vì sao không tạo-rồi-huỷ mỗi lần mở: xem <see cref="Drop"/> — đã sai hai lần ở đúng chỗ đó.
+    /// </summary>
+    private ContextMenuStrip _menu;
+
     public event Action SelectedIndexChanged;
 
     public DarkPick()
@@ -564,9 +572,38 @@ internal sealed class DarkPick : DarkBase
         base.OnMouseDown(e);
     }
 
+    /// <summary>
+    /// Mở danh sách chọn.
+    ///
+    /// MỘT menu duy nhất cho cả đời control, chỉ dựng lại phần <c>Items</c> mỗi lần mở. Nó KHÔNG
+    /// bao giờ bị huỷ ở đây — chỉ ở <see cref="Dispose(bool)"/>.
+    ///
+    /// Hai bản trước đều sai và cùng một kiểu sai: huỷ menu ở chỗ WinForms còn đang dùng nó.
+    ///
+    /// Bản 1 huỷ ngay trong event <c>Closed</c> của chính menu. <c>Closed</c> nổ BÊN TRONG
+    /// <c>SetVisibleCore(false)</c>, nên hàm đó chạy tiếp rồi gọi lại <c>get_Handle()</c> trên
+    /// object vừa bị huỷ → ném ngay lần chọn đầu tiên.
+    ///
+    /// Bản 2 dời sang đầu lần mở SAU, tưởng là an toàn vì "menu cũ đã đóng rồi". Không an toàn:
+    /// <c>ToolStripManager.ModalMenuFilter</c> nhả tham chiếu tới drop-down qua message ĐÃ POST,
+    /// không phải tức thời. Bấm nhanh mở → chọn → mở là huỷ một menu mà filter còn đang giữ, và
+    /// nó nổ ở lần dismiss kế tiếp với đúng stack cũ:
+    ///
+    ///   ToolStripItem.HandleMouseUp → HandleClick
+    ///   → ToolStrip.HandleItemClick(dismissingItem)
+    ///   → ContextMenuStrip.SetVisibleCore  ← trên instance ĐÃ bị huỷ
+    ///   → Control.get_Handle() → CreateHandle() → ObjectDisposedException
+    ///
+    /// Đó cũng là lý do phép thử của bản 2 không bắt được: nó bơm message giữa mỗi bước, tức tặng
+    /// cho filter đúng khoảng nghỉ mà người dùng thật không có.
+    ///
+    /// Vì sao <c>Items.Clear()</c> mà không dispose từng item: <see cref="ToolStripMenuItem"/> là
+    /// Component chứ không phải Control — nó không giữ HWND nào, nên bỏ cho GC dọn là đủ. Và nếu
+    /// dispose thì lại rơi vào đúng cái bẫy trên, vì filter có thể còn trỏ vào item vừa được bấm.
+    /// </summary>
     private void Drop()
     {
-        var menu = new ContextMenuStrip
+        _menu ??= new ContextMenuStrip
         {
             Renderer = new DarkMenuRenderer(),
             BackColor = Theme.Sunk,
@@ -575,6 +612,15 @@ internal sealed class DarkPick : DarkBase
             ShowImageMargin = false
         };
 
+        // Dang mo ma bam lai vao hop: dong lai, dung hanh vi cua mot combo box that. Truoc day
+        // no mo them mot menu nua va bo roi cai dang mo.
+        if (_menu.Visible)
+        {
+            _menu.Close(ToolStripDropDownCloseReason.CloseCalled);
+            return;
+        }
+
+        _menu.Items.Clear();
         for (int i = 0; i < _items.Count; i++)
         {
             int at = i;
@@ -584,11 +630,26 @@ internal sealed class DarkPick : DarkBase
                 BackColor = Theme.Sunk
             };
             it.Click += (_, _) => SelectedIndex = at;
-            menu.Items.Add(it);
+            _menu.Items.Add(it);
         }
 
-        menu.Closed += (_, _) => menu.Dispose();
-        menu.Show(this, new Point(0, Height));
+        _menu.Show(this, new Point(0, Height));
+    }
+
+    /// <summary>
+    /// Menu là của control này nên nó đi theo control — không để lại cửa sổ mồ côi.
+    ///
+    /// Đây là chỗ DUY NHẤT được phép huỷ nó: control đang bị huỷ thì không còn cú click nào đang
+    /// chạy dở trên nó nữa.
+    /// </summary>
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _menu?.Dispose();
+            _menu = null;
+        }
+        base.Dispose(disposing);
     }
 
     protected override void OnPaint(PaintEventArgs e)

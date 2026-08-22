@@ -47,8 +47,8 @@ $ExcludedDirPrefix = 'debug-'
 # Nhung gi ban portable phai mang theo, khop voi AppPaths.MigrateFromExeFolder.
 # Doi o day thi phai doi ca ben kia, khong thi file duoc nen vao zip ma app khong
 # chep sang %APPDATA% - dung cai bay da gap: items/ nam trong zip nhung bi bo qua.
-$PortableFiles = @('fishing.json', 'config.json', 'hotkeys.json', 'miner.json', 'wood.json')
-$PortableDirs = @('fishing', 'items', 'wood')
+$PortableFiles = @('fishing.json', 'config.json', 'hotkeys.json', 'miner.json', 'wood.json', 'electric.json')
+$PortableDirs = @('fishing', 'items', 'wood', 'electric')
 
 # Loc thu chi dung tren MAY NAY ra khoi snapshot dem di share.
 #

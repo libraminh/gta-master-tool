@@ -28,7 +28,7 @@ internal static class AppPaths
     /// <summary>Config nam ngay canh exe trong ban portable, mot file moi job.</summary>
     private static readonly string[] MigrateFiles =
     {
-        "fishing.json", "config.json", "hotkeys.json", "miner.json", "wood.json"
+        "fishing.json", "config.json", "hotkeys.json", "miner.json", "wood.json", "electric.json"
     };
 
     /// <summary>
@@ -36,7 +36,7 @@ internal static class AppPaths
     /// tin may o da khai bao, va o khai bao trong ban ship co the tro vao o MOI chu khong phai
     /// ca, tuc keo moi vao cop. Nen no phai di theo ban portable.
     /// </summary>
-    private static readonly string[] MigrateDirs = { "fishing", "items", "wood" };
+    private static readonly string[] MigrateDirs = { "fishing", "items", "wood", "electric" };
 
     /// <summary>
     /// Chuyen du lieu cu nam canh exe sang Root. Chi chep file nao Root CHUA co,
