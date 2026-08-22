@@ -5,6 +5,8 @@ internal sealed class FishingSnapshot
     public bool BarConfigured { get; init; }
     public bool FishConfigured { get; init; }
     public bool RejectConfigured { get; init; }
+    /// <summary>Đã có mẫu "không đứng gần mặt nước". Tuỳ chọn — thiếu thì mọi thứ chạy như cũ.</summary>
+    public bool NoWaterConfigured { get; init; }
     public bool KeepConfigured { get; init; }
 
     /// <summary>HUD thanh câu đang hiện (đủ pixel cyan). False nếu chưa khoanh hoặc không thấy.</summary>
@@ -18,6 +20,14 @@ internal sealed class FishingSnapshot
 
     public bool FailNotice { get; init; }
     public double RejectScore { get; init; } = -1;
+
+    /// <summary>
+    /// Thông báo "Bạn không đứng gần mặt nước" đang hiện. Hay gặp ngay sau khi đổ cốp: nhân vật
+    /// vừa quay lại, game chưa kịp ghi nhận vị trí mới, nên cú thả đầu bị chặn. Xử như chê mồi —
+    /// nghỉ một nhịp rồi thả lại là xong, không cần quay thêm.
+    /// </summary>
+    public bool NoWaterNotice { get; init; }
+    public double NoWaterScore { get; init; } = -1;
 
     public bool KeepVisible { get; init; }
 
@@ -52,14 +62,17 @@ internal sealed class FishingReader : IDisposable
     private readonly RegionReader _keepBand;
     private readonly GrayTemplate _fishTpl;
     private readonly GrayTemplate _rejectTpl;
+    private readonly GrayTemplate _noWaterTpl;
     private readonly GrayTemplate _keepTpl;
     private readonly KeepLocator _keepLocator;
     private readonly string _fishProblem;
     private readonly string _rejectProblem;
+    private readonly string _noWaterProblem;
     private readonly string _keepProblem;
 
     public string FishTemplateProblem => _fishProblem;
     public string RejectTemplateProblem => _rejectProblem;
+    public string NoWaterTemplateProblem => _noWaterProblem;
     public string KeepTemplateProblem => _keepProblem;
 
     /// <summary>Vùng đang quét để dò nút — hiện ra để đối chiếu bằng mắt.</summary>
@@ -89,9 +102,16 @@ internal sealed class FishingReader : IDisposable
             var abs = FishingConfig.ToAbsolute(screen, profile.Reject);
             _reject = new RegionReader(abs);
             (_rejectTpl, _rejectProblem) = LoadTemplate(FishingConfig.RejectTemplatePath(profile.Key), abs.Size, "thông báo");
+            // Cung O do, khac anh — game ve hai thong bao nay cung mot cho. Truyen cung abs.Size
+            // nen LoadTemplate tu chan luon ca truong hop mau bi chup lech kich thuoc.
+            (_noWaterTpl, _noWaterProblem) = LoadTemplate(
+                FishingConfig.NoWaterTemplatePath(profile.Key), abs.Size, "không gần nước");
         }
         else
+        {
             _rejectProblem = "chưa khoanh ô thông báo";
+            _noWaterProblem = "chưa khoanh ô thông báo";
+        }
 
         if (profile?.Keep.IsSet == true)
         {
@@ -165,12 +185,27 @@ internal sealed class FishingReader : IDisposable
         }
 
         double rejectScore = -1;
+        double noWaterScore = -1;
         bool fail = false;
-        if (_reject is not null && _rejectTpl is not null)
+        bool noWater = false;
+        if (_reject is not null && (_rejectTpl is not null || _noWaterTpl is not null))
         {
+            // MOT lan chup, MOT buffer, hai mau. Chup rieng cho tung mau thi hai lan doc roi vao
+            // hai khung hinh khac nhau, va thong bao chi hien vai giay — de lech khung la co luc
+            // ca hai deu truot du mat nguoi van thay thong bao nam do.
             _reject.Refresh();
-            rejectScore = _rejectTpl.Score(_reject.GrayBuffer(_reject.Region));
-            fail = rejectScore >= _cfg.RejectNccMin;
+            var gray = _reject.GrayBuffer(_reject.Region);
+
+            if (_rejectTpl is not null)
+            {
+                rejectScore = _rejectTpl.Score(gray);
+                fail = rejectScore >= _cfg.RejectNccMin;
+            }
+            if (_noWaterTpl is not null)
+            {
+                noWaterScore = _noWaterTpl.Score(gray);
+                noWater = noWaterScore >= _cfg.NoWaterNccMin;
+            }
         }
 
         double keepScore = -1;
@@ -203,6 +238,7 @@ internal sealed class FishingReader : IDisposable
             BarConfigured = _bar is not null,
             FishConfigured = _fishTpl is not null,
             RejectConfigured = _rejectTpl is not null,
+            NoWaterConfigured = _noWaterTpl is not null,
             KeepConfigured = _keepLocator is not null,
             UiOpen = uiOpen,
             BlueFill01 = fill,
@@ -210,6 +246,8 @@ internal sealed class FishingReader : IDisposable
             FishScore = fishScore,
             FailNotice = fail,
             RejectScore = rejectScore,
+            NoWaterNotice = noWater,
+            NoWaterScore = noWaterScore,
             KeepVisible = !keepRect.IsEmpty,
             KeepScore = keepScore,
             KeepDensity = keepDensity,
