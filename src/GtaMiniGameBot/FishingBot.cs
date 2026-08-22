@@ -60,6 +60,8 @@ internal sealed class FishingBot
     private int _casts;
     private int _bites;
     private int _rejects;
+    /// <summary>Số lần thả câu bị chặn vì "không đứng gần mặt nước". Đếm riêng khỏi _rejects.</summary>
+    private int _noWater;
     private int _castMissed;
     private int _biteTimeouts;
     private int _fightTimeouts;
@@ -144,6 +146,16 @@ internal sealed class FishingBot
                 Emit("cảnh báo: chưa khoanh thông báo — recast chỉ theo timeout");
             else if (reader.RejectTemplateProblem is { } rp)
                 Emit("cảnh báo: mẫu thông báo — recast chỉ theo timeout (" + rp + ")");
+
+            // Tuy chon, va phai la tuy chon: moi may dang dung deu chua co no-water.png. Thieu
+            // thi thong bao "khong dung gan mat nuoc" van bat duoc, chi la phai cho het
+            // CastConfirmMs (4 s) qua duong "tha cau truot" nhu truoc gio.
+            if (_profile.Reject.IsSet)
+                Emit(reader.NoWaterTemplateProblem is { } np
+                    ? $"“không đứng gần mặt nước”: chưa dùng được ({np}) — vẫn chờ " +
+                      $"{_cfg.CastConfirmMs} ms rồi thả lại như cũ"
+                    : $"“không đứng gần mặt nước”: nhận ở ncc ≥ {_cfg.NoWaterNccMin:F2}, " +
+                      $"thấy là thả lại sau {_cfg.RejectRecastMs} ms");
 
             if (!_profile.Keep.IsSet)
                 Emit("cảnh báo: chưa khoanh CẤT VÀO — sau khi câu được sẽ chỉ bấm 4, không nhận cá");
@@ -241,6 +253,31 @@ internal sealed class FishingBot
                         continue;
                     }
 
+                    // "Ban khong dung gan mat nuoc" — game ve o DUNG o thong bao che moi. Hay gap
+                    // ngay sau khi do cop: nhan vat vua quay lai, game chua kip ghi nhan vi tri
+                    // moi. Do la race thoang qua, khong phai loi vi tri that: nghi mot nhip roi
+                    // tha lai la duoc, khong can quay them.
+                    //
+                    // Truoc day duong nay roi vao nhanh castMissed va phai cho tron CastConfirmMs
+                    // (4 s). Do trong log: cu tha ngay sau do cop truot 77% (155/201) so voi nen
+                    // chung 8% — gan nhu toan bo la cai nay.
+                    //
+                    // Dem rieng, log rieng, khong gop vao _rejects: hai nguyen nhan khac nhau ma
+                    // chung mot dong log thi lan sau doc log lai khong phan biet duoc.
+                    bool noWaterOk = snap.NoWaterNotice && !snap.UiOpen && DateTime.UtcNow >= ignoreFailUntil;
+                    if (noWaterOk)
+                    {
+                        _noWater++;
+                        Emit($"không đứng gần mặt nước (ncc={snap.NoWaterScore:F3}, HUD đóng) — câu lại");
+                        Sleep(ct, _cfg.RejectRecastMs);
+                        Cast(ct, "câu lại (không gần nước)", waitRelease: false);
+                        // EnterWaiting dat lai ignoreFailUntil = +CastCooldownMs, nen nhanh nay tu
+                        // gioi han ~1 lan thu moi 1.5 s. Khong can khoa dem rieng, ke ca khi nhan
+                        // vat that su dung xa nuoc va thong bao khong bao gio het.
+                        EnterWaiting();
+                        continue;
+                    }
+
                     // Thanh câu chưa từng hiện => dây chưa xuống nước, cú thả vừa rồi trượt.
                     // Bắt sớm ở đây để khỏi đứng chờ trọn WaitBiteMs cho một cú thả không tồn tại.
                     // BarConfigured là bắt buộc: chưa khoanh thanh thì UiOpen luôn false và
@@ -267,7 +304,7 @@ internal sealed class FishingBot
                         Emit($"hết {_cfg.WaitBiteMs} ms không cắn — câu lại" +
                              $" (thanh={(sawCastHud ? "đã mở" : "chưa mở lần nào")}" +
                              $" fill={snap.BlueFill01 * 100:0.0}% cá={snap.FishScore:F3}" +
-                             $" chê={snap.RejectScore:F3})");
+                             $" chê={snap.RejectScore:F3} nước={snap.NoWaterScore:F3})");
                         _biteTimeouts++;
                         Cast(ct, "câu lại (timeout)");
                         EnterWaiting();
@@ -805,6 +842,7 @@ internal sealed class FishingBot
             Casts = _casts,
             Bites = _bites,
             Rejects = _rejects,
+            NoWater = _noWater,
             CastMissed = _castMissed,
             BiteTimeouts = _biteTimeouts,
             FightTimeouts = _fightTimeouts,

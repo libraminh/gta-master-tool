@@ -298,6 +298,16 @@ internal sealed class FishingConfig
     public double RejectNccMin { get; set; } = 0.75;
 
     /// <summary>
+    /// Ngưỡng nhận thông báo "Bạn không đứng gần mặt nước", chấm trên ĐÚNG ô đã khoanh cho
+    /// thông báo chê mồi — game vẽ hai thông báo đó cùng một chỗ.
+    ///
+    /// Ngưỡng riêng chứ không dùng chung <see cref="RejectNccMin"/>: hai mẫu là hai ảnh khác
+    /// nhau, chữ dài khác nhau nên nền chiếm tỉ lệ khác nhau, và điểm của chúng không nhất
+    /// thiết rơi cùng một khoảng.
+    /// </summary>
+    public double NoWaterNccMin { get; set; } = 0.75;
+
+    /// <summary>
     /// Sai lệch cho phép mỗi kênh màu khi dò nền nút CẤT VÀO. Đo trên 3 ảnh panel thật
     /// (nền nút ≈ #223D41): 16–26 đều dò đúng, dưới 14 thì cắt mất phần dưới nút vì nền
     /// nút có gradient nhẹ, từ 28 thì mask lan sang nền panel — chỉ cách nút ~27 mỗi
@@ -365,7 +375,11 @@ internal sealed class FishingConfig
     public int CastCooldownMs { get; set; } = 1_500;
     /// <summary>Sau phím 4, chờ rồi bấm Space (thay combo AutoHotkey).</summary>
     public int CastSpaceDelayMs { get; set; } = 200;
-    /// <summary>Sau khi thấy chê mồi, chờ rồi mới bấm 4. 0 = ngay.</summary>
+    /// <summary>
+    /// Sau khi thấy chê mồi, chờ rồi mới bấm 4. 0 = ngay.
+    /// Dùng chung cho thông báo "không đứng gần mặt nước" — cùng một việc, và đo trong game
+    /// thì 100 ms cũng đủ cho cả hai.
+    /// </summary>
     public int RejectRecastMs { get; set; } = 100;
     public int PollMs { get; set; } = 100;
     public int BiteDebounceFrames { get; set; } = 3;
@@ -601,6 +615,7 @@ internal sealed class FishingConfig
         Profiles ??= new Dictionary<string, FishingProfile>(StringComparer.OrdinalIgnoreCase);
         if (FishNccMin <= 0) FishNccMin = 0.75;
         if (RejectNccMin <= 0) RejectNccMin = 0.75;
+        if (NoWaterNccMin <= 0) NoWaterNccMin = 0.75;
         if (KeepColorTol <= 0) KeepColorTol = 20;
         if (KeepDensityMin <= 0 || KeepDensityMin > 1) KeepDensityMin = 0.55;
         if (KeepNccMin == 0 || KeepNccMin > 1) KeepNccMin = 0.30;   // <0 = cố ý tắt, giữ nguyên
@@ -719,6 +734,8 @@ internal sealed class FishingConfig
     public static string BarPreviewPath(string key) => Path.Combine(ProfileDir(key), "bar.png");
     public static string FishTemplatePath(string key) => Path.Combine(ProfileDir(key), "fish.png");
     public static string RejectTemplatePath(string key) => Path.Combine(ProfileDir(key), "reject.png");
+    /// <summary>Mẫu thông báo "không đứng gần mặt nước". Cùng ô với reject.png, khác ảnh.</summary>
+    public static string NoWaterTemplatePath(string key) => Path.Combine(ProfileDir(key), "no-water.png");
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
     public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");
 

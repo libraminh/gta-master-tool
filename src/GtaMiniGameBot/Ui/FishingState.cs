@@ -42,6 +42,12 @@ internal sealed class FishingState
     public int Casts { get; init; }
     public int Bites { get; init; }
     public int Rejects { get; init; }
+    /// <summary>
+    /// Cú thả bị chặn vì "không đứng gần mặt nước". Trước khi có mẫu nhận thông báo này thì
+    /// chúng rơi vào <see cref="CastMissed"/>, nên hai số này thông nhau — đừng cộng cả hai
+    /// rồi tưởng là hai chuyện riêng.
+    /// </summary>
+    public int NoWater { get; init; }
     public int CastMissed { get; init; }
     public int BiteTimeouts { get; init; }
     public int FightTimeouts { get; init; }
