@@ -23,14 +23,43 @@ Zip nay kem san toan bo vung + anh mau cua job CAU CA cho 2560x1440: thanh keo c
 mau con ca, nut Keep, cac o tui do / cop xe, menu radial va bo mau chu so de doc
 can nang. Chay len la dung duoc luon, khong phai setup lai tu dau.
 
-Cac job khac (gian khoan dau, tho mo) van phai tu canh chinh.
+Cac job khac (gian khoan dau, tho mo) van phai tu canh chinh. Job tho moc thi xem
+muc rieng ben duoi.
+
+Job Tho moc
+-----------
+Prompt "[E] KHAI THAC" gan vao GOC CAY chu khong phai HUD co dinh - do tren anh
+chup that cua cung mot cai cay, prompt nam o y=841 roi y=944 khi camera doi goc.
+Nen bot khong khoanh o co dinh ma quet trong mot BANG rong.
+
+Vao tab "Moc" -> "Khoanh vung HUD...":
+  1. Chup "Prompt khai thac": dung sat goc cay toi khi hien "[E] KHAI THAC".
+  2. Khoanh no: trum CA o vuong chu E LAN chu "KHAI THAC". Lay du nen cung duoc.
+  3. (Tuy chon) Khoanh "Vung quet" - mot bang RONG trum moi cho prompt co the hien.
+     Bo qua thi bot tu lay 60%x50% giua man.
+
+CHI CAN MOT MAU. Luc dang chat, dong chu doi thanh "DANG KHAI THAC"; mau duoc neo
+vao MEP TRAI cua nhom chu nen no dem so voi "DANG KHAI" chu khong truot sang phan
+"KHAI THAC" ben trong - het khop, va dung do la cach bot biet no dang ban.
+
+App tu tach o phim ra khoi chu. O phim khong vao mau: ben trong no la chu E hay con
+so dem nguoc, con quanh no la vong tien trinh 0->100 dang chay. Ca hai deu dang dong.
+
+Nut "Thu do tren anh da chup" cho xem diem NCC ngay tren anh tinh - chinh nguong ma
+khong phai vao game. Tab "Moc" cung hien diem doc truc tiep luc dang dung.
+
+Chua khoanh thi job van chay, nhung chi go E mu theo nhip nhu job Tho mo.
+
+Cay het go thi bot DUNG va bao - no khong tu di tim cay khac. Vi chi giu mot mau nen
+bot khong phan biet duoc DANG CHAT voi HET CAY ngay lap tuc (ca hai deu la khong thay
+prompt), no phai cho het gio moi dam bao.
 
 Du lieu nguoi dung
 ------------------
 Config, vung da khoanh va anh mau duoc luu o:
     %APPDATA%\GtaMiniGameBot
-Lan chay dau tien app se chep config.json, fishing.json, car-template.png va thu muc
-fishing\ trong thu muc exe sang do lam mac dinh.
+Lan chay dau tien app se chep config.json, fishing.json, wood.json, car-template.png
+va cac thu muc fishing\, wood\ trong thu muc exe sang do lam mac dinh.
 
 QUAN TRONG: app chi chep sang khi ben do CHUA CO file do. Ai da tung chay ban cu
 roi thi se khong nhan duoc vung khoanh san - muon lay ban mac dinh moi thi xoa

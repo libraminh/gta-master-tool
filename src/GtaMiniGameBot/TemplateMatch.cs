@@ -86,6 +86,15 @@ internal sealed class GrayTemplate
     public static GrayTemplate FromFileCrop(string path, Rectangle crop)
     {
         using var src = new Bitmap(path);
+        return FromBitmapCrop(src, crop);
+    }
+
+    /// <summary>
+    /// Cat mot o con tu anh da nam trong bo nho - dung khi mau la mot PHAN cua o nguoi dung vua
+    /// khoanh (vi du chi lay phan chu, bo cai o phim ra ngoai).
+    /// </summary>
+    public static GrayTemplate FromBitmapCrop(Bitmap src, Rectangle crop)
+    {
         var r = Rectangle.Intersect(crop, new Rectangle(0, 0, src.Width, src.Height));
         if (r.Width < 4 || r.Height < 4)
             throw new ArgumentException($"O cat nam ngoai anh: {crop} vs {src.Width}x{src.Height}");

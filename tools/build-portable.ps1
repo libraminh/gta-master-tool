@@ -48,7 +48,7 @@ $ExcludedDirPrefix = 'debug-'
 # Doi o day thi phai doi ca ben kia, khong thi file duoc nen vao zip ma app khong
 # chep sang %APPDATA% - dung cai bay da gap: items/ nam trong zip nhung bi bo qua.
 $PortableFiles = @('fishing.json', 'config.json', 'hotkeys.json', 'miner.json', 'wood.json')
-$PortableDirs = @('fishing', 'items')
+$PortableDirs = @('fishing', 'items', 'wood')
 
 # Loc thu chi dung tren MAY NAY ra khoi snapshot dem di share.
 #
@@ -229,6 +229,9 @@ if ($iconCount -lt 1) {
     throw "Thieu bo icon vat pham trong ban dong goi. Chay '-SyncDefaults' sau khi da trich icon trong app."
 }
 Write-Host "Bo icon vat pham: $iconCount file."
+
+# ROI tho moc di theo $PortableDirs nhu moi job khac, khong can khoi rieng. Thieu thi
+# ban share van chay, chi la nguoi nhan phai tu khoanh - job tu ha xuong go E mu.
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $zip = Join-Path $OutDir "GtaMiniGameBot-portable-$stamp-$sha.zip"

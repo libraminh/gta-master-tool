@@ -28,7 +28,7 @@
         "W": 187,
         "H": 65
       },
-      "TrunkDumpEnabled": false,
+      "TrunkDumpEnabled": true,
       "BagWeight": {
         "X": 945,
         "Y": 223,
@@ -172,12 +172,12 @@
   "KeepHoverMs": 320,
   "KeepMoveSteps": 8,
   "WindowMatch": "PlayXGTA",
-  "WeightCheckEveryCatches": 2,
+  "WeightCheckEveryCatches": 3,
   "BagCapKg": 30,
   "TrunkCapKg": 60,
   "DumpMarginKg": 3,
   "CatchesPerDumpFallback": 20,
-  "DumpEveryCatches": 5,
+  "DumpEveryCatches": 0,
   "TrunkTightKg": 10,
   "BagFullStopKg": 29,
   "TrunkFullTries": 2,
