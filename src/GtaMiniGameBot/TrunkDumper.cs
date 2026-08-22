@@ -50,6 +50,7 @@ internal sealed class TrunkDumper : IDisposable
 
     private int _ocrFails;
     private int _trunkFullStrikes;
+    private int _noFishStrikes;
 
     public bool OcrHealthy { get; private set; } = true;
     public string AtlasMissing => _bagWeight?.AtlasMissing ?? "";
@@ -73,6 +74,15 @@ internal sealed class TrunkDumper : IDisposable
 
     /// <summary>Đã hỏng mấy lượt, để người gọi ghi log "lượt 1/2".</summary>
     public int TrunkFullStrikes => _trunkFullStrikes;
+
+    /// <summary>
+    /// Đã mở cốp đủ số lượt mà không thấy ô cá nào — thôi thử lại, để người gọi dừng phiên.
+    /// Kéo lọt được một ô là xoá hết strike, y như <see cref="TrunkFull"/>.
+    /// </summary>
+    public bool NoFishGivenUp => _noFishStrikes >= _cfg.NoFishTries;
+
+    /// <summary>Mở cốp mà không thấy cá mấy lượt rồi.</summary>
+    public int NoFishStrikes => _noFishStrikes;
 
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
                         TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
@@ -276,11 +286,11 @@ internal sealed class TrunkDumper : IDisposable
             if (sw.ElapsedMilliseconds > _cfg.MaxDumpMs)
                 throw new TrunkStepException($"đổ cốp quá {_cfg.MaxDumpMs} ms — dừng");
 
-            var source = NextFish(out string scanNote);
+            var source = NextFish(ct, out string scanNote);
             if (scanNote is not null) _log(scanNote);
             if (source is null) break;
 
-            var dest = NextEmptyTrunkCell();
+            var dest = NextEmptyTrunkCell(ct);
             if (dest is null) { fullWhy = "cốp không còn ô trống nào"; break; }
 
             if (!DragOne(source.Value.Scanner, source.Value.Cell, dest, ct))
@@ -301,9 +311,21 @@ internal sealed class TrunkDumper : IDisposable
 
         if (moved == 0 && fullWhy is null)
         {
-            _log("mọi ô chứa cá đã khai báo đều đang trống");
+            _noFishStrikes++;
+
+            // Cau nay phai theo dung che do dang chay. Truoc day luon in ban cua che do khai
+            // bao o, ke ca khi dang nhan theo icon — doc log la di tim "o da khai bao" trong
+            // khi bot khong he dung o nao ca.
+            _log((ByIcon
+                     ? "quét hết phím nhanh, trên người và ba lô mà không ô nào nhận ra là cá"
+                     : "mọi ô chứa cá đã khai báo đều đang trống") +
+                 $" — lượt hỏng {_noFishStrikes}/{_cfg.NoFishTries}");
             _opener.CloseAll(ct);
-            TurnBack(ct);
+
+            // Chi quay mat khoi xe khi da thoi thu lai. Con luot nua thi phai GIU nguyen huong
+            // vao xe: TurnBack giu S de nhan vat xoay ra ho, ma mo cop lai thi can camera huong
+            // vao xe — quay ra roi thi luot thu lai chet ngay o "khong hien menu Alt".
+            if (NoFishGivenUp) TurnBack(ct);
             return DumpResult.NothingToMove;
         }
 
@@ -337,6 +359,8 @@ internal sealed class TrunkDumper : IDisposable
             // Cop vua nhan do thi no chua day: xoa strike cu di. Neu ngay sau do van dung tuong,
             // ConcludeTrunkFull ben duoi ghi lai tu strike 1 — dung, vi day la lan chan moi.
             _trunkFullStrikes = 0;
+            // Keo duoc thi ro rang van nhan ra ca, dot "khong thay ca" truoc do khong con tinh.
+            _noFishStrikes = 0;
         }
 
         if (fullWhy is not null) return ConcludeTrunkFull(fullWhy, ct);
@@ -426,20 +450,64 @@ internal sealed class TrunkDumper : IDisposable
         TrunkFreeKg = Math.Max(0, r.Cap - r.Value);
     }
 
+    /// <summary>Một lượt quét: thấy cá chưa, và lưới có dấu hiệu đang tải icon không.</summary>
+    private sealed class ScanPass
+    {
+        public (GridScanner Scanner, CellInfo Cell)? Fish;
+        public string Note;
+        /// <summary>Vì sao nghĩ là đang tải. null = không có dấu hiệu, quét lại cũng vô ích.</summary>
+        public string Loading;
+        public readonly List<string> Skipped = new();
+    }
+
     /// <summary>
     /// Ô cá tiếp theo cần kéo.
     ///
     /// Hai chế độ. Có bộ icon moi từ cache game và người dùng đã tích vật phẩm nào là cá thì
     /// quét CẢ phím nhanh lẫn ba lô rồi nhận cá theo icon — cá nằm đâu cũng thấy. Chưa có thì
     /// quay về lối cũ: chỉ tin mấy ô người dùng khai báo, không nhìn icon.
+    ///
+    /// Quét NHIỀU LƯỢT khi lưới trông như đang tải icon. Icon kho đồ tải từ server, mỗi ô một
+    /// ảnh riêng nên chúng về lệch nhịp nhau — mở panel lên có thể phải chờ 500 ms – 1 s mới đủ
+    /// hình. Quét đúng một lượt là ăn trọn một khung hình nửa vời: log 21/08 23:04 đọc cả 5 ô
+    /// phím nhanh thành trống (lệch 4.5–4.7, ngưỡng 6.2) rồi dừng cả phiên, mà 2 phút sau cùng
+    /// con cá đó ở cùng ô đó lại nhận ra `carp 0.94`.
+    ///
+    /// Quét lại an toàn nhờ sàn <see cref="FishingConfig.ItemNccMin"/> đã có: icon vẽ dở chấm
+    /// 0.41–0.49, không đời nào lọt sàn 0.70. Nên lượt quét thêm không thể kéo bừa một ô đang
+    /// tải — nó chỉ có thể thấy thêm cá, hoặc không thấy gì.
     /// </summary>
-    private (GridScanner Scanner, CellInfo Cell)? NextFish(out string note)
+    private (GridScanner Scanner, CellInfo Cell)? NextFish(CancellationToken ct, out string note)
     {
-        note = null;
-        InputSender.MoveCursorOnly(_park.X, _park.Y);
-        Thread.Sleep(120);
+        ScanPass pass = null;
 
-        return ByIcon ? NextFishByIcon(out note) : NextFishBySlot(out note);
+        for (int attempt = 0; ; attempt++)
+        {
+            InputSender.MoveCursorOnly(_park.X, _park.Y);
+            Sleep(ct, 120);
+
+            pass = ByIcon ? ScanByIcon() : ScanBySlot();
+
+            // Thay ca thi thoi cho: kéo luon. Het luot cung thoi. Va khong con dau hieu dang
+            // tai thi cho them cung vay thoi — o "khong ro" vi hai mau icon giong nhau qua thi
+            // cho bao lau cung khong ro ra duoc, xem ItemLoadingScoreMax.
+            if (pass.Fish is not null || pass.Loading is null || attempt >= _cfg.ScanRetries)
+                break;
+
+            _log($"lưới như đang tải icon ({pass.Loading}) — quét lại sau " +
+                 $"{_cfg.ScanRetryGapMs} ms (lượt {attempt + 1}/{_cfg.ScanRetries})");
+            Sleep(ct, _cfg.ScanRetryGapMs);
+        }
+
+        // Xa danh sach bo qua CUA LUOT CUOI thoi. Xa moi luot thi mot lan do in ra ba ban sao
+        // cua cung mot danh sach 35 dong, khong con doc duoc.
+        Flush(pass.Skipped);
+        if (pass.Fish is null && pass.Loading is not null)
+            _log($"vẫn như đang tải sau {_cfg.ScanRetries + 1} lượt quét ({pass.Loading}) — " +
+                 "đường truyền tải ảnh chậm thì nới ScanRetries / ScanRetryGapMs");
+
+        note = pass.Note;
+        return pass.Fish;
     }
 
     /// <summary>Có đủ bộ icon và danh sách cá thì mới nhận diện được; thiếu một trong hai là về lối cũ.</summary>
@@ -451,15 +519,13 @@ internal sealed class TrunkDumper : IDisposable
     /// Ô không nhận ra thì ĐỂ YÊN. Đó là lựa chọn có chủ ý: đoán bừa một ô lạ rồi kéo đi có
     /// thể là ném cả cần câu, mồi hay tiền vào cốp, mà thứ mất đi thì không kéo ngược lại được.
     /// </summary>
-    private (GridScanner Scanner, CellInfo Cell)? NextFishByIcon(out string note)
+    private ScanPass ScanByIcon()
     {
-        note = null;
-
         // MOI o bi bo qua deu phai co ly do. Truoc day chi o "khong ro" duoc ghi, con hai
         // duong kia im lang: o doc ra trong, va o nhan RO nhung khong phai ca. Hau qua that:
         // 19/08 co 5 con ca o phim 6 khong duoc keo, ma log khong he co dong nao ve o do, nen
         // khong cach nao biet no bi doc thanh trong hay bi nhan thanh mot mon KHONG phai ca.
-        var skipped = new List<string>();
+        var pass = new ScanPass();
 
         foreach (var (label, scanner) in _sources)
         {
@@ -469,8 +535,12 @@ internal sealed class TrunkDumper : IDisposable
                 if (cell.IsEmpty)
                 {
                     // In ca so do va nguong: o co do ma bi doc thanh trong thi thay ngay.
-                    skipped.Add($"{label} #{cell.Index} trống " +
-                                $"(lệch={cell.Std:F1} ≤ {_cfg.CellEmptyStdMax:F1})");
+                    pass.Skipped.Add($"{label} #{cell.Index} " +
+                                     (cell.Faint ? "trống NHƯNG LỆCH CAO — như đang tải icon " : "trống ") +
+                                     $"(lệch={cell.Std:F1} ≤ {_cfg.CellEmptyStdMax:F1})");
+                    // Rong that cho 0.4-2.2, tai do cho 3.7-5.9 — hai dai tach han nhau.
+                    if (cell.Faint)
+                        pass.Loading ??= $"{label} #{cell.Index} lệch={cell.Std:F1}";
                     continue;
                 }
 
@@ -480,24 +550,27 @@ internal sealed class TrunkDumper : IDisposable
                 string fishName = guess.FishName(_fishItems, _cfg.ItemNccMin);
                 if (fishName is null)
                 {
-                    skipped.Add(guess.Name is null
+                    pass.Skipped.Add(guess.Name is null
                         ? $"{label} #{cell.Index} {guess}"
                         : $"{label} #{cell.Index} {guess.Name} {guess.Score:F2} — RÕ nhưng " +
                           "không có trong danh sách cá");
+                    // Diem thap han la icon con dang ve. Diem cao ma bi loai vi cach biet thi
+                    // KHONG phai — do la hai mau icon giong nhau, cho them vo ich.
+                    if (guess.Score < _cfg.ItemLoadingScoreMax)
+                        pass.Loading ??= $"{label} #{cell.Index} điểm {guess.Score:F2}";
                     continue;
                 }
 
-                Flush(skipped);
-                note = guess.Name is null
+                pass.Note = guess.Name is null
                     ? $"kéo {label} #{cell.Index} — {guess.Best} {guess.Score:F2}, lẫn với " +
                       $"{guess.Runner} {guess.RunnerScore:F2} — cả hai đều là cá nên vẫn kéo"
                     : $"kéo {label} #{cell.Index} — {guess}";
-                return (scanner, cell);
+                pass.Fish = (scanner, cell);
+                return pass;
             }
         }
 
-        Flush(skipped);
-        return null;
+        return pass;
     }
 
     /// <summary>
@@ -515,9 +588,9 @@ internal sealed class TrunkDumper : IDisposable
     /// Ô cá đầu tiên trong danh sách khai báo mà đang có đồ. Không dò icon: người dùng đã cam
     /// kết ô đó luôn là cá, nên ở đây chỉ cần biết ô rỗng hay không.
     /// </summary>
-    private (GridScanner Scanner, CellInfo Cell)? NextFishBySlot(out string note)
+    private ScanPass ScanBySlot()
     {
-        note = null;
+        var pass = new ScanPass();
 
         foreach (var slot in _profile.FishSlots)
         {
@@ -525,22 +598,30 @@ internal sealed class TrunkDumper : IDisposable
             if (scanner is null)
             {
                 // Nguoi dung KHAI BAO o nay, nen im lang bo qua la sai — noi ro vi sao.
-                note = $"ô {slot.Label} nằm ở lưới chưa khoanh — bỏ qua";
+                pass.Note = $"ô {slot.Label} nằm ở lưới chưa khoanh — bỏ qua";
                 continue;
             }
             if (slot.Index < 0 || slot.Index >= scanner.Count)
             {
-                note = $"ô {slot.Label} nằm ngoài lưới ({scanner.Count} ô) — bỏ qua";
+                pass.Note = $"ô {slot.Label} nằm ngoài lưới ({scanner.Count} ô) — bỏ qua";
                 continue;
             }
 
             var cell = scanner.ScanCell(slot.Index);
-            if (cell is null || cell.IsEmpty) continue;
+            if (cell is null) continue;
+            if (cell.IsEmpty)
+            {
+                // Che do nay khong nhin icon nen khong co diem NCC de dua vao — chi con do lech.
+                if (cell.Faint)
+                    pass.Loading ??= $"ô {slot.Label} lệch={cell.Std:F1}";
+                continue;
+            }
 
-            note = $"kéo ô {slot.Label} (màu={cell.Chroma:F3} lệch={cell.Std:F1})";
-            return (scanner, cell);
+            pass.Note = $"kéo ô {slot.Label} (màu={cell.Chroma:F3} lệch={cell.Std:F1})";
+            pass.Fish = (scanner, cell);
+            return pass;
         }
-        return null;
+        return pass;
     }
 
     private GridScanner ScannerFor(string grid) => grid switch
@@ -551,12 +632,45 @@ internal sealed class TrunkDumper : IDisposable
         _ => null
     };
 
-    /// <summary>Null = cốp không còn ô trống.</summary>
-    private CellInfo NextEmptyTrunkCell()
+    /// <summary>
+    /// Ô trống đầu tiên trong cốp để thả cá vào. Null = cốp không còn ô trống.
+    ///
+    /// Bỏ qua ô "nhạt" — cùng cái bẫy tải icon ở bên ba lô, nhưng đầu này hậu quả nặng hơn:
+    /// ô cốp ĐANG CÓ đồ mà icon chưa về thì đọc ra trống, và cửa xác minh trong
+    /// <see cref="DragOne"/> bắt không được vì nó kiểm "đích != trống" — ô đó vốn đã có đồ từ
+    /// đầu nên điều kiện luôn đúng. Kéo vào là hoán đổi: lôi ngược đồ trong cốp về ba lô, rồi
+    /// vì cú kéo bị tính là hỏng mà kết luận sai thành "cốp đầy" và thôi đổ cả phiên.
+    ///
+    /// Hết lượt mà chỉ còn ô nhạt thì vẫn nhận, có cảnh báo. Lượt cuối này giữ nguyên nết cũ
+    /// có chủ ý: nếu một ô cốp trống thật mà đo được lệch cao (nền panel chỗ đó không phẳng
+    /// chẳng hạn) thì bỏ hẳn nó đi là tự bịt đường đổ cốp mãi mãi, hỏng nặng hơn cái đang sửa.
+    /// </summary>
+    private CellInfo NextEmptyTrunkCell(CancellationToken ct)
     {
-        foreach (var c in _trunk.ScanScreen())
-            if (c.State == CellState.Empty) return c;
-        return null;
+        CellInfo faint = null;
+
+        for (int attempt = 0; ; attempt++)
+        {
+            faint = null;
+            foreach (var c in _trunk.ScanScreen())
+            {
+                if (c.State != CellState.Empty) continue;
+                if (!c.Faint) return c;
+                faint ??= c;
+            }
+
+            if (faint is null || attempt >= _cfg.ScanRetries) break;
+
+            _log($"cốp không có ô nào trống hẳn, sớm nhất là #{faint.Index} lệch={faint.Std:F1} " +
+                 $"— như đang tải icon, quét lại sau {_cfg.ScanRetryGapMs} ms " +
+                 $"(lượt {attempt + 1}/{_cfg.ScanRetries})");
+            Sleep(ct, _cfg.ScanRetryGapMs);
+        }
+
+        if (faint is not null)
+            _log($"cảnh báo: thả vào cốp #{faint.Index} dù lệch={faint.Std:F1} cao đáng ngờ — " +
+                 "hết lượt quét mà không có ô nào trống hẳn");
+        return faint;
     }
 
     /// <summary>
@@ -594,8 +708,12 @@ internal sealed class TrunkDumper : IDisposable
 
             // Doi o dich khac: mot o "trong" ma tha vao khong duoc thi van de co the o o dich,
             // khong phai o cu keo.
-            var other = _trunk.ScanScreen()
-                .FirstOrDefault(c => c.State == CellState.Empty && c.Index != destCell.Index);
+            // Uu tien o trong HAN. Doi sang mot o nhat la doi tu mot o co the dang co do sang
+            // mot o khac cung the — thua ra mot cu keo hoan doi nua.
+            var free = _trunk.ScanScreen()
+                .Where(c => c.State == CellState.Empty && c.Index != destCell.Index)
+                .ToList();
+            var other = free.FirstOrDefault(c => !c.Faint) ?? free.FirstOrDefault();
             if (other is not null)
             {
                 destCell = other;

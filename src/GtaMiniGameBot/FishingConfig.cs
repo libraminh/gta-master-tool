@@ -430,6 +430,17 @@ internal sealed class FishingConfig
     /// cả trường hợp người chơi tự dọn bớt cốp giữa chừng, lẫn cú kéo hỏng vì lý do vặt.
     /// </summary>
     public int TrunkFullTries { get; set; } = 2;
+
+    /// <summary>
+    /// Mở cốp mấy lượt không thấy ô cá nào thì mới dừng phiên.
+    ///
+    /// Trước đây một lượt là dừng ngay, tức MỘT khung hình xấu giết cả phiên — mà chỗ khác
+    /// trong cùng đường đi đã cẩn thận hơn thế nhiều: cốp đầy phải đủ
+    /// <see cref="TrunkFullTries"/> lượt mới kết luận, đọc KG phải hỏng
+    /// <see cref="WeightOcrFailMax"/> lần liên tiếp mới tắt OCR. Lượt thử lại mở lại cốp từ
+    /// đầu, nên nó vá được cả những trạng thái lệch mà quét lại không vá nổi.
+    /// </summary>
+    public int NoFishTries { get; set; } = 2;
     /// <summary>Đổ xong KG phải giảm ít nhất bấy nhiêu, không thì coi như kéo trượt.</summary>
     public double MinDropKg { get; set; } = 0.5;
 
@@ -513,6 +524,33 @@ internal sealed class FishingConfig
     public int DumpRetryGapMs { get; set; } = 1_500;
     public int MaxDumpMs { get; set; } = 60_000;
 
+    /// <summary>
+    /// Số lượt quét LẠI khi lưới trông như đang tải icon (tổng số lượt = số này + 1).
+    /// Icon kho đồ tải từ server nên mở panel lên có thể phải chờ 500 ms – 1 s mới hiện hình,
+    /// và mỗi ô là một ảnh riêng nên chúng về lệch nhịp nhau. Quét đúng một lượt là ăn trọn
+    /// một khung hình nửa vời rồi kết luận "không có cá". 0 = tắt, về lối cũ.
+    /// </summary>
+    public int ScanRetries { get; set; } = 2;
+
+    /// <summary>
+    /// Nghỉ bao lâu giữa hai lượt quét. PHẢI có, không được quét liền tay: một lượt quét chỉ
+    /// tốn 0.34 s khi lưới gần như rỗng (đo ở log 20/08 22:57) nên quét liền 3 phát là xong cả
+    /// 3 lượt trong 1 s, tức tiêu trước khi ảnh về. Ngược lại lưới nhiều đồ thì bản thân lượt
+    /// quét đã tốn tới 2.5 s và khoảng nghỉ này gần như không thêm gì.
+    /// </summary>
+    public int ScanRetryGapMs { get; set; } = 500;
+
+    /// <summary>
+    /// Điểm NCC cao nhất mà dưới mức này thì coi ô là "đang tải" chứ không phải "mẫu trùng".
+    ///
+    /// Cần để phân biệt hai loại "không rõ" trông giống nhau trong log nhưng ngược nhau hẳn về
+    /// cách xử lý. Icon tải dở chấm 0.41–0.49 (log 21/08 23:04) — chờ thêm là hết. Còn ô đã tải
+    /// xong mà hai mẫu icon giống nhau quá thì chấm 0.97 và bị luật cách biệt loại, ví dụ
+    /// backpack_blueprint_fragment 0.97 với backpack_blueprint_vip_3_fragment 0.97 — chờ bao
+    /// lâu cũng vô ích, đợi nó là phí thời gian mỗi lượt đổ.
+    /// </summary>
+    public double ItemLoadingScoreMax { get; set; } = 0.60;
+
     // -- kéo thả --
     public int DragGrabMs { get; set; } = 140;
     public int DragMoveSteps { get; set; } = 20;
@@ -538,6 +576,22 @@ internal sealed class FishingConfig
     /// có đồ 10.7–55.4.
     /// </summary>
     public double CellEmptyStdMax { get; set; } = 6.0;
+
+    /// <summary>
+    /// Ô "trống" mà độ lệch từ mức này trở lên thì đáng ngờ: rất có thể là ô CÓ đồ nhưng icon
+    /// mới tải được một phần. Chỉ dùng để quyết định có quét lại hay không — phép đo trống/có
+    /// đồ vẫn nguyên như cũ.
+    ///
+    /// Đo trên log: ô rỗng thật cho 0.4–2.2, ô tải dở cho 3.7–5.9, ô vẽ xong thì ≥ 10.7. Dải
+    /// giữa tách hẳn khỏi hai dải kia nên nhận ra được mà không cần đụng tới ngưỡng.
+    ///
+    /// Vì sao KHÔNG hạ <see cref="CellEmptyStdMax"/> xuống dải này: con số đó do "Hiệu chỉnh ô
+    /// trống" tự tính bằng khe hở lớn nhất giữa hai chùm đo trên ảnh tĩnh — mà ảnh tĩnh thì
+    /// panel luôn đã vẽ xong, nên nó cắt ở ~6 và cắt vậy là ĐÚNG cho panel vẽ xong. Hạ tay
+    /// xuống 3.0 vừa sai với chỗ nó đang dùng, vừa bị hiệu chỉnh ghi đè lần tới.
+    /// </summary>
+    public double CellFaintStdMin { get; set; } = 2.5;
+
     public double HeaderNccMin { get; set; } = 0.70;
     public int ShotCountdownSec { get; set; } = 5;
 
@@ -584,6 +638,7 @@ internal sealed class FishingConfig
         // khong bao gio den nguong dung.
         if (BagFullStopKg > BagCapKg) BagFullStopKg = BagCapKg;
         if (TrunkFullTries <= 0) TrunkFullTries = 2;
+        if (NoFishTries <= 0) NoFishTries = 2;
         if (MinDropKg <= 0) MinDropKg = 0.5;
         if (ItemNccMin is <= 0 or > 1) ItemNccMin = 0.70;
         if (ItemMarginMin is < 0 or > 1) ItemMarginMin = 0.05;
@@ -630,12 +685,19 @@ internal sealed class FishingConfig
         if (DragSettleMs <= 0) DragSettleMs = 350;
         if (DragRetries < 0) DragRetries = 2;
         if (MaxDragsPerDump <= 0) MaxDragsPerDump = 12;
+        if (ScanRetries < 0) ScanRetries = 2;                    // 0 = co y tat, giu nguyen
+        if (ScanRetryGapMs <= 0) ScanRetryGapMs = 500;
+        if (ItemLoadingScoreMax is <= 0 or > 1) ItemLoadingScoreMax = 0.60;
 
         if (CellInsetFrac is < 0 or > 0.4) CellInsetFrac = 0.15;
         if (BadgeFrac is <= 0 or >= 0.9) BadgeFrac = 0.42;
         // Chan tren 8: json cu co the dang giu 12.0 cua ban truoc, ma o co do thap nhat do duoc
         // la 10.7 — de nguyen 12 la o do bi doc thanh o trong roi tha ca de len, tuc HOAN DOI.
         if (CellEmptyStdMax is <= 0 or > 8) CellEmptyStdMax = 6.0;
+        // Phai nam DUOI nguong o trong, khong thi dai "dang tai" rong bang 0 va vong quet lai
+        // khong bao gio no. Nguong o trong do hieu chinh tinh ra nen co the tut xuong thap.
+        if (CellFaintStdMin <= 0 || CellFaintStdMin >= CellEmptyStdMax)
+            CellFaintStdMin = Math.Min(2.5, CellEmptyStdMax / 2);
         if (HeaderNccMin is <= 0 or > 1) HeaderNccMin = 0.70;
         if (ShotCountdownSec <= 0) ShotCountdownSec = 5;
 

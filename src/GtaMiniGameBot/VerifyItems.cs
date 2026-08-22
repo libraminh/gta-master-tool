@@ -42,7 +42,10 @@ internal static class VerifyItems
         string dumpDir = Path.Combine(FishingConfig.ProfileDir(profile.Key), "debug-items");
         Directory.CreateDirectory(dumpDir);
 
-        int hit = 0, seen = 0;
+        Console.WriteLine($"ô trống khi lệch < {cfg.CellEmptyStdMax:F2}, " +
+                          $"coi là đang tải icon khi lệch ≥ {cfg.CellFaintStdMin:F2}");
+
+        int hit = 0, seen = 0, faint = 0;
         foreach (var (label, grid) in new[] { ("hotbar", profile.Hotbar),
                                               ("pockets", profile.Pockets),
                                               ("bag", profile.Bag) })
@@ -52,7 +55,20 @@ internal static class VerifyItems
             using var scanner = new GridScanner(cfg, screen, grid);
             foreach (var (cell, gray) in scanner.ScanStillPixels(still))
             {
-                if (cell is null || cell.IsEmpty) continue;
+                if (cell is null) continue;
+                if (cell.IsEmpty)
+                {
+                    // Anh tinh thi panel luon da ve xong, nen o trong o day la trong THAT. Co o
+                    // nao bi gan co "dang tai" tuc CellFaintStdMin dat qua thap: moi lan do cop
+                    // se cho vo ich du ba lo chang co gi.
+                    if (cell.Faint)
+                    {
+                        faint++;
+                        Console.WriteLine($"{label} #{cell.Index,-2} trống, lệch={cell.Std:F1} " +
+                                          "— BỊ COI LÀ ĐANG TẢI, hạ CellFaintStdMin là sai");
+                    }
+                    continue;
+                }
                 seen++;
 
                 int w = cell.Rect.Width, h = cell.Rect.Height;
@@ -69,6 +85,10 @@ internal static class VerifyItems
         }
 
         Console.WriteLine($"nhận ra {hit}/{seen} ô có đồ. Ảnh ô đã lưu ở {dumpDir}");
+        Console.WriteLine(faint == 0
+            ? $"không ô trống nào bị coi là đang tải — CellFaintStdMin {cfg.CellFaintStdMin:F2} an toàn"
+            : $"CẢNH BÁO: {faint} ô trống bị coi là đang tải — nâng CellFaintStdMin lên, " +
+              "không thì lượt đổ nào cũng chờ vô ích");
         return hit > 0 ? 0 : 1;
     }
 

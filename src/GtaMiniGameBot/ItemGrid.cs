@@ -19,10 +19,18 @@ internal sealed class CellInfo
     public double Chroma { get; init; }
     public double Std { get; init; }
 
+    /// <summary>
+    /// Đọc ra trống, nhưng lệch cao đáng ngờ — gần chắc là ô CÓ đồ mà icon chưa tải xong.
+    /// Không đổi <see cref="IsEmpty"/>: đây chỉ là tín hiệu "quét lại đi", xem
+    /// <see cref="FishingConfig.CellFaintStdMin"/>.
+    /// </summary>
+    public bool Faint { get; init; }
+
     public bool IsEmpty => State == CellState.Empty;
 
     public override string ToString() =>
-        $"#{Index,-2} {(IsEmpty ? "trống " : "có đồ")}   màu={Chroma:F3} lệch={Std:F1}";
+        $"#{Index,-2} {(IsEmpty ? Faint ? "nhạt  " : "trống " : "có đồ")}   " +
+        $"màu={Chroma:F3} lệch={Std:F1}";
 }
 
 /// <summary>
@@ -167,6 +175,9 @@ internal sealed class GridScanner : IDisposable
             Rect = cell,
             Centre = Mid(cell),
             State = empty ? CellState.Empty : CellState.Occupied,
+            // Trong ma lech cao la o dang tai icon, khong phai o rong. Chi co nghia khi o doc
+            // ra trong — o da co do thi cau hoi "co dang tai khong" chuyen sang cho diem NCC.
+            Faint = empty && std >= _cfg.CellFaintStdMin,
             Chroma = chroma,
             Std = std
         };
