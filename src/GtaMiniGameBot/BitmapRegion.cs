@@ -19,6 +19,30 @@ internal interface IPixelSource : IDisposable
     void Refresh();
     byte[] MaskBuffer(Func<int, int, int, bool> match);
     byte[] GrayBuffer(Rectangle rect);
+
+    /// <summary>
+    /// Ba kênh B,G,R của CẢ vùng, row-major, 3 byte mỗi pixel.
+    ///
+    /// Có mặt bên cạnh <see cref="MaskBuffer"/> vì hai job điện phải so vùng đó với NHIỀU màu
+    /// (5 màu đầu dây + 5 màu ổ cắm) và phải đọc giá trị V của HSV, chứ không chỉ hỏi một câu
+    /// đúng/sai. Đi qua MaskBuffer thì thành 10 lượt quét cả vùng cho mỗi khung; lấy đệm một lần
+    /// rồi tính tại chỗ là một lượt.
+    /// </summary>
+    byte[] BgrBuffer();
+
+    /// <summary>
+    /// Như trên nhưng ghi vào mảng CÓ SẴN — cùng lý do với
+    /// <see cref="RegionReader.GrayBuffer(Rectangle, byte[])"/>.
+    ///
+    /// Vòng closed-loop của bảng Water &amp; Power đọc lại ROI mỗi ~2 ms; ở 2560×1440 mỗi lượt là
+    /// 5.7 MB, tức cấp phát vài GB mỗi giây nếu lượt nào cũng xin mảng mới. Truyền
+    /// <paramref name="into"/> cỡ đúng thì nó dùng lại; sai cỡ hoặc null thì cấp mảng mới.
+    ///
+    /// CẢNH BÁO: bản dùng lại trả về CHÍNH mảng của người gọi, nên đừng đưa mảng đang giữ làm
+    /// khung tham chiếu vào đây — khung tham chiếu phải là bản chụp riêng, không thì phép so
+    /// "đã đổi chưa" luôn ra 0.
+    /// </summary>
+    byte[] BgrBuffer(byte[] into);
 }
 
 /// <summary>
@@ -91,6 +115,27 @@ internal sealed class BitmapRegion : IPixelSource
             outp[k++] = TryIndex(x, y, out int i)
                 ? (byte)((_buf[i + 2] * 30 + _buf[i + 1] * 59 + _buf[i] * 11) / 100)
                 : (byte)0;
+        }
+        return outp;
+    }
+
+    public byte[] BgrBuffer() => BgrBuffer(null);
+
+    public byte[] BgrBuffer(byte[] into)
+    {
+        int w = Region.Width, h = Region.Height;
+        int need = w * h * 3;
+        var outp = into is not null && into.Length == need ? into : new byte[need];
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * _stride, k = y * w * 3;
+            for (int x = 0; x < w; x++)
+            {
+                int i = row + x * 4;
+                outp[k + x * 3] = _buf[i];
+                outp[k + x * 3 + 1] = _buf[i + 1];
+                outp[k + x * 3 + 2] = _buf[i + 2];
+            }
         }
         return outp;
     }

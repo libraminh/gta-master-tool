@@ -35,6 +35,21 @@ internal sealed class RegionReader : IPixelSource
         _buf = new byte[_stride * region.Height];
     }
 
+    /// <summary>
+    /// Doi VI TRI vung doc, giu nguyen kich thuoc va toan bo dem.
+    ///
+    /// Ton tai rieng thay vi goi <see cref="Resize"/> voi rect moi: Resize so ca Rectangle, nen
+    /// chi doi goc thoi la no dispose roi cap lai Bitmap + Graphics + dem. Vong chay bang
+    /// Water &amp; Power doi goc MOI KHUNG de cua so chup di theo dau day, nen cap lai moi khung la
+    /// dung thu phai tranh. Do duoc: chup cua so 320x320 voi goc di dong het 3.35 ms/lan, con chup
+    /// ca ROI 1814x1053 het 16.08 ms/lan — do la ca khoang cach giua 300 luot/giay va 62 luot/giay.
+    /// </summary>
+    public void MoveWindow(int left, int top)
+    {
+        if (Region.Left == left && Region.Top == top) return;
+        Region = new Rectangle(left, top, Region.Width, Region.Height);
+    }
+
     /// <summary>Chup lai vung nay tu man hinh.</summary>
     public void Refresh()
     {
@@ -211,6 +226,32 @@ internal sealed class RegionReader : IPixelSource
             if (match(_buf[i], _buf[i + 1], _buf[i + 2])) n++;
         }
         return n;
+    }
+
+    /// <summary>
+    /// Ba kênh B,G,R của cả vùng, row-major, 3 byte mỗi pixel. Xem <see cref="IPixelSource"/> để
+    /// biết vì sao job điện cần đệm này thay vì gọi <see cref="MaskBuffer"/> nhiều lần.
+    /// </summary>
+    public byte[] BgrBuffer() => BgrBuffer(null);
+
+    /// <summary>Như trên nhưng ghi vào mảng có sẵn — xem <see cref="IPixelSource.BgrBuffer(byte[])"/>.</summary>
+    public byte[] BgrBuffer(byte[] into)
+    {
+        int w = Region.Width, h = Region.Height;
+        int need = w * h * 3;
+        var outp = into is not null && into.Length == need ? into : new byte[need];
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * _stride, k = y * w * 3;
+            for (int x = 0; x < w; x++)
+            {
+                int i = row + x * 4;
+                outp[k + x * 3] = _buf[i];
+                outp[k + x * 3 + 1] = _buf[i + 1];
+                outp[k + x * 3 + 2] = _buf[i + 2];
+            }
+        }
+        return outp;
     }
 
     /// <summary>Luu vung dang doc ra file - de debug / doi chieu bang mat.</summary>
