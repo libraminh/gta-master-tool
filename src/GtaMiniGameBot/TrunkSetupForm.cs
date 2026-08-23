@@ -462,7 +462,7 @@ internal sealed class TrunkSetupForm : Form
         using var still = StillPicker.Load(FishingConfig.ShotPath(_key, shot));
         if (still is null) { Append($"{label}: chưa có ảnh “{shot}”"); return; }
 
-        var r = WeightReader.ReadStill(still, roi, atlas, _cfg, cap);
+        var r = WeightReader.ReadStill(still, roi, atlas, _cfg, cap, capIsDynamic: shot == "bag");
         Append($"{label}: {r}");
         Append("   " + r.Trace);
     }
@@ -656,7 +656,7 @@ internal sealed class TrunkSetupForm : Form
 
             var w = dumper.PeekBagWeight(ct);
             Log("đọc KG: " + w);
-            if (w.Ok) Log($"   ngưỡng đổ là ≥ {_cfg.BagCapKg - _cfg.DumpMarginKg:F1} kg");
+            if (w.Ok) Log($"   ngưỡng đổ là ≥ {_cfg.BagDumpKg(w.Cap):F1} kg");
 
             Thread.Sleep(400);
             Log("--- đổ cốp ---");

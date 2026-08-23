@@ -129,7 +129,7 @@ internal sealed class FishingProfile
 
     public bool TrunkDumpEnabled { get; set; }
 
-    /// <summary>Trùm CẢ chuỗi "27.4/30 KG" — mẫu số đọc được chính là cái neo chống đọc sai.</summary>
+    /// <summary>Trùm CẢ chuỗi "7.7/35 KG" — mẫu số đọc được là trần ba lô thật, không cố định 30.</summary>
     public FishingRect BagWeight { get; set; } = new();
     public FishingRect TrunkWeight { get; set; } = new();
 
@@ -410,6 +410,10 @@ internal sealed class FishingConfig
     // -- ngưỡng đổ --
     /// <summary>Mấy con cá mới mở Tab đọc KG một lần. Đọc mỗi con thì che màn quá nhiều.</summary>
     public int WeightCheckEveryCatches { get; set; } = 5;
+    /// <summary>
+    /// Trần ba lô mặc định / fallback trước lần đọc đầu. Trần thật lấy từ mẫu số trên UI
+    /// (30, 35, 40…) — xem <see cref="LiveBagCap"/>.
+    /// </summary>
     public double BagCapKg { get; set; } = 30.0;
     public double TrunkCapKg { get; set; } = 60.0;
     /// <summary>Còn thiếu bao nhiêu kg nữa mới đầy thì đã đi đổ — chừa chỗ cho một con cá to.</summary>
@@ -433,11 +437,25 @@ internal sealed class FishingConfig
     /// </summary>
     public double TrunkTightKg { get; set; } = 10.0;
     /// <summary>
-    /// Cốp đã đầy thì bot câu tiếp cho đầy ba lô; ba lô tới ngần này kg là dừng phiên.
-    /// Sát trần <see cref="BagCapKg"/> chứ không chừa lề như lúc đổ cốp: chặng này không còn
-    /// chỗ nào để đổ nữa nên mỗi kg bỏ trống là một kg mất trắng.
+    /// Cốp đã đầy thì bot câu tiếp cho đầy ba lô; ba lô tới ngần này kg (trên trần
+    /// <see cref="BagCapKg"/>) là dừng phiên. Trần thật lấy từ UI thì khoảng cách này
+    /// được giữ — 30→29 nghĩa là ba lô 35 kg dừng ở 34. Xem <see cref="BagStopKg"/>.
     /// </summary>
     public double BagFullStopKg { get; set; } = 29.0;
+
+    /// <summary>Trần ba lô vừa đọc, hoặc <see cref="BagCapKg"/> nếu chưa đọc.</summary>
+    public double LiveBagCap(double readCap) => readCap > 0 ? readCap : BagCapKg;
+
+    /// <summary>Đổ khi ba lô đạt trần (vừa đọc) trừ <see cref="DumpMarginKg"/>.</summary>
+    public double BagDumpKg(double readCap = -1) => LiveBagCap(readCap) - DumpMarginKg;
+
+    /// <summary>
+    /// Dừng phiên sát trần vừa đọc, chừa đúng khoảng cách <see cref="BagFullStopKg"/>
+    /// so với <see cref="BagCapKg"/> (mặc định 1 kg).
+    /// </summary>
+    public double BagStopKg(double readCap = -1) =>
+        LiveBagCap(readCap) - Math.Max(0, BagCapKg - BagFullStopKg);
+
     /// <summary>
     /// Phải hỏng bấy nhiêu LƯỢT đổ liên tiếp mới kết luận cốp đầy hẳn.
     /// Hai lượt cách nhau ít nhất một con cá nên lượt sau đo lại KG cốp thật sự — bắt được

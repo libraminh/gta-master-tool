@@ -22,7 +22,7 @@ internal sealed class WeightRead
 }
 
 /// <summary>
-/// Đọc "27.4/30 KG". Không có thư viện OCR nào ở đây: tách glyph rồi so từng cái với bộ mẫu
+/// Đọc "7.7/35 KG". Không có thư viện OCR nào ở đây: tách glyph rồi so từng cái với bộ mẫu
 /// người dùng dạy.
 ///
 /// Điểm cốt lõi là các cổng kiểm tra, không phải bộ so khớp. Đọc sai còn tệ hơn không đọc
@@ -41,17 +41,25 @@ internal sealed class WeightReader : IDisposable
 
     private readonly FishingConfig _cfg;
     private readonly DigitAtlas _atlas;
-    private readonly double _expectedCap;
+    private readonly bool _capIsDynamic;
     private readonly RegionReader _region;
     private readonly Rectangle _abs;
 
+    /// <summary>
+    /// Neo mẫu số. Ba lô có thể đổi sau upgrade nên lần đọc hợp lệ đầu tiên khóa số này
+    /// cho phần còn lại của phiên — các lần sau vẫn phải khớp, đúng tinh thần cổng cũ.
+    /// </summary>
+    private double _expectedCap;
+
     private double _last = -1;
 
-    public WeightReader(FishingConfig cfg, Screen screen, FishingRect roi, DigitAtlas atlas, double expectedCap)
+    public WeightReader(FishingConfig cfg, Screen screen, FishingRect roi, DigitAtlas atlas,
+                        double expectedCap, bool capIsDynamic = false)
     {
         _cfg = cfg;
         _atlas = atlas;
         _expectedCap = expectedCap;
+        _capIsDynamic = capIsDynamic;
         _abs = FishingConfig.ToAbsolute(screen, roi);
         _region = new RegionReader(_abs);
     }
@@ -68,20 +76,36 @@ internal sealed class WeightReader : IDisposable
     {
         _region.Refresh();
         var gray = _region.GrayBuffer(_abs);
-        return Parse(gray, _abs.Width, _abs.Height, _atlas, _cfg, _expectedCap, ref _last);
+        var r = Parse(gray, _abs.Width, _abs.Height, _atlas, _cfg, _expectedCap, _capIsDynamic, ref _last);
+        if (r.Ok) _expectedCap = r.Cap;
+        return r;
     }
 
     /// <summary>Đọc từ ảnh tĩnh — dùng để thử nguội, không cần đứng trong game.</summary>
     public static WeightRead ReadStill(Bitmap still, FishingRect roi, DigitAtlas atlas,
-                                       FishingConfig cfg, double expectedCap)
+                                       FishingConfig cfg, double expectedCap, bool capIsDynamic = false)
     {
         var gray = GlyphSeg.GrayOf(still, roi.ToRectangle(), out int w, out int h);
         double ignore = -1;
-        return Parse(gray, w, h, atlas, cfg, expectedCap, ref ignore);
+        return Parse(gray, w, h, atlas, cfg, expectedCap, capIsDynamic, ref ignore);
     }
 
+    /// <summary>
+    /// Trần ba lô sau upgrade: số nguyên 15–50, bội của 5. 80 bị loại vì hay là 30 đọc
+    /// nhầm 3→8; 39 không phải bước upgrade.
+    /// </summary>
+    internal static bool IsPlausibleBagCap(double cap)
+    {
+        int n = (int)Math.Round(cap);
+        return Math.Abs(cap - n) <= 0.05 && n is >= 15 and <= 50 && n % 5 == 0;
+    }
+
+    private static bool CapAccepted(double cap, double expectedCap, bool capIsDynamic) =>
+        Math.Abs(cap - expectedCap) <= 0.5 || (capIsDynamic && IsPlausibleBagCap(cap));
+
     private static WeightRead Parse(byte[] gray, int w, int h, DigitAtlas atlas,
-                                    FishingConfig cfg, double expectedCap, ref double last)
+                                    FishingConfig cfg, double expectedCap, bool capIsDynamic,
+                                    ref double last)
     {
         if (gray.Length < w * h || w < 8 || h < 6)
             return new WeightRead { Reason = "vùng quá nhỏ" };
@@ -124,8 +148,9 @@ internal sealed class WeightReader : IDisposable
         double value = whole + frac;
         double cap = double.Parse(m.Groups[3].Value);
 
-        // Mau so la cai neo: doc sai mot chu so thi gan nhu chac chan no khong con bang 30 nua.
-        if (Math.Abs(cap - expectedCap) > 0.5)
+        // Mau so van la cai neo: doc sai mot chu so thi gan nhu khong con dung muc ba lo
+        // (30/35/40…) nua. Ba lo upgrade duoc nen cho phep doi muc hop le, roi khoa o Read().
+        if (!CapAccepted(cap, expectedCap, capIsDynamic))
             return Fail($"mẫu số {cap:0} khác {expectedCap:0} đã cấu hình", text, trace);
 
         if (value < 0 || value > cap + 0.05)

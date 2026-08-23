@@ -1292,13 +1292,14 @@ internal sealed class FishingPanel : UserControl
         var s = _state;
 
         double bagCap = s.BagCapKg > 0 ? s.BagCapKg : _cfg.BagCapKg;
+        double stopKg = _cfg.BagStopKg(bagCap);
         _capBag.ValueText = s.BagKg < 0 ? "-- / " + $"{bagCap:F0} kg" : $"{s.BagKg:F1} / {bagCap:F0} kg";
         _capBag.Fill01 = s.BagKg < 0 ? -1 : Math.Min(1, s.BagKg / bagCap);
         _capBag.Pending01 = s.PendingFishKg <= 0 ? -1 : Math.Min(1, s.PendingFishKg / bagCap);
-        _capBag.Thr01 = Math.Min(1, _cfg.BagFullStopKg / bagCap);
+        _capBag.Thr01 = Math.Min(1, stopKg / bagCap);
         _capBag.Note = s.PendingFishKg > 0
-            ? $"chỗ cá ≈ {s.PendingFishKg:F1} kg · dừng ở {_cfg.BagFullStopKg:F1}"
-            : $"dừng phiên ở {_cfg.BagFullStopKg:F1} kg";
+            ? $"chỗ cá ≈ {s.PendingFishKg:F1} kg · dừng ở {stopKg:F1}"
+            : $"dừng phiên ở {stopKg:F1} kg";
         _capBag.Invalidate();
 
         double trunkCap = s.TrunkCapKg > 0 ? s.TrunkCapKg : _cfg.TrunkCapKg;

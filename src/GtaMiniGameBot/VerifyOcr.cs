@@ -49,6 +49,9 @@ internal static class VerifyOcr
         // Cac ca PHAI bi tu choi.
         fail += Expect(cfg, atlas, "274/30 KG", 30, ok: false) ? 0 : 1;    // mat dau cham
         fail += Expect(cfg, atlas, "27.4/50 KG", 30, ok: false) ? 0 : 1;   // mau so khac cau hinh
+        fail += Expect(cfg, atlas, "7.7/35 KG", 30, ok: true, value: 7.7, capIsDynamic: true) ? 0 : 1;
+        fail += Expect(cfg, atlas, "7.7/39 KG", 30, ok: false, capIsDynamic: true) ? 0 : 1;
+        fail += Expect(cfg, atlas, "7.7/80 KG", 30, ok: false, capIsDynamic: true) ? 0 : 1;
         fail += Expect(cfg, atlas, "", 30, ok: false) ? 0 : 1;             // o trong
         // Chu so lac sau mau so, cach boi mot ky tu khong doc duoc. Khop-phan-dau se nuot
         // truot ca nay va tra ve 27.4 nhu that — day dung la ca da lam hong lan doc that.
@@ -85,20 +88,20 @@ internal static class VerifyOcr
             Console.WriteLine($"{key}: {atlas.Count} mẫu" +
                               (missing.Length > 0 ? $", còn thiếu {missing}" : ", đủ 12 ký tự"));
 
-            One(key, "bag", "ba lô", p.BagWeight, cfg.BagCapKg, atlas, cfg);
+            One(key, "bag", "ba lô", p.BagWeight, cfg.BagCapKg, atlas, cfg, capIsDynamic: true);
             One(key, "trunk", "cốp  ", p.TrunkWeight, cfg.TrunkCapKg, atlas, cfg);
         }
     }
 
     private static void One(string key, string shot, string label, FishingRect roi,
-                            double cap, DigitAtlas atlas, FishingConfig cfg)
+                            double cap, DigitAtlas atlas, FishingConfig cfg, bool capIsDynamic = false)
     {
         if (!roi.IsSet) { Console.WriteLine($"  {label}: chưa khoanh"); return; }
 
         using var still = StillPicker.Load(FishingConfig.ShotPath(key, shot));
         if (still is null) { Console.WriteLine($"  {label}: chưa có ảnh"); return; }
 
-        var r = WeightReader.ReadStill(still, roi, atlas, cfg, cap);
+        var r = WeightReader.ReadStill(still, roi, atlas, cfg, cap, capIsDynamic);
         Console.WriteLine($"  {label}: {r}");
         Console.WriteLine($"      {r.Trace}");
     }
@@ -129,11 +132,11 @@ internal static class VerifyOcr
     }
 
     private static bool Expect(FishingConfig cfg, DigitAtlas atlas, string text,
-                               double cap, bool ok, double value = 0)
+                               double cap, bool ok, double value = 0, bool capIsDynamic = false)
     {
         using var bmp = Render(text);
         var roi = new FishingRect { X = 0, Y = 0, W = bmp.Width, H = bmp.Height };
-        var r = WeightReader.ReadStill(bmp, roi, atlas, cfg, cap);
+        var r = WeightReader.ReadStill(bmp, roi, atlas, cfg, cap, capIsDynamic);
 
         bool pass = r.Ok == ok && (!ok || Math.Abs(r.Value - value) < 0.05);
         Console.WriteLine($"{(pass ? "  ok  " : "  SAI ")} “{text}” cap={cap:0} → {r}");
