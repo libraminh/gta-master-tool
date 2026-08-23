@@ -53,10 +53,7 @@ $PortableDirs = @('fishing', 'items', 'wood', 'electric')
 # Loc thu chi dung tren MAY NAY ra khoi snapshot dem di share.
 #
 #  - ItemCachePath la duong dan cache game cua rieng may goc; may khac tro sai cho.
-#  - FishSlots la duong du phong khi mat bo icon, tro theo CHI SO o. Chi so do khong
-#    mang nghia gi tren may khac, va ban dang co tro vao o MOI GIUN - de nguyen la
-#    ban share co the keo moi vao cop. Bo di thi thieu icon se bao loi ro rang thay
-#    vi lam sai am tham.
+#  - FishSlots GIU NGUYEN: DescribeTrunkGaps can o chua ca de bat do cop.
 function Remove-MachineSpecific {
     param([string] $JsonPath)
 
@@ -68,13 +65,24 @@ function Remove-MachineSpecific {
     $next = [regex]::Replace($text, '[ \t]*"ItemCachePath"\s*:\s*"[^"]*"\s*,\s*\r?\n', '')
     if ($next -ne $text) { $gone += 'ItemCachePath'; $text = $next }
 
-    $next = [regex]::Replace($text, '"FishSlots"\s*:\s*\[[^\]]*\]', '"FishSlots": []')
-    if ($next -ne $text) { $gone += 'FishSlots'; $text = $next }
-
     if ($gone.Count -gt 0) {
         [System.IO.File]::WriteAllText($JsonPath, $text, (New-Object System.Text.UTF8Encoding($false)))
     }
     return $gone
+}
+
+# Ban dang chay bat do cop thi zip phai mang FishSlots. Rong = nguoi nhan thay "thieu o chua ca".
+function Test-TrunkDumpReady {
+    param([string] $JsonPath)
+
+    $cfg = Get-Content -LiteralPath $JsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($p in $cfg.Profiles.PSObject.Properties) {
+        $prof = $p.Value
+        $slots = @($prof.FishSlots)
+        if ($prof.TrunkDumpEnabled -and $slots.Count -lt 1) {
+            throw "TrunkDumpEnabled nhung FishSlots rong ($($p.Name)). Khong ship ban thieu do cop."
+        }
+    }
 }
 
 function Test-ExcludedPath {
@@ -212,6 +220,8 @@ foreach ($name in $PortableFiles) {
     if (Test-Path $src) { Copy-Item -Path $src -Destination $Staging -Force }
     else { Write-Warning "khong co $name - ban portable se chay voi mac dinh cho phan do." }
 }
+
+Test-TrunkDumpReady (Join-Path $Staging 'fishing.json')
 
 $roiCount = 0
 foreach ($dir in $PortableDirs) {

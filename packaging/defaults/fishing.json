@@ -5,10 +5,10 @@
       "Width": 2560,
       "Height": 1440,
       "Bar": {
-        "X": 1913,
-        "Y": 833,
-        "W": 38,
-        "H": 350
+        "X": 1914,
+        "Y": 835,
+        "W": 67,
+        "H": 349
       },
       "Fish": {
         "X": 1964,
@@ -123,7 +123,12 @@
         "Cols": 5,
         "Rows": 5
       },
-      "FishSlots": [],
+      "FishSlots": [
+        {
+          "Grid": "hotbar",
+          "Index": 1
+        }
+      ],
       "FishItems": [
         "bass_largemouth",
         "bluegill",
