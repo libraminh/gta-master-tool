@@ -24,6 +24,7 @@ internal sealed class ElectricBot
 
     private WireBot _wire;
     private BoardBot _board;
+    private NavBot _navBot;
 
     public ElectricBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
     {
@@ -55,6 +56,7 @@ internal sealed class ElectricBot
         _cts?.Cancel();
         _wire?.Stop();
         _board?.Stop();
+        _navBot?.Stop();
     }
 
     public void StopAndWait(int ms = 4000)
@@ -62,6 +64,7 @@ internal sealed class ElectricBot
         _cts?.Cancel();
         _wire?.StopAndWait(ms);
         _board?.StopAndWait(ms);
+        _navBot?.StopAndWait(ms);
 
         var t = _thread;
         if (t is null || !t.IsAlive) return;
@@ -108,7 +111,17 @@ internal sealed class ElectricBot
                 return;
             }
 
-            Emit($"chế độ {TenCheDo(_cfg.Mode)} — đang chờ minigame hiện ra.");
+            bool wantNav = _cfg.AutoWalk;
+            Emit($"chế độ {TenCheDo(_cfg.Mode)} — " +
+                 (wantNav
+                     ? $"tự đi tới điểm làm việc, {(_cfg.AutoLoop ? "chạy liên tục" : "dừng sau một lượt")}."
+                     : "đang chờ minigame hiện ra."));
+
+            // Cho bo dieu huong muon lai dung hai bo tham do nay: no chi biet "da bam E xong roi",
+            // con "minigame da mo chua" thi o day moi tra loi duoc.
+            bool PanelVisible() =>
+                (wantWire && !wireProbe.FindPanel().IsEmpty) ||
+                (wantBoard && boardProbe.TryRead(out _) is not null);
 
             while (true)
             {
@@ -119,6 +132,7 @@ internal sealed class ElectricBot
                 {
                     Emit("thấy panel đi dây — giao cho bộ giải dây.");
                     if (!RunWire(ct, out message)) return;
+                    if (StopAfterOneRound(ref message)) return;
                     continue;
                 }
 
@@ -126,6 +140,13 @@ internal sealed class ElectricBot
                 {
                     Emit("thấy bảng nước/điện — giao cho bộ giải bảng.");
                     if (!RunBoard(ct, out message)) return;
+                    if (StopAfterOneRound(ref message)) return;
+                    continue;
+                }
+
+                if (wantNav)
+                {
+                    if (!RunNav(ct, PanelVisible, out message)) return;
                     continue;
                 }
 
@@ -147,6 +168,61 @@ internal sealed class ElectricBot
             boardProbe?.Dispose();
             HeldKeys.ReleaseAll();
             Stopped?.Invoke(message);
+        }
+    }
+
+    /// <summary>
+    /// Giải xong một lượt mà chưa bật "chạy liên tục" thì dừng ở đây.
+    ///
+    /// Mặc định TẮT là cố ý: lượt thử đầu tiên của bộ điều hướng cần dừng đúng chỗ để còn đọc log,
+    /// chứ bot chạy tiếp là log trôi mất.
+    /// </summary>
+    private bool StopAfterOneRound(ref string message)
+    {
+        if (_cfg.AutoLoop || Rounds <= 0) return false;
+
+        message = $"xong {Rounds} lượt — chưa bật “chạy liên tục”";
+        Emit("dừng: " + message);
+        return true;
+    }
+
+    /// <summary>
+    /// Cho bộ điều hướng đi tới điểm làm việc rồi bấm E. Trả false nếu nó dừng vì một lý do mà
+    /// chạy tiếp cũng vô ích — chưa hiệu chuẩn, không gửi được input, hoặc thử hết lượt vẫn không
+    /// tới. Tới nơi rồi thì quay lại vòng điều phối: chính hai bộ thăm dò ở trên sẽ thấy minigame.
+    /// </summary>
+    private bool RunNav(CancellationToken ct, Func<bool> panelVisible, out string message)
+    {
+        var done = new ManualResetEventSlim(false);
+        NavStopReason reason = NavStopReason.UserStopped;
+        string detail = "";
+
+        _navBot = new NavBot(_cfg, _screen, _profile) { PanelVisible = panelVisible };
+        _navBot.Log += Emit;
+        _navBot.Stopped += (r, m) => { reason = r; detail = m; done.Set(); };
+        _navBot.Start();
+
+        WaitNav(ct, done);
+        _navBot = null;
+
+        if (reason == NavStopReason.Arrived) { message = ""; return true; }
+
+        message = $"bộ điều hướng dừng — {NavBot.TenLyDo(reason)}: {detail}";
+        Emit("dừng: " + message);
+        return false;
+    }
+
+    private void WaitNav(CancellationToken ct, ManualResetEventSlim done)
+    {
+        while (!done.IsSet)
+        {
+            if (ct.IsCancellationRequested)
+            {
+                _navBot?.StopAndWait();
+                done.Wait(1500);
+                throw new OperationCanceledException();
+            }
+            done.Wait(80);
         }
     }
 
@@ -209,6 +285,7 @@ internal sealed class ElectricBot
             {
                 _wire?.StopAndWait();
                 _board?.StopAndWait();
+                _navBot?.StopAndWait();
                 done.Wait(1500);
                 throw new OperationCanceledException();
             }

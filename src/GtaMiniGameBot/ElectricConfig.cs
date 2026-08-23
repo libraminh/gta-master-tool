@@ -45,6 +45,25 @@ internal sealed class ElectricProfile
     /// </summary>
     public FishingRect TitleBand { get; set; } = new();
 
+    /// <summary>
+    /// Vùng minimap để dò chấm vàng. Rỗng thì suy từ mốc 1080p <c>(18,770)-(320,1026)</c> —
+    /// <c>target_roi_ref</c> của Navigator bản Python. Mốc đó ĐO TAY ở 1080p nên phải kiểm lại
+    /// bằng <c>--verify-nav</c> trước khi tin ở 2K.
+    /// </summary>
+    public FishingRect Minimap { get; set; } = new();
+
+    /// <summary>
+    /// Băng quét prompt "[E] TƯƠNG TÁC". Rỗng thì lấy 60%×50% giữa màn, đúng mặc định của job thợ
+    /// mộc — prompt đo trên ảnh thật nằm ~62% ngang / ~57% dọc nên lọt.
+    /// </summary>
+    public FishingRect PromptBand { get; set; } = new();
+
+    /// <summary>Chiều cao mực nhóm chữ "TƯƠNG TÁC", đo lúc khoanh mẫu.</summary>
+    public int PromptTextH { get; set; }
+
+    /// <summary>Ngưỡng tách ô phím khỏi chữ, đo lúc khoanh mẫu.</summary>
+    public int PromptGapSplit { get; set; }
+
     [JsonIgnore]
     public string Key => $"{Width}x{Height}";
 
@@ -67,6 +86,11 @@ internal sealed class ElectricProfile
         WireBand ??= new FishingRect();
         BoardRoi ??= new FishingRect();
         TitleBand ??= new FishingRect();
+        Minimap ??= new FishingRect();
+        PromptBand ??= new FishingRect();
+
+        if (PromptTextH < 0) PromptTextH = 0;
+        if (PromptGapSplit < 0) PromptGapSplit = 0;
     }
 
     // ---------------- vung thuc te ----------------
@@ -79,6 +103,35 @@ internal sealed class ElectricProfile
 
     /// <summary>Dải tiêu đề: ô đã khoanh, không thì quy đổi mốc 1080p.</summary>
     public FishingRect ScanTitleBand() => TitleBand.IsSet ? TitleBand : FromRef(250, 5, 1400, 145);
+
+    /// <summary>Vùng minimap: ô đã khoanh, không thì quy đổi <c>target_roi_ref</c> của Python.</summary>
+    public FishingRect ScanMinimap() => Minimap.IsSet ? Minimap : FromRef(18, 770, 320, 1026);
+
+    /// <summary>Băng quét prompt: ô đã khoanh, không thì 60%×50% giữa màn.</summary>
+    public FishingRect ScanPromptBand()
+    {
+        if (PromptBand.IsSet) return PromptBand;
+        if (Width < 100 || Height < 100) return new FishingRect();
+
+        int w = (int)(Width * 0.60), h = (int)(Height * 0.50);
+        return new FishingRect { X = (Width - w) / 2, Y = (Height - h) / 2, W = w, H = h };
+    }
+
+    /// <summary>
+    /// Hộp che bóng nhân vật, canh giữa và dính đáy màn — nơi logo vàng trên áo ngồi.
+    /// Xem <see cref="NavSettings.SilhouetteWidthFrac"/> để biết vì sao bắt buộc phải có.
+    /// </summary>
+    public Rectangle SilhouetteBox(NavSettings nav)
+    {
+        int w = (int)Math.Round(Width * nav.SilhouetteWidthFrac);
+        int h = (int)Math.Round(Height * nav.SilhouetteHeightFrac);
+        if (w <= 0 || h <= 0) return Rectangle.Empty;
+        return new Rectangle((Width - w) / 2, Height - h, w, h);
+    }
+
+    /// <summary>Đã khoanh/đo đủ để dò được prompt "TƯƠNG TÁC" chưa.</summary>
+    [JsonIgnore]
+    public bool PromptReady => PromptTextH >= 6 && PromptGapSplit >= 2;
 
     /// <summary>Quy đổi một ô đo ở 1920×1080 (x1,y1,x2,y2) sang màn này.</summary>
     private FishingRect FromRef(int x1, int y1, int x2, int y2)
@@ -517,6 +570,18 @@ internal sealed class ElectricConfig
 
     public BoardSettings Board { get; set; } = new();
 
+    /// <summary>Hằng số của bộ tự đi tới điểm làm việc. Xem <see cref="NavSettings"/>.</summary>
+    public NavSettings Nav { get; set; } = new();
+
+    /// <summary>Tự đi tới điểm vàng rồi bấm E, thay vì chờ người chơi tự mở minigame.</summary>
+    public bool AutoWalk { get; set; }
+
+    /// <summary>
+    /// Giải xong một minigame thì tự tìm điểm tiếp. Tắt (mặc định) thì dừng lại sau một lượt —
+    /// đúng thứ cần cho lượt thử đầu tiên, đọc log xong mới quyết định chạy dài.
+    /// </summary>
+    public bool AutoLoop { get; set; }
+
     /// <summary>Minigame nào được bật. Mặc định cả hai — nghề này gặp cả hai màn.</summary>
     public ElectricMode Mode { get; set; } = ElectricMode.Both;
 
@@ -533,8 +598,10 @@ internal sealed class ElectricConfig
     {
         Wire ??= new WireSettings();
         Board ??= new BoardSettings();
+        Nav ??= new NavSettings();
         Wire.Normalize();
         Board.Normalize();
+        Nav.Normalize();
 
         if (!Enum.IsDefined(Mode)) Mode = ElectricMode.Both;
         if (string.IsNullOrWhiteSpace(WindowMatch)) WindowMatch = "PlayXGTA";
@@ -572,6 +639,10 @@ internal sealed class ElectricConfig
     public static string ProfileDir(string key) => Path.Combine(AppPaths.Root, "electric", key);
 
     public static string ShotDir(string key) => Path.Combine(ProfileDir(key), "shots");
+
+    /// <summary>Mẫu chữ "TƯƠNG TÁC" cắt từ ảnh chụp, dùng cho bộ dò prompt.</summary>
+    public static string PromptTemplatePath(string key) =>
+        Path.Combine(ProfileDir(key), "tuong-tac.png");
 
     public static string ShotPath(string key, string name) =>
         Path.Combine(ShotDir(key), name + ".png");

@@ -68,11 +68,30 @@ internal sealed class BitmapRegion : IPixelSource
         Region = clip;
         _stride = clip.Width * 4;
         _buf = new byte[_stride * clip.Height];
+        Copy(src);
+    }
 
-        var bd = src.LockBits(clip, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+    /// <summary>
+    /// Nạp ẢNH KHÁC vào cùng vùng đọc, giữ nguyên đối tượng.
+    ///
+    /// Có mặt vì <see cref="MarkerReader"/> mang trạng thái LIÊN KHUNG (phép kiểm thị sai so vị
+    /// trí khung này với khung trước). Muốn kiểm nó ngoài game thì phải đưa được nhiều khung liên
+    /// tiếp qua CÙNG một bộ dò — dựng bộ dò mới cho mỗi ảnh là xoá sạch cái đang cần kiểm.
+    /// </summary>
+    public void Retarget(Bitmap src)
+    {
+        if (src.Width < Region.Right || src.Height < Region.Bottom)
+            throw new ArgumentException(
+                $"Anh {src.Width}x{src.Height} nho hon vung dang doc {Region}", nameof(src));
+        Copy(src);
+    }
+
+    private void Copy(Bitmap src)
+    {
+        var bd = src.LockBits(Region, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         try
         {
-            for (int y = 0; y < clip.Height; y++)
+            for (int y = 0; y < Region.Height; y++)
                 Marshal.Copy(bd.Scan0 + y * bd.Stride, _buf, y * _stride, _stride);
         }
         finally { src.UnlockBits(bd); }

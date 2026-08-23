@@ -18,6 +18,37 @@ internal static class InputSender
                 "Thuong la do game chay quyen Admin ma app thi khong - hay chay app bang Run as administrator.");
     }
 
+    /// <summary>
+    /// Ban mot delta chuot TUONG DOI - dung de xoay camera trong game.
+    ///
+    /// Khac <see cref="MoveTo"/> o cho khong kem MOUSEEVENTF_ABSOLUTE: game doc raw input nen no
+    /// nhan duoc dung delta nay lam luong xoay, khong lien quan con tro dang o dau. Do cung la ly
+    /// do khong dung SetCursorPos duoc - dat lai vi tri con tro KHONG sinh ra delta (xem ghi chu
+    /// o <see cref="MoveCursorOnly"/>), ma xoay camera thi can dung cai delta do.
+    ///
+    /// Bao nhieu count ra bao nhieu do thi phu thuoc do nhay chuot trong game, nen NavBot tu do
+    /// lay ti so chu khong go cung.
+    /// </summary>
+    public static void MoveRelative(int dx, int dy)
+    {
+        if (dx == 0 && dy == 0) return;
+
+        Send(new Native.INPUT
+        {
+            type = Native.INPUT_MOUSE,
+            U = new Native.InputUnion
+            {
+                mi = new Native.MOUSEINPUT
+                {
+                    dx = dx,
+                    dy = dy,
+                    dwFlags = Native.MOUSEEVENTF_MOVE,
+                    dwExtraInfo = Native.MAGIC
+                }
+            }
+        });
+    }
+
     /// <summary>Dua con tro tro toi (x,y) - toa do man hinh vat ly.</summary>
     public static void MoveTo(int x, int y)
     {
