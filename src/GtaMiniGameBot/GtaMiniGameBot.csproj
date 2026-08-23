@@ -19,7 +19,16 @@
 
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Mot cho chay: F5 / build / publish deu ra app\GtaMiniGameBot.exe -->
+    <OutputPath>$(MSBuildThisFileDirectory)..\..\app\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
+
+  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish">
+    <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\tools\fail-if-app-running.ps1&quot;" />
+  </Target>
 
   <ItemGroup>
     <!-- Mau dong ho toc do, dung cho phep do "dang trong xe" bang NCC.

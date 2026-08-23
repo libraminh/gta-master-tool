@@ -1,5 +1,4 @@
 using System.Drawing.Imaging;
-using System.Text;
 
 namespace GtaMiniGameBot;
 
@@ -553,25 +552,13 @@ internal sealed class ElectricPanel : UserControl
         try { BeginInvoke(a); } catch { }
     }
 
-    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "bot-log.txt");
-    private static readonly Encoding LogEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
-
     /// <summary>
-    /// Ghi ra CẢ màn hình lẫn file, cùng khuôn <see cref="MinerPanel"/>.
-    ///
-    /// Job này chạy trong game và người dùng không thể vừa chơi vừa đọc log trên màn — mà khi nó
-    /// giữ không bấm gì thì lý do nằm đúng trong log đó. Chỉ hiện trên màn nghĩa là mất bằng chứng
-    /// ngay lúc cần nhất.
+    /// Ghi ra man hinh, va ra file khi BotLog.Enabled — cung khuon <see cref="MinerPanel"/>.
+    /// File mac dinh tat: mo/dong bot-log.txt moi dong rat ton. Bat o tab Tiện ích khi debug.
     /// </summary>
     private void Append(string line)
     {
         _log.Append(line);
-
-        try
-        {
-            File.AppendAllText(LogPath,
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  [điện] {line}{Environment.NewLine}", LogEncoding);
-        }
-        catch { }
+        BotLog.Write("điện", line);
     }
 }

@@ -19,8 +19,7 @@ internal sealed class StatusOverlay : Form
     private const int CardW = 224;
     private const int CardH = 66;
 
-    private static readonly string LogPath =
-        Path.Combine(AppContext.BaseDirectory, "overlay-log.txt");
+    private static string LogPath => Path.Combine(AppPaths.Logs, "overlay-log.txt");
 
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _windowMatch = "PlayXGTA";

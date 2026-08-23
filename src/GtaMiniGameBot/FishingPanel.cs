@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace GtaMiniGameBot;
 
 internal sealed class FishingPanel : UserControl
@@ -1324,23 +1322,13 @@ internal sealed class FishingPanel : UserControl
         _capTrunk.Invalidate();
     }
 
-    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "bot-log.txt");
-    private static readonly Encoding LogEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
-
     /// <summary>
-    /// LogView tu dong dau gio va tu cat bot khi day, nen o day khong con phai
-    /// viet lai toan bo noi dung nhu ban TextBox cu. Duong ra file khong doi:
-    /// UTF-8 CO BOM de Notepad doc duoc dau, va tag [câu] de phan biet voi
-    /// dong cua job khac trong cung mot bot-log.txt.
+    /// LogView tu dong dau gio va tu cat bot khi day. File bot-log.txt chi ghi
+    /// khi BotLog.Enabled — mac dinh tat de khong mo/dong file moi dong.
     /// </summary>
     private void Append(string line)
     {
         _log.Append(line);
-        try
-        {
-            File.AppendAllText(LogPath,
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  [câu] {line}{Environment.NewLine}", LogEncoding);
-        }
-        catch { }
+        BotLog.Write("câu", line);
     }
 }

@@ -15,6 +15,7 @@ internal sealed class UtilsPanel : UserControl
     private readonly Label _ctrlHold = new();
     private readonly Label _focus = new();
     private readonly DarkButton _btnTestOverlay = new();
+    private readonly DarkCheck _debugLog = new();
     private readonly Label _note = new();
     private readonly Dictionary<Hk, Label> _keyLabels = new();
 
@@ -104,12 +105,31 @@ internal sealed class UtilsPanel : UserControl
 
         Controls.Add(new Label
         {
-            Text = "Hiện badge ● ON ở góc màn hình game. Kết quả ghi vào overlay-log.txt cạnh exe.",
+            Text = "Hiện badge ● ON ở góc màn hình game. Kết quả ghi %AppData%\\GtaMiniGameBot\\logs\\.",
             Location = new Point(244, y + 6),
             AutoSize = true,
             ForeColor = Theme.Dim
         });
         y += 40;
+
+        var logBox = new DarkGroup { Title = "Log debug", Location = new Point(12, y), Size = new Size(w, 72) };
+        Controls.Add(logBox);
+
+        _debugLog.Text = "Ghi log debug ra file (%AppData%\\GtaMiniGameBot\\logs\\bot-log.txt)";
+        _debugLog.BackColor = Theme.Surface;
+        _debugLog.SetBounds(16, 26, 760, 22);
+        _debugLog.SetCheckedQuiet(BotLog.Enabled);
+        _debugLog.CheckedChanged += () => BotLog.SetEnabled(_debugLog.Checked);
+        logBox.Controls.Add(_debugLog);
+
+        logBox.Controls.Add(new Label
+        {
+            Text = "Mặc định tắt. Chỉ bật khi cần debug — ghi AppData, giữ 24 giờ, không chung thư mục app.",
+            ForeColor = Theme.Dim,
+            AutoSize = false,
+            Bounds = new Rectangle(16, 48, 760, 18)
+        });
+        y += 84;
 
         BuildHotkeyBox(y, w);
     }

@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace GtaMiniGameBot;
 
 internal sealed class OilWellPanel : UserControl
@@ -276,7 +274,7 @@ internal sealed class OilWellPanel : UserControl
 
     private void OpenDebugFolder()
     {
-        string dir = Path.Combine(AppContext.BaseDirectory, "debug");
+        string dir = AppPaths.DebugDumps;
         try
         {
             Directory.CreateDirectory(dir);
@@ -409,18 +407,9 @@ internal sealed class OilWellPanel : UserControl
         try { BeginInvoke(a); } catch { }
     }
 
-    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "bot-log.txt");
-    private static readonly Encoding LogEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
-
     private void Append(string line)
     {
         _log.Append(line);
-
-        try
-        {
-            File.AppendAllText(LogPath,
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  {line}{Environment.NewLine}", LogEncoding);
-        }
-        catch { }
+        BotLog.Write("", line);
     }
 }

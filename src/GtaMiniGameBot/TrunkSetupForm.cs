@@ -1,5 +1,4 @@
 using System.Drawing.Imaging;
-using System.Text;
 
 namespace GtaMiniGameBot;
 
@@ -798,13 +797,6 @@ internal sealed class TrunkSetupForm : Form
     private void Append(string line)
     {
         _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
-        try
-        {
-            File.AppendAllText(
-                Path.Combine(AppContext.BaseDirectory, "bot-log.txt"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  [cốp] {line}{Environment.NewLine}",
-                new UTF8Encoding(true));
-        }
-        catch { }
+        BotLog.Write("cốp", line);
     }
 }

@@ -237,7 +237,7 @@ internal sealed class OilWellBot
                 try
                 {
                     string dir = reader.DumpEvidence(
-                        Path.Combine(AppContext.BaseDirectory, "debug"),
+                        AppPaths.DebugDumps,
                         $"{TenLyDo(reason)} — {message}", _cfg.DebugDumpKeep);
                     Emit($"đã lưu bằng chứng vào: {dir}");
                 }
