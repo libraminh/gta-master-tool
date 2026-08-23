@@ -300,7 +300,7 @@ internal sealed class MiniGameReader : IDisposable
         }
         catch (Exception ex) { TryWrite(Path.Combine(dir, "loi-doc-so-do.txt"), ex.ToString()); }
 
-        // 4. don thu muc cu
+        // 4. don thu muc cu: giu so ban `keep`, roi cat them cac ban > 24h.
         try
         {
             var olds = new DirectoryInfo(rootDir).GetDirectories()
@@ -308,6 +308,7 @@ internal sealed class MiniGameReader : IDisposable
             foreach (var d in olds) d.Delete(true);
         }
         catch { }
+        LogHousekeeping.SweepDebugDir(rootDir);
 
         return dir;
     }

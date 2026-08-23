@@ -9,6 +9,13 @@ internal static class AppPaths
 {
     public static string Root { get; } = Init();
 
+    /// <summary>
+    /// Log/debug runtime. Debug va Release deu ghi day, khong chung thu muc exe/app.
+    /// </summary>
+    public static string Logs { get; } = InitLogs();
+
+    public static string DebugDumps => Path.Combine(Logs, "debug");
+
     private static string Init()
     {
         try
@@ -25,10 +32,18 @@ internal static class AppPaths
         }
     }
 
+    private static string InitLogs()
+    {
+        string dir = Path.Combine(Root, "logs");
+        try { Directory.CreateDirectory(dir); } catch { }
+        return dir;
+    }
+
     /// <summary>Config nam ngay canh exe trong ban portable, mot file moi job.</summary>
     private static readonly string[] MigrateFiles =
     {
-        "fishing.json", "config.json", "hotkeys.json", "miner.json", "wood.json", "electric.json"
+        "fishing.json", "config.json", "hotkeys.json", "miner.json", "wood.json", "electric.json",
+        "app.json"
     };
 
     /// <summary>

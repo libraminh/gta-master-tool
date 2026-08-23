@@ -1,5 +1,4 @@
 using System.Drawing.Imaging;
-using System.Text;
 
 namespace GtaMiniGameBot;
 
@@ -355,19 +354,10 @@ internal sealed class WoodSetupForm : Form
 
     // ---------------------------------------------------------------- log
 
-    private static readonly Encoding LogEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
-
     private void Append(string line)
     {
         if (_log.Lines.Length > 400) _log.Lines = _log.Lines.Skip(150).ToArray();
         _log.AppendText($"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
-
-        try
-        {
-            File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "bot-log.txt"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}  wood-setup: {line}{Environment.NewLine}",
-                LogEncoding);
-        }
-        catch { }
+        BotLog.Write("wood-setup", line);
     }
 }

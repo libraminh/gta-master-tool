@@ -166,6 +166,8 @@ internal static class Program
         }
 
         AppPaths.MigrateFromExeFolder();
+        BotLog.Load();
+        LogHousekeeping.RunAtStart();
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
