@@ -261,12 +261,18 @@ internal sealed class DigitAtlas
     private const double BigFrac = 0.75;
 
     /// <summary>
+    /// Trần ba lô phổ biến — mẫu số vẽ cỡ nhỏ nên phải có mẫu nhỏ cho từng chữ số này,
+    /// không chỉ 30 cứng.
+    /// </summary>
+    private static readonly double[] CommonBagCaps = { 25, 30, 35, 40, 45, 50 };
+
+    /// <summary>
     /// Còn thiếu mẫu nào. Phải tính theo CỠ CHỮ chứ không chỉ theo ký tự: game vẽ số đang mang
     /// bằng phông to và mẫu số bằng phông nhỏ, nên cùng một chữ số cần hai mẫu khác nhau.
     ///
-    /// Cỡ nhỏ chỉ dùng cho mẫu số, mà mẫu số là hằng số (30 và 60), nên chỉ cần đúng các chữ
-    /// số có trong <paramref name="caps"/> — đòi đủ 10 chữ số cỡ nhỏ là bắt người dùng dạy
-    /// những mẫu không bao giờ dùng tới.
+    /// Cỡ nhỏ chỉ dùng cho mẫu số. Trần ba lô đổi theo upgrade (25–50) nên đòi chữ số của
+    /// <see cref="CommonBagCaps"/> cộng các trần trong <paramref name="caps"/> — đòi đủ 10
+    /// chữ số cỡ nhỏ là bắt người dùng dạy những mẫu không bao giờ dùng tới.
     /// </summary>
     public string MissingText(params double[] caps)
     {
@@ -285,7 +291,10 @@ internal sealed class DigitAtlas
         var big = _entries.Where(e => e.Tpl.Height >= cut).Select(e => e.Ch).ToHashSet();
         var small = _entries.Where(e => e.Tpl.Height < cut).Select(e => e.Ch).ToHashSet();
 
-        var needSmall = caps
+        // MissingText() khong tham so: chi kiem 12 ky tu (self-test ve chu cung mot co).
+        // Co tham so: them cac tran ba lo pho bien de doi mau nho cua "5" khi upgrade 35 kg.
+        var allCaps = caps is { Length: > 0 } ? caps.Concat(CommonBagCaps) : Array.Empty<double>();
+        var needSmall = allCaps
             .Select(c => ((int)Math.Round(c)).ToString())
             .SelectMany(s => s)
             .Distinct()

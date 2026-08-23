@@ -161,7 +161,7 @@ internal sealed class TrunkDumper : IDisposable
                 "chỉ dùng khi mất bộ icon — kiểm lại nếu nó không còn là ô cá");
 
         var atlas = DigitAtlas.Load(p.Key);
-        var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg);
+        var weight = new WeightReader(cfg, screen, p.BagWeight, atlas, cfg.BagCapKg, capIsDynamic: true);
         var trunkWeight = p.TrunkWeight.IsSet
             ? new WeightReader(cfg, screen, p.TrunkWeight, atlas, cfg.TrunkCapKg)
             : null;

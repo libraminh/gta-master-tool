@@ -69,6 +69,8 @@ internal sealed class FishingBot
 
     /// <summary>KG ba lô lần cân gần nhất, chỉ để hiện lên UI. -1 = chưa cân.</summary>
     private double _lastBagKg = -1;
+    /// <summary>Trần ba lô lần cân gần nhất (mẫu số trên UI). -1 = chưa cân.</summary>
+    private double _lastBagCap = -1;
 
     /// <summary>Fill thanh câu đọc được gần nhất, cho badge overlay. -1 = chưa đọc được.</summary>
     private double _lastFill = -1;
@@ -522,7 +524,8 @@ internal sealed class FishingBot
             if (w.Ok)
             {
                 _lastBagKg = w.Value;
-                double full = _cfg.BagCapKg - _cfg.DumpMarginKg;
+                _lastBagCap = w.Cap;
+                double full = _cfg.BagDumpKg(w.Cap);
                 double fishKg = _dumper.PendingFishKg(w.Value);
                 double free = _dumper.TrunkFreeKg;
 
@@ -625,7 +628,11 @@ internal sealed class FishingBot
         // khung hinh xau.
         SetPhase(FishingPhase.EndgameWeighing);
         var w = _dumper.PeekBagWeight(ct);
-        if (w.Ok) _lastBagKg = w.Value;
+        if (w.Ok)
+        {
+            _lastBagKg = w.Value;
+            _lastBagCap = w.Cap;
+        }
         if (!w.Ok)
         {
             Emit("cốp đầy — lần cân này hỏng, câu tiếp rồi cân lại");
@@ -633,13 +640,14 @@ internal sealed class FishingBot
             return;
         }
 
-        if (w.Value >= _cfg.BagFullStopKg)
+        double stopKg = _cfg.BagStopKg(w.Cap);
+        if (w.Value >= stopKg)
             throw new BagFullException(
                 $"cốp đầy và ba lô đã {w.Value:F1}/{w.Cap:F0} kg — xong phiên, đi bán cá");
 
         // Ba lo dung lai duoi nguong van la ba lo day: con ca ke tiep nang hon cho con lai thi
         // game khong cho cat, KG dung yen va nguong dung khong bao gio toi. Khong bat cai nay
-        // thi bot cau den sang van thay "chua du 29 kg".
+        // thi bot cau den sang van thay "chua du nguong dung".
         if (_endgameLastKg >= 0 && w.Value <= _endgameLastKg + 0.05)
         {
             _endgameFlat++;
@@ -651,7 +659,7 @@ internal sealed class FishingBot
         else _endgameFlat = 0;
         _endgameLastKg = w.Value;
 
-        Emit($"cốp đầy — ba lô {w.Value:F1}/{w.Cap:F0} kg, câu tiếp tới {_cfg.BagFullStopKg:F1} kg");
+        Emit($"cốp đầy — ba lô {w.Value:F1}/{w.Cap:F0} kg, câu tiếp tới {stopKg:F1} kg");
         SetPhase(FishingPhase.WaitingForBite);
     }
 
@@ -855,7 +863,7 @@ internal sealed class FishingBot
             // Copy ra day chu khong phoi _dumper: no bi set null trong finally cua
             // luong bot, UI giu tham chieu la dua.
             BagKg = _lastBagKg,
-            BagCapKg = _cfg.BagCapKg,
+            BagCapKg = _lastBagCap > 0 ? _lastBagCap : _cfg.BagCapKg,
             PendingFishKg = d is null || _lastBagKg < 0 ? -1 : d.PendingFishKg(_lastBagKg),
             TrunkFreeKg = d?.TrunkFreeKg ?? -1,
             TrunkCapKg = _cfg.TrunkCapKg,
