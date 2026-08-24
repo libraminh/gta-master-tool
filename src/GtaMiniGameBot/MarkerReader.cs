@@ -241,6 +241,33 @@ internal sealed class MarkerReader : IDisposable
         return outp;
     }
 
+    /// <summary>
+    /// Gộp lý do bị loại của mọi ứng viên, kèm khối to nhất bị bỏ — để log nói được VÌ SAO không
+    /// có mốc, chứ không chỉ nói là không có.
+    ///
+    /// Vì sao đáng thêm: log 25/08 lặp đúng một câu "không thấy khối vàng nào hợp lệ" suốt lúc bot
+    /// đứng cách mốc có 7 đơn vị cự ly — chỗ đó mốc phải to đầy khung. Câu đó không phân biệt được
+    /// "bị hộp bóng nhân vật nuốt" với "nhỏ quá cửa diện tích", mà hai ca đó sửa theo hai hướng
+    /// ngược nhau.
+    /// </summary>
+    private static string WhyNone(List<MarkerCandidate> all)
+    {
+        if (all is null || all.Count == 0) return " (không có khối vàng nào trong vùng quét)";
+
+        int sil = all.Count(c => c.InSilhouette);
+        var biggest = all.OrderByDescending(c => c.AreaRef).First();
+
+        var byReason = all
+            .Where(c => !c.Ok)
+            .GroupBy(c => c.Reject)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}×{g.Count()}");
+
+        return $" ({all.Count} khối, {sil} trùng bóng nhân vật; " +
+               $"to nhất dt={biggest.AreaRef:F0}{(biggest.InSilhouette ? " TRÙNG BÓNG" : "")}; " +
+               $"{string.Join(", ", byReason)})";
+    }
+
     private static Rectangle Shrink(Rectangle r, int step) =>
         new(r.X / step, r.Y / step, Math.Max(1, r.Width / step), Math.Max(1, r.Height / step));
 
@@ -255,7 +282,8 @@ internal sealed class MarkerReader : IDisposable
     /// </summary>
     public MarkerFix Update(long nowMs, int yawCounts)
     {
-        var best = Scan()
+        var all = Scan();
+        var best = all
             .Where(c => c.Ok)
             .OrderByDescending(c => c.AreaRef)
             .FirstOrDefault();
@@ -264,7 +292,7 @@ internal sealed class MarkerReader : IDisposable
         {
             _hasPrev = false;
             _streak = 0;
-            return Hold(nowMs, "không thấy khối vàng nào hợp lệ");
+            return Hold(nowMs, "không thấy khối vàng nào hợp lệ" + WhyNone(all));
         }
 
         // Khoi vang nay co phai chinh cai moc dang khoa khong. Neu dung thi khong bat kiem thi sai

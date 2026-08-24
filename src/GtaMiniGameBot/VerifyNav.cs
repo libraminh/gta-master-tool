@@ -409,6 +409,77 @@ internal static class VerifyNav
                           $"mở lại={opened} {first}");
         }
 
+        // --- 8. Mat dau cham -> KHONG duoc bao ket, phai tu nhan la khong ket luan duoc.
+        //
+        // Ca nay dung so lieu log 25/08 01:00:10–01:00:13: bot dang khoa moc 3D, di that (dat troi
+        // 3.3, tren nguong), nhung chấm minimap mat dau nen khong con mau moi. Ban cu van tra
+        // Ready=true va Δ tinh ra 0 — ma 0 > −MinProgressRef nen bao KET, cat ngang mot pha tiep
+        // can dang chay ngon. Do chinh la loi giet ca phien chay hom do.
+        {
+            var pt = new ProgressTracker(nav);
+            for (long t = 0; t <= 3200; t += 100) pt.Push(t, 7.0);
+
+            long stale = 3200 + nav.ProgressStaleMs + 500;
+            fail += Check("mất dấu chấm → không kết luận (không được báo kẹt)",
+                          !pt.Ready(stale) && !pt.Stalled(stale),
+                          $"sau {stale - 3200}ms không có mẫu mới: ready={pt.Ready(stale)} " +
+                          $"stalled={pt.Stalled(stale)}");
+        }
+
+        // --- 9. Cham chop tat vai khung thi VAN phai ket luan duoc — khong duoc nhay cam qua.
+        {
+            var pt = new ProgressTracker(nav);
+            for (long t = 0; t <= 3200; t += 100) pt.Push(t, 31.0);
+
+            long blink = 3200 + Math.Max(0, nav.ProgressStaleMs - 200);
+            fail += Check("chấm chớp tắt trong hạn tươi → vẫn kết luận được",
+                          pt.Ready(blink) && pt.Stalled(blink),
+                          $"sau {blink - 3200}ms: ready={pt.Ready(blink)} Δ={pt.Delta(blink):F2}");
+        }
+
+        // --- 10. Thang day nhan vat RA XA dan -> khong duoc tuyen "thoat" o cho xa hon luc mo.
+        //
+        // Chuoi cu ly lay thang tu log 25/08 00:59:31–00:59:48: dot mo o 7, cac bac day ra
+        // 8 → 7 → 10, roi cu lui keo ve 9 va duoc tuyen "thoat". Ban cu sai vi MarkDistance dat
+        // lai chinh moc dung de phan xu, nen bac nao cung chi phai hon bac TRUOC.
+        {
+            var lad = new EscapeLadder(nav);
+            lad.Open(7.0, preferRight: true);
+
+            foreach (double d in new[] { 8.0, 7.0, 10.0 })
+            {
+                lad.Next();
+                lad.MarkDistance(d);
+            }
+            lad.Next();                                   // lui + doi ben
+            lad.MarkDistance(10.0);
+
+            bool wouldClose = 9.0 <= lad.StartDist - nav.MinProgressRef;
+
+            fail += Check("thang đẩy ra xa → 9 không được tính là thoát khỏi đợt mở ở 7",
+                          !wouldClose && Math.Abs(lad.StartDist - 7.0) < 0.001 &&
+                          Math.Abs(lad.LastDist - 10.0) < 0.001,
+                          $"đầu đợt={lad.StartDist:F0} trước bậc={lad.LastDist:F0} " +
+                          $"→ xa=9 {(wouldClose ? "ĐÓNG ĐỢT (sai)" : "leo tiếp (đúng)")}");
+        }
+
+        // --- 11. Han quet phai du mot vong 360 do o toc do quay THAT.
+        //
+        // Log 25/08: hieu chuan ra 16.89 count/do, quet 18 count moi 50 ms → 21.3 °/s → mot vong
+        // can 16.9 s, ma han cu la 12 s. Ca ba luot deu chet vi bo cuoc o khoang 256°.
+        {
+            double cpd = 16.89;
+            double degPerTick = nav.ScanYawCounts / cpd;
+            double fullTurnMs = 360.0 / degPerTick * nav.TickMs;
+            double budget = Math.Max(nav.ScanTimeoutMs,
+                                     Math.Min(fullTurnMs * nav.ScanTurnMargin, nav.ScanMaxMs));
+
+            fail += Check("hạn quét phủ đủ 360° ở tốc độ quay đo được",
+                          budget >= fullTurnMs,
+                          $"một vòng cần {fullTurnMs / 1000:F1}s, hạn {budget / 1000:F1}s " +
+                          $"(sàn {nav.ScanTimeoutMs / 1000.0:F0}s)");
+        }
+
         return fail;
     }
 

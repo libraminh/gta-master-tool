@@ -248,6 +248,20 @@ internal sealed class NavSettings
     /// <summary>Cự ly phải giảm được ngần này (mốc 1080p) trong cửa sổ trên thì mới tính là có đi.</summary>
     public double MinProgressRef { get; set; } = 1.0;
 
+    /// <summary>
+    /// Mẫu cự ly mới nhất cũ quá ngần này ms thì bộ theo dõi tiến độ TỰ NHẬN là không kết luận
+    /// được, nhường lại cho tín hiệu đất trôi.
+    ///
+    /// Bắt buộc phải có, và thiếu nó là lỗi đã giết cả phiên chạy 25/08: mất dấu chấm thì không
+    /// còn mẫu mới, nhưng lịch sử cũ vẫn nằm đó — mốc cửa sổ trôi tới cho tới khi mọi mẫu đều nằm
+    /// trước nó, lúc đó Δ tính ra đúng 0, mà 0 > −<see cref="MinProgressRef"/> nên bot bị tuyên
+    /// KẸT VĨNH VIỄN. Nó nổ đúng vào lúc bot chuyển sang bám mốc 3D, tức pha sắp tới nơi.
+    ///
+    /// Đặt hơi lớn hơn <see cref="DotHoldMs"/> một chút: chấm chớp tắt vài khung là chuyện thường
+    /// và đã có cơ chế nhớ vị trí lo, chưa cần bỏ cả cửa sổ.
+    /// </summary>
+    public int ProgressStaleMs { get; set; } = 700;
+
     /// <summary>Cả lượt không cải thiện được cự ly quá ngần này ms thì bỏ lượt sớm.</summary>
     public int NoProgressAbortMs { get; set; } = 30000;
 
@@ -349,8 +363,25 @@ internal sealed class NavSettings
     /// <summary>Đọc mốc 3D và prompt cách nhau ít nhất ngần này ms (chúng đắt hơn minimap).</summary>
     public int HeavyReadEveryMs { get; set; } = 125;
 
-    /// <summary>Quét 360° tìm chấm vàng tối đa ngần này ms (đếm từ lúc VÀO pha quét).</summary>
+    /// <summary>
+    /// SÀN cho hạn giờ quét (đếm từ lúc VÀO pha quét). Hạn thật do
+    /// <c>NavBot.ScanBudgetMs()</c> tính ra từ tốc độ quay đo được, và luôn ≥ số này.
+    ///
+    /// Vì sao không dùng thẳng con số này: tốc độ quay phụ thuộc độ nhạy chuột của từng máy, nên
+    /// một hằng số cố định không thể bảo đảm quét đủ 360°. Log 25/08 đo được 16.89 count/độ →
+    /// 21.3 °/s → một vòng cần 16.9 s, trong khi hạn là 12 s. Cả ba lượt đều chết vì bỏ cuộc ở
+    /// khoảng 256°.
+    /// </summary>
     public int ScanTimeoutMs { get; set; } = 12000;
+
+    /// <summary>
+    /// Nhân thêm ngần này lần thời gian một vòng đầy, để chấm không bị bỏ sót vì rơi đúng vào
+    /// khung cuối cùng của vòng.
+    /// </summary>
+    public double ScanTurnMargin { get; set; } = 1.25;
+
+    /// <summary>Trần cứng cho hạn quét, phòng khi hiệu chuẩn ra tỉ lệ vô lý làm hạn phình vô hạn.</summary>
+    public int ScanMaxMs { get; set; } = 45000;
 
     /// <summary>Count chuột mỗi vòng lúc quét tìm chấm. Đủ để xoay hết một vòng trong vài giây.</summary>
     public int ScanYawCounts { get; set; } = 18;
@@ -449,6 +480,7 @@ internal sealed class NavSettings
 
         ProgressWindowMs = Math.Clamp(ProgressWindowMs <= 0 ? 3000 : ProgressWindowMs, 500, 20000);
         MinProgressRef = Math.Clamp(MinProgressRef <= 0 ? 1.0 : MinProgressRef, 0.1, 50.0);
+        ProgressStaleMs = Math.Clamp(ProgressStaleMs <= 0 ? 700 : ProgressStaleMs, 100, 10000);
         NoProgressAbortMs = Math.Clamp(NoProgressAbortMs <= 0 ? 30000 : NoProgressAbortMs, 3000, 300000);
 
         if (StrafeRungsMs is null || StrafeRungsMs.Length == 0)
@@ -475,6 +507,8 @@ internal sealed class NavSettings
         TickMs = Math.Clamp(TickMs <= 0 ? 50 : TickMs, 10, 500);
         HeavyReadEveryMs = Math.Clamp(HeavyReadEveryMs <= 0 ? 125 : HeavyReadEveryMs, 30, 2000);
         ScanTimeoutMs = Math.Clamp(ScanTimeoutMs <= 0 ? 12000 : ScanTimeoutMs, 1000, 120000);
+        ScanTurnMargin = Math.Clamp(ScanTurnMargin <= 0 ? 1.25 : ScanTurnMargin, 1.0, 4.0);
+        ScanMaxMs = Math.Clamp(ScanMaxMs <= 0 ? 45000 : ScanMaxMs, ScanTimeoutMs, 300000);
         ScanYawCounts = Math.Clamp(ScanYawCounts <= 0 ? 18 : ScanYawCounts, 1, 400);
         NearHoldMs = Math.Clamp(NearHoldMs < 0 ? 2500 : NearHoldMs, 0, 20000);
         NearPushMs = Math.Clamp(NearPushMs < 0 ? 2000 : NearPushMs, 0, 20000);

@@ -414,7 +414,7 @@ internal sealed class NavBot
 
                 // Dem tu luc VAO pha quet, khong tu dau luot: di duoc mot phut roi moi mat dau cham
                 // ma tinh la het gio quet thi luot nao cung chet ngay giay dau.
-                if (now - scanSince > _nav.ScanTimeoutMs)
+                if (now - scanSince > ScanBudgetMs())
                 {
                     detail = $"quét {(now - scanSince) / 1000.0:F0}s không thấy chấm vàng nào";
                     ReleaseAll();
@@ -423,7 +423,8 @@ internal sealed class NavBot
 
                 Hold(w: false, a: false, d: false, s: false, shift: false);
                 Yaw(_nav.ScanYawCounts);
-                Trace(ref lastLog, now, $"quét tìm chấm ({(now - scanSince) / 1000.0:F1}s)");
+                Trace(ref lastLog, now, $"quét tìm chấm ({(now - scanSince) / 1000.0:F1}s" +
+                                        $"/{ScanBudgetMs() / 1000.0:F0}s)");
                 continue;
             }
 
@@ -440,6 +441,10 @@ internal sealed class NavBot
                 // Mat dau cham dung luc cham diem (dang bam moc 3D, hoac cham bi che): khong co cu
                 // ly de so, roi ve tin hieu nhanh. Coi "khong co cu ly" la "chua thoat" thi bot se
                 // leo thang oan trong khi no dang di ngon lanh theo moc.
+                //
+                // So voi StartDist cua CA DOT, khong phai vi tri truoc bac vua roi: thang co the
+                // day nhan vat ra xa dan (log 25/08: 7 → 8 → 7 → 10), va lay moc theo tung bac thi
+                // mot cu keo ve 9 cung tinh la "thoat" — dong dot o cho xa hon luc mo.
                 bool better = dot.Found
                     ? dot.DistRef <= _escape.StartDist - _nav.MinProgressRef
                     : stillSince == 0;
@@ -457,7 +462,8 @@ internal sealed class NavBot
                     // Da co bang chung: di binh thuong ca quang ma cu ly khong nhuc nhich. Leo bac
                     // NGAY, khong cho bo theo doi gom lai du 3 s lich su.
                     Emit($"chưa thoát (xa {(dot.Found ? dot.DistRef.ToString("F0") : "?")} " +
-                         $"so với {_escape.StartDist:F0}) — leo bậc");
+                         $"so với đầu đợt {_escape.StartDist:F0}, trước bậc {_escape.LastDist:F0}) " +
+                         "— leo bậc");
 
                     if (!RunStep(ct, dot))
                     {
@@ -541,6 +547,32 @@ internal sealed class NavBot
                 $"Δxa={(_progress.Ready(now) ? _progress.Delta(now).ToString("+0.0;-0.0;0.0") : "?")} " +
                 $"đất={flow:F1} {PromptText(prompt)} {(marker.Locked ? "mốc✓" : marker.Note)}");
         }
+    }
+
+    /// <summary>
+    /// Hạn giờ quét, tính đủ cho ÍT NHẤT một vòng 360° cộng biên.
+    ///
+    /// Vì sao không để hằng số: tốc độ quay khi quét là <c>ScanYawCounts</c> count mỗi
+    /// <c>TickMs</c>, đổi ra độ thì phải chia cho <see cref="_countsPerDeg"/> — con số chỉ biết
+    /// được SAU khi hiệu chuẩn, và nó phụ thuộc độ nhạy chuột của từng máy.
+    ///
+    /// Log 25/08 cho thấy hậu quả khi bỏ qua: đo được 16.89 count/độ → 18 count mỗi 50 ms là
+    /// 21.3 °/s → một vòng cần 16.9 s, trong khi <c>ScanTimeoutMs</c> là 12 s. Bot không bao giờ
+    /// quét hết một vòng, chỉ tới ~256° rồi bỏ lượt — mục tiêu nằm trong 100° còn lại thì vĩnh
+    /// viễn không thấy. Cả ba lượt của phiên đó đều chết đúng kiểu này.
+    ///
+    /// Vẫn tôn trọng <c>ScanTimeoutMs</c> làm sàn: người dùng chỉnh nó lên thì phải có tác dụng.
+    /// </summary>
+    private long ScanBudgetMs()
+    {
+        double cpd = _countsPerDeg > 0 ? _countsPerDeg : _nav.FallbackCountsPerDeg;
+        double degPerTick = _nav.ScanYawCounts / Math.Max(0.2, cpd);
+        if (degPerTick <= 0) return _nav.ScanTimeoutMs;
+
+        double ticks = 360.0 / degPerTick;
+        double fullTurnMs = ticks * Math.Max(1, _nav.TickMs) * _nav.ScanTurnMargin;
+
+        return (long)Math.Max(_nav.ScanTimeoutMs, Math.Min(fullTurnMs, _nav.ScanMaxMs));
     }
 
     /// <summary>Bấm E xong thì chờ minigame hiện ra.</summary>
