@@ -66,8 +66,15 @@ internal sealed class NavSettings
     /// </summary>
     public int PitchDownCounts { get; set; } = 1200;
 
-    /// <summary>Từ chốt dưới ngẩng lên ngần này count để về góc nhìn đi đường.</summary>
-    public int PitchUpCounts { get; set; } = 520;
+    /// <summary>
+    /// Từ chốt dưới ngẩng lên ngần này count để về góc nhìn đi đường.
+    ///
+    /// 380 là số cho GÓC 1 và nó CHƯA được đo trong game — tầm pitch góc 1 khác góc 3 (số cũ 520
+    /// đo ở góc 3), mà đây là loại hằng số chỉ đo được bằng một lượt chạy thật. Nếu lượt đầu thấy
+    /// bot nhìn quá cao (mất mốc dưới đất) thì hạ xuống, nhìn quá thấp (chỉ thấy mặt đường) thì
+    /// nâng lên.
+    /// </summary>
+    public int PitchUpCounts { get; set; } = 380;
 
     /// <summary>Chia cú dí/ngẩng thành từng nhát ngần này count, tránh bắn một phát quá lớn.</summary>
     public int PitchStepCounts { get; set; } = 120;
@@ -142,7 +149,11 @@ internal sealed class NavSettings
     /// </summary>
     public double MarkerAreaMinRef { get; set; } = 900.0;
 
-    public double MarkerAreaMaxRef { get; set; } = 80000.0;
+    /// <summary>
+    /// Trần diện tích. Nới rộng hẳn cho góc 1: đứng trong cột sáng thì nó trùm phần lớn khung, mà
+    /// bị loại "quá to" đúng lúc đó là mất mốc ngay khoảnh khắc cần nó nhất — sát điểm làm.
+    /// </summary>
+    public double MarkerAreaMaxRef { get; set; } = 400000.0;
 
     /// <summary>Quét mốc theo bước này (pixel) để giảm chi phí — mốc to nên không cần từng pixel.</summary>
     public int MarkerSampleStep { get; set; } = 2;
@@ -161,14 +172,20 @@ internal sealed class NavSettings
 
     /// <summary>
     /// Hộp che BÓNG NHÂN VẬT, tỉ lệ theo màn hình: (rộng, cao) tính từ đáy màn, canh giữa.
+    /// 0 = TẮT, và đó là mặc định vì job này chạy ở GÓC NHÌN THỨ NHẤT.
     ///
-    /// Bắt buộc phải có: logo "FLASH" vàng sau lưng áo lọt hết mọi cửa hình học (đo trên ảnh thật:
-    /// ~77×48 px quy về mốc 1080p, sat/val đều cao). Đây là lớp chặn rẻ; lớp chắc chắn là
-    /// <see cref="ParallaxMinRatio"/>.
+    /// Hộp này sinh ra cho góc 3, để chặn logo "FLASH" vàng sau lưng áo — thứ lọt hết mọi cửa hình
+    /// học (đo trên ảnh thật: ~77×48 px quy về mốc 1080p, sat/val đều cao). Ở góc 1 không có nhân
+    /// vật trên màn, nên hộp 410×648 ngay đáy giữa màn chỉ còn là VÙNG CHẾT — mà đó đúng là chỗ
+    /// mốc vàng chiếm khi đứng sát nó. Bản Python cũng chạy góc 1 và không hề có hộp tương ứng.
+    ///
+    /// Hệ quả phải nhớ: bỏ hộp đi thì <see cref="ParallaxMinPxRef"/> thành hàng rào DUY NHẤT chặn
+    /// vật vàng đứng im (biển báo, đèn, tay cầm vũ khí). Ảnh <c>nav-pair-a/b</c> đúng chuẩn vì thế
+    /// mà quan trọng hẳn lên — nó là ca kiểm duy nhất soi được hàng rào đó trên khung thật.
     /// </summary>
-    public double SilhouetteWidthFrac { get; set; } = 0.16;
+    public double SilhouetteWidthFrac { get; set; } = 0.0;
 
-    public double SilhouetteHeightFrac { get; set; } = 0.45;
+    public double SilhouetteHeightFrac { get; set; } = 0.0;
 
     /// <summary>
     /// Kiểm THỊ SAI: camera xoay sang phải thì vật TRONG THẾ GIỚI phải trôi sang TRÁI trên màn, và
@@ -311,14 +328,44 @@ internal sealed class NavSettings
 
     // ---------------------------------------------------------------- di chuyen
 
-    /// <summary>Giữ Shift khi sai số góc nhỏ hơn ngần này VÀ còn xa.</summary>
-    public double SprintMaxDeg { get; set; } = 12.0;
+    /// <summary>
+    /// Giữ Shift khi sai số góc nhỏ hơn ngần này. Mốc Python <c>sprint_angle_deg 52.0</c>.
+    ///
+    /// Rộng tay là cố ý: bản cũ để 12° nên hễ lệch một chút là bỏ chạy, mà đi đường thì lúc nào
+    /// cũng lệch một chút. Đây là nút ĐẦU TIÊN hạ xuống (~30) nếu log cho thấy bot chạy vòng cung
+    /// húc vật cản — chạy nhanh mà lệch thì cú va cũng nặng hơn.
+    /// </summary>
+    public double SprintMaxDeg { get; set; } = 50.0;
 
-    /// <summary>Còn xa hơn ngần này (pixel minimap ở mốc 1080p) thì mới cho chạy.</summary>
-    public double SprintMinDistRef { get; set; } = 26.0;
+    /// <summary>
+    /// Thấy khối vàng hợp lệ to từ ngần này (mốc 1080p) trở lên thì THÔI CHẠY, chuyển sang đi bộ.
+    ///
+    /// Đây là luật "chỉ đi bộ khi đã thấy vòng tròn vàng dưới đất", lấy thẳng từ bản Python
+    /// (<c>world_sprint_area_max 2600</c>). Bản cũ dùng cự ly minimap (<c>SprintMinDistRef 26</c>)
+    /// và tắt chạy quá sớm: log 25/08 chỉ chạy được 32→29 rồi đi bộ suốt quãng 26→7.
+    ///
+    /// Hai ảnh thật kẹp đúng hai bên ngưỡng này, nên nó không phải số bịa: <c>nav-far</c> không có
+    /// ứng viên hợp lệ nào (→ chạy), <c>nav-marker</c> ứng viên lớn nhất dt=5443 (→ đi bộ).
+    /// </summary>
+    public double WalkMarkerAreaRef { get; set; } = 2600.0;
 
-    /// <summary>Đang bám mốc 3D thì không chạy nữa — tới nơi rồi, vọt qua là mất prompt.</summary>
-    public bool SprintOnlyWhenFar { get; set; } = true;
+    /// <summary>
+    /// Lớp chặn dự phòng: cự ly minimap xuống dưới ngần này thì đi bộ, kể cả khi chưa thấy mốc.
+    ///
+    /// Cần vì bộ dò mốc có thể trượt đúng lúc tới gần — mốc khuất sau cột, hoặc cả cụm vàng vượt
+    /// <see cref="MarkerAreaMaxRef"/>. Không có lớp này thì bot chạy thẳng vọt qua điểm làm.
+    /// </summary>
+    public double WalkMinDistRef { get; set; } = 8.0;
+
+    /// <summary>
+    /// Cự ly (mốc 1080p) coi là "đã tới gần" — bật <c>wasClose</c>, tức mở đường cho
+    /// <see cref="NearPushMs"/>/<see cref="NearHoldMs"/> và cho phép đọc prompt.
+    ///
+    /// Tách riêng, KHÔNG suy từ ngưỡng chạy nữa: bản cũ viết <c>SprintMinDistRef * 2</c>, nên chỉnh
+    /// luật chạy là vô tình chỉnh luôn cả cơ chế "đã từng tới gần" — hai thứ chẳng liên quan gì
+    /// nhau. Giá trị 52 giữ đúng hành vi cũ (26 × 2).
+    /// </summary>
+    public double NearDistRef { get; set; } = 52.0;
 
     // ---------------------------------------------------------------- prompt E
 
@@ -493,8 +540,10 @@ internal sealed class NavSettings
         DetourBiasDeg = Math.Clamp(DetourBiasDeg < 0 ? 25.0 : DetourBiasDeg, 0.0, 90.0);
         DetourBiasMs = Math.Clamp(DetourBiasMs < 0 ? 2000 : DetourBiasMs, 0, 20000);
 
-        SprintMaxDeg = Math.Clamp(SprintMaxDeg < 0 ? 12.0 : SprintMaxDeg, 0.0, 90.0);
-        SprintMinDistRef = Math.Clamp(SprintMinDistRef < 0 ? 26.0 : SprintMinDistRef, 0.0, 400.0);
+        SprintMaxDeg = Math.Clamp(SprintMaxDeg < 0 ? 50.0 : SprintMaxDeg, 0.0, 90.0);
+        WalkMarkerAreaRef = Math.Clamp(WalkMarkerAreaRef <= 0 ? 2600.0 : WalkMarkerAreaRef, 50.0, 2000000.0);
+        WalkMinDistRef = Math.Clamp(WalkMinDistRef < 0 ? 8.0 : WalkMinDistRef, 0.0, 400.0);
+        NearDistRef = Math.Clamp(NearDistRef <= 0 ? 52.0 : NearDistRef, 1.0, 800.0);
 
         PromptNccMin = Math.Clamp(PromptNccMin <= 0 ? 0.62 : PromptNccMin, 0.10, 0.99);
         PromptInkMinBright = Math.Clamp(PromptInkMinBright <= 0 ? 240 : PromptInkMinBright, 80, 252);

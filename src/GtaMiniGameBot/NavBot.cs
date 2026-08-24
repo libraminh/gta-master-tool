@@ -309,7 +309,7 @@ internal sealed class NavBot
                 return NavStopReason.Unreachable;
             }
 
-            bool close = dot.Found && dot.DistRef <= _nav.SprintMinDistRef * 2;
+            bool close = dot.Found && dot.DistRef <= _nav.NearDistRef;
             if (close) { wasClose = true; closeSince = now; }
 
             bool heavy = now - lastHeavy >= _nav.HeavyReadEveryMs;
@@ -488,11 +488,12 @@ internal sealed class NavBot
             if (bias == 0) TrackWrongWay(errDeg, source);
 
             bool aligned = Math.Abs(steer) <= _nav.TurnOnlyDeg;
-            bool sprint = aligned
-                          && bias == 0
-                          && Math.Abs(steer) <= _nav.SprintMaxDeg
-                          && dot.Found && dot.DistRef >= _nav.SprintMinDistRef
-                          && !(_nav.SprintOnlyWhenFar && marker.Locked);
+
+            // Chay cho toi khi THAY VONG TRON VANG — khong con cua cu ly toi thieu, va goc cho phep
+            // rong hon nhieu. Theo ban Python (sprint_angle_deg 52, world_sprint_area_max 2600).
+            // Ban cu tat chay tu xa=26 nen di bo gan het quang duong: log 25/08 chi chay duoc
+            // 32→29 roi di bo suot 26→7. Luat nam trong ShouldSprint/NearRing de kiem duoc offline.
+            bool sprint = ShouldSprint(_nav, steer, bias, marker.SeenAreaRef, dot.Found, dot.DistRef);
 
             Hold(w: aligned, a: false, d: false, s: false, shift: sprint);
 
@@ -542,7 +543,8 @@ internal sealed class NavBot
 
             Trace(ref lastLog, now,
                 $"{source} lệch={errDeg:F1}°{(bias == 0 ? "" : $" (lệch né {bias:+0;-0}°)")} " +
-                $"chuột={counts:+#;-#;0} {(sprint ? "chạy" : aligned ? "đi" : "xoay tại chỗ")} " +
+                $"chuột={counts:+#;-#;0} " +
+                $"{(sprint ? "chạy" : aligned ? $"đi({WhyWalk(marker, dot)})" : "xoay tại chỗ")} " +
                 $"xa={(dot.Found ? dot.DistRef.ToString("F0") : "?")} " +
                 $"Δxa={(_progress.Ready(now) ? _progress.Delta(now).ToString("+0.0;-0.0;0.0") : "?")} " +
                 $"đất={flow:F1} {PromptText(prompt)} {(marker.Locked ? "mốc✓" : marker.Note)}");
@@ -649,6 +651,40 @@ internal sealed class NavBot
 
         double k = (_detourUntil - now) / (double)_nav.DetourBiasMs;
         return _nav.DetourBiasDeg * Math.Clamp(k, 0, 1) * (_detourSide ? +1 : -1);
+    }
+
+    /// <summary>
+    /// "Đã thấy vòng tròn vàng dưới đất chưa" — mốc để chuyển từ CHẠY sang ĐI BỘ.
+    ///
+    /// Tách ra thành hàm THUẦN và static để <c>--verify-nav</c> chấm được cả bảng quyết định mà
+    /// không cần dựng khung hình nào. Vòng lái là vòng kín: mỗi lần chỉnh ngưỡng ở đây mà phải vào
+    /// game mới biết đúng sai thì rất đắt.
+    /// </summary>
+    internal static bool NearRing(NavSettings nav, double seenAreaRef, bool dotFound, double distRef) =>
+        seenAreaRef >= nav.WalkMarkerAreaRef || (dotFound && distRef <= nav.WalkMinDistRef);
+
+    /// <summary>
+    /// Có được phép chạy không. Cũng thuần, cùng lý do trên.
+    /// </summary>
+    internal static bool ShouldSprint(NavSettings nav, double steerDeg, double bias,
+                                      double seenAreaRef, bool dotFound, double distRef)
+    {
+        bool aligned = Math.Abs(steerDeg) <= nav.TurnOnlyDeg;
+        return aligned
+               && bias == 0
+               && Math.Abs(steerDeg) <= nav.SprintMaxDeg
+               && !NearRing(nav, seenAreaRef, dotFound, distRef);
+    }
+
+    /// <summary>
+    /// Vì sao đang đi bộ chứ không chạy. Chỉ để log — nhưng là dòng log quan trọng nhất khi cần
+    /// biết bot có tắt chạy quá sớm không, đúng thứ đã phải mò bằng tay từ log 25/08.
+    /// </summary>
+    private string WhyWalk(MarkerFix marker, DotFix dot)
+    {
+        if (marker.SeenAreaRef >= _nav.WalkMarkerAreaRef) return $"thấy vòng dt={marker.SeenAreaRef:F0}";
+        if (dot.Found && dot.DistRef <= _nav.WalkMinDistRef) return $"sát đích xa={dot.DistRef:F0}";
+        return "lệch quá";
     }
 
     private static string SideName(bool right) => right ? "PHẢI" : "TRÁI";
