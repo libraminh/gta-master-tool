@@ -43,6 +43,7 @@ internal sealed class FishingBot
     private TrunkDumper _dumper;
     private int _catches;
     private int _catchesSinceDump;
+    private int _released;
 
     /// <summary>KG ba lô lần cân trước, chỉ dùng ở chặng cuối phiên. -1 = chưa cân lần nào.</summary>
     private double _endgameLastKg = -1;
@@ -167,6 +168,8 @@ internal sealed class FishingBot
                 Emit($"dò CẤT VÀO trong vùng {reader.KeepBandRegion.Width}×{reader.KeepBandRegion.Height} " +
                      $"@ {reader.KeepBandRegion.X},{reader.KeepBandRegion.Y}, màu nền nút " +
                      $"#{reader.KeepColor.R:X2}{reader.KeepColor.G:X2}{reader.KeepColor.B:X2} ±{_cfg.KeepColorTol}");
+
+            EmitReleasePlan();
 
             Emit($"bắt đầu. chờ cắn {_cfg.WaitBiteMs} ms, giữ S tối đa {_cfg.FightTimeoutMs} ms, " +
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
@@ -415,29 +418,58 @@ internal sealed class FishingBot
             else
             {
                 // Không dò được: về cách cũ, click ô đã khoanh. Đúng với con cá tên ngắn.
+                // Không thả mù: lệch sang THẢ RA khi không biết chỗ nút là bấm nhầm BÁN NGAY.
                 var abs = FishingConfig.ToAbsolute(_screen, _profile.Keep);
                 Emit($"không dò được nút trong {_cfg.WaitKeepMs} ms — click ô đã khoanh");
                 ClickKeep(new Point(abs.Left + abs.Width / 2, abs.Top + abs.Height / 2), ct);
             }
+
+            AfterKept(reader, ct);
+            return;
         }
-        else
+
+        Emit($"thấy nút {found.KeepRect.Width}×{found.KeepRect.Height} @ {found.KeepRect.X},{found.KeepRect.Y}" +
+             $"  dens={found.KeepDensity:F2}  ncc={found.KeepScore:F3}");
+
+        if (TryAutoRelease(found, reader, ct))
+            return;
+
+        SetPhase(FishingPhase.ClickingKeep);
+        ClickKeep(found.KeepClick, ct);
+        RetryClicks(reader, found.KeepRect, keep: true, ct);
+        AfterKept(reader, ct);
+    }
+
+    /// <summary>
+    /// Chỉ thả khi dò được CẤT VÀO thật (biết chỗ hàng nút) và tên khớp danh sách.
+    /// Không chắc / thiếu mẫu → false, bên gọi cất vào như cũ.
+    /// </summary>
+    private bool TryAutoRelease(FishingSnapshot found, FishingReader reader, CancellationToken ct)
+    {
+        if (_cfg.AutoReleaseEnabled != true) return false;
+        if (_profile.AutoReleaseItems is not { Count: > 0 }) return false;
+
+        var guess = CatchIdentifier.Identify(_cfg, _screen, _profile);
+        if (guess.Name is null)
         {
-            Emit($"thấy nút {found.KeepRect.Width}×{found.KeepRect.Height} @ {found.KeepRect.X},{found.KeepRect.Y}" +
-                 $"  dens={found.KeepDensity:F2}  ncc={found.KeepScore:F3}");
-            SetPhase(FishingPhase.ClickingKeep);
-            ClickKeep(found.KeepClick, ct);
-
-            var anchor = found.KeepRect;
-            for (int i = 0; i < _cfg.KeepClickRetries; i++)
-            {
-                var still = WaitForKeepGone(reader, anchor, ct);
-                if (still is null) break;
-                Emit($"nút vẫn còn sau {_cfg.KeepGoneMs} ms — click lại (lần {i + 1}/{_cfg.KeepClickRetries})");
-                ClickKeep(still.KeepClick, ct);
-                anchor = still.KeepRect;
-            }
+            Emit("giữ — " + (guess.Note ?? "không nhận được tên"));
+            return false;
         }
 
+        Emit($"thả {guess.Name} (ncc={guess.Score:F2})");
+        SetPhase(FishingPhase.ClickingRelease);
+        ClickRelease(ReleasePoint(found), ct);
+        RetryClicks(reader, found.KeepRect, keep: false, ct);
+
+        _released++;
+        try { SnapshotReady?.Invoke(reader.Read()); } catch { }
+        Sleep(ct, _cfg.AfterKeepCastMs);
+        Cast(ct, "thả câu", waitRelease: false);
+        return true;
+    }
+
+    private void AfterKept(FishingReader reader, CancellationToken ct)
+    {
         // Dem ca o DAY, khong o trong MaybeDump. O do no nam sau chot `_dumper is null`
         // nen chi dem khi bat do cop — tuc con so "ca phien nay" bien mat hoan toan
         // khi nguoi dung tat do cop. Cho nay la duong da chac chan co cu click cat ca.
@@ -451,6 +483,51 @@ internal sealed class FishingBot
         // animation cất cá nuốt mất phím 4; cách bắt sau khi đã trượt nằm ở vòng lặp chính.
         Sleep(ct, _cfg.AfterKeepCastMs);
         Cast(ct, "thả câu", waitRelease: false);
+    }
+
+    private void RetryClicks(FishingReader reader, Rectangle anchor, bool keep, CancellationToken ct)
+    {
+        for (int i = 0; i < _cfg.KeepClickRetries; i++)
+        {
+            var still = WaitForKeepGone(reader, anchor, ct);
+            if (still is null) break;
+            Emit($"nút vẫn còn sau {_cfg.KeepGoneMs} ms — click lại (lần {i + 1}/{_cfg.KeepClickRetries})");
+            if (keep) ClickKeep(still.KeepClick, ct);
+            else ClickRelease(ReleasePoint(still), ct);
+            anchor = still.KeepRect;
+        }
+    }
+
+    private Point ReleasePoint(FishingSnapshot snap)
+    {
+        var r = snap.KeepRect;
+        int gap = _cfg.ReleaseGapPx;
+        int x = r.Right + gap + r.Width / 2;
+        int y = snap.KeepClick.IsEmpty ? r.Top + r.Height / 2 : snap.KeepClick.Y;
+        return new Point(x, y);
+    }
+
+    private void EmitReleasePlan()
+    {
+        if (_cfg.AutoReleaseEnabled != true)
+        {
+            Emit("tự thả: tắt");
+            return;
+        }
+
+        var items = _profile.AutoReleaseItems ?? new List<string>();
+        if (items.Count == 0)
+        {
+            Emit("tự thả: bật nhưng chưa chọn loại — mọi con sẽ cất vào");
+            return;
+        }
+
+        int have = items.Count(n => FishingConfig.HasCatchTitleTemplate(_profile.Key, n));
+        Emit($"tự thả: {string.Join(", ", items)} ({have}/{items.Count} có mẫu tên)");
+        if (!_profile.CatchTitle.IsSet)
+            Emit("tự thả: chưa khoanh ô tên cá — sẽ cất vào như cũ (mở Loại thả ra để khoanh)");
+        else if (have == 0)
+            Emit("tự thả: chưa có mẫu tên — sẽ cất vào như cũ (chụp mẫu lúc panel đang hiện)");
     }
 
     private void SetUpDumper()
@@ -754,6 +831,17 @@ internal sealed class FishingBot
         InputSender.LeftUp();
     }
 
+    private void ClickRelease(Point p, CancellationToken ct)
+    {
+        WaitWindow(ct);
+        Emit($"click THẢ RA @ {p.X},{p.Y}");
+        InputSender.MoveCursorOnlySmooth(p.X, p.Y, _cfg.KeepMoveSteps);
+        Sleep(ct, _cfg.KeepHoverMs);
+        InputSender.LeftDown();
+        Sleep(ct, 60);
+        InputSender.LeftUp();
+    }
+
     /// <summary>
     /// Mot cua duy nhat cho moi cu tha — ca bay cho goi deu qua day, nen dat pha
     /// Casting va dem _casts o day la du, khong phai rai ra bay cho.
@@ -856,6 +944,7 @@ internal sealed class FishingBot
             FightTimeouts = _fightTimeouts,
             Catches = _catches,
             CatchesSinceDump = _catchesSinceDump,
+            Released = _released,
             CastRetries = _castRetries,
             CastConfirmRetries = _cfg.CastConfirmRetries,
             Fill01 = _lastFill,

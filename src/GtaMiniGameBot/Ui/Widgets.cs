@@ -14,7 +14,7 @@ namespace GtaMiniGameBot;
 /// </summary>
 internal sealed class PhaseTrack : DrawPanel
 {
-    private static readonly string[] Names = { "THẢ CÂU", "CHỜ CẮN", "GIỮ S", "CẤT VÀO", "ĐỔ CỐP" };
+    private static readonly string[] Names = { "THẢ CÂU", "CHỜ CẮN", "GIỮ S", "CẤT / THẢ", "ĐỔ CỐP" };
 
     private readonly string[] _subs = { "4 + Space", "", "", "", "" };
     private int _station = -1;
@@ -36,13 +36,15 @@ internal sealed class PhaseTrack : DrawPanel
         _subs[2] = st.Phase == FishingPhase.Fighting
             ? $"{st.PhaseMs / 1000.0:0.0} s"
             : $"tối đa {cfg.FightTimeoutMs / 1000} s";
-        _subs[3] = st.Phase == FishingPhase.ClickingKeep ? "đang click" : "chờ nút hiện";
+        _subs[3] = st.Phase == FishingPhase.ClickingRelease ? "đang thả"
+            : st.Phase == FishingPhase.ClickingKeep ? "đang click"
+            : "chờ nút hiện";
         _subs[4] = st.DumpOn
             ? st.TrunkFull ? "cốp đầy" : $"{st.CatchesSinceDump} con chưa đổ"
             : "tắt";
 
         // Nhanh quay lai sang len khi vua di qua no.
-        _loopWarm = st.Phase == FishingPhase.Casting && st.Casts > st.Bites + st.Catches;
+        _loopWarm = st.Phase == FishingPhase.Casting && st.Casts > st.Bites + st.Catches + st.Released;
 
         Invalidate();
     }
