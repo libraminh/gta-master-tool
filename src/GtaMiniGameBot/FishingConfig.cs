@@ -170,6 +170,18 @@ internal sealed class FishingProfile
     public List<string> FishItems { get; set; } = new();
 
     /// <summary>
+    /// Loài tự ấn THẢ RA khi câu được. Null = json cũ thiếu field, <see cref="Normalize"/>
+    /// điền mặc định (crayfish / Tôm càng). <c>[]</c> đã lưu = người dùng cố ý không thả gì.
+    /// </summary>
+    public List<string> AutoReleaseItems { get; set; }
+
+    /// <summary>
+    /// Ô chữ tên loài trên panel nhận cá (vd. "TÔM CÀNG"). Panel neo nên chữ không trượt
+    /// theo độ dài mô tả — khác hàng nút CẤT VÀO / THẢ RA.
+    /// </summary>
+    public FishingRect CatchTitle { get; set; } = new();
+
+    /// <summary>
     /// Vùng quét cao trùm mọi vị trí nút CẤT VÀO có thể trượt tới. Chưa khoanh thì
     /// suy từ <see cref="Keep"/> — xem <see cref="KeepSearchBand"/>.
     /// </summary>
@@ -225,6 +237,7 @@ internal sealed class FishingProfile
         Reject ??= new FishingRect();
         Keep ??= new FishingRect();
         KeepBand ??= new FishingRect();
+        CatchTitle ??= new FishingRect();
         BagWeight ??= new FishingRect();
         TrunkWeight ??= new FishingRect();
         BagHeader ??= new FishingRect();
@@ -246,6 +259,29 @@ internal sealed class FishingProfile
 
         FishSlots ??= new List<FishSlot>();
         FishSlots.RemoveAll(s => s is null || !s.IsValid);
+
+        FishItems ??= new List<string>();
+        // Null = json cũ thiếu field. [] đã lưu phải giữ nguyên — đó là "không thả gì".
+        AutoReleaseItems ??= new List<string> { "crayfish" };
+        AutoReleaseItems.RemoveAll(s => string.IsNullOrWhiteSpace(s));
+    }
+
+    /// <summary>Một dòng cho panel: đã chọn gì, đã có mẫu tên chưa.</summary>
+    public string DescribeReleaseStatus(string key)
+    {
+        var items = AutoReleaseItems ?? new List<string>();
+        if (items.Count == 0)
+            return "chưa chọn loại nào — mọi con sẽ cất vào";
+
+        int have = items.Count(n => FishingConfig.HasCatchTitleTemplate(key, n));
+        string names = string.Join(", ", items);
+        if (!CatchTitle.IsSet)
+            return $"{items.Count} loại: {names} — chưa khoanh ô tên, sẽ cất vào";
+        if (have == 0)
+            return $"{items.Count} loại: {names} — chưa có mẫu tên, sẽ cất vào";
+        return have == items.Count
+            ? $"{items.Count} loại: {names} · đủ mẫu"
+            : $"{items.Count} loại: {names} · {have}/{items.Count} có mẫu";
     }
 
     /// <summary>Thiếu gì để bật được đổ cốp — hiện thẳng trên panel thay vì để bot chết giữa chừng.</summary>
@@ -398,6 +434,24 @@ internal sealed class FishingConfig
     /// <see cref="Normalize"/> phân biệt "thiếu" với "người dùng tắt hẳn".
     /// </summary>
     public bool? BlindKeepClick { get; set; }
+
+    /// <summary>
+    /// Tự ấn THẢ RA khi tên trên panel khớp loài trong <see cref="FishingProfile.AutoReleaseItems"/>.
+    /// Nullable vì json cũ thiếu field — <see cref="Normalize"/> mặc định bật.
+    /// </summary>
+    public bool? AutoReleaseEnabled { get; set; }
+
+    /// <summary>
+    /// Khe giữa CẤT VÀO và THẢ RA (px). Click THẢ RA = mép phải CẤT VÀO + khe + nửa bề rộng nút.
+    /// Để thấp hơn khe thật một chút thì vẫn trúng nửa trái THẢ RA, tránh lệch sang BÁN NGAY.
+    /// </summary>
+    public int ReleaseGapPx { get; set; } = 8;
+
+    /// <summary>NCC tối thiểu giữa ô tên đang hiện và mẫu tên đã chụp thì mới dám thả.</summary>
+    public double CatchTitleNccMin { get; set; } = 0.75;
+
+    /// <summary>Cách biệt tối thiểu giữa loài nhất và nhì. Sát nhau = không chắc, cất vào.</summary>
+    public double CatchTitleMarginMin { get; set; } = 0.05;
 
     public int KeepAppearMs { get; set; } = 400;
     public int KeepGoneMs { get; set; } = 1_500;
@@ -653,6 +707,10 @@ internal sealed class FishingConfig
         if (DoneFill01 <= 0 || DoneFill01 > 1) DoneFill01 = 0.95;
         if (WaitKeepMs <= 0) WaitKeepMs = 8_000;
         BlindKeepClick ??= true;
+        AutoReleaseEnabled ??= true;
+        if (ReleaseGapPx < 0) ReleaseGapPx = 8;
+        if (CatchTitleNccMin is <= 0 or > 1) CatchTitleNccMin = 0.75;
+        if (CatchTitleMarginMin is < 0 or > 1) CatchTitleMarginMin = 0.05;
         if (KeepAppearMs <= 0) KeepAppearMs = 400;
         if (KeepGoneMs < 0) KeepGoneMs = 1_500;
         if (KeepHoverMs <= 0) KeepHoverMs = 320;
@@ -757,6 +815,28 @@ internal sealed class FishingConfig
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
     public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");
 
+    public static string CatchTitlePreviewPath(string key) => Path.Combine(ProfileDir(key), "catch-title.png");
+    public static string CatchTitleDir(string key) => Path.Combine(ProfileDir(key), "catch-titles");
+    public static string CatchTitlePath(string key, string name) =>
+        Path.Combine(CatchTitleDir(key), SanitizeItemId(name) + ".png");
+
+    public static bool HasCatchTitleTemplate(string key, string name) =>
+        !string.IsNullOrWhiteSpace(name) && File.Exists(CatchTitlePath(key, name));
+
+    /// <summary>Tên file mẫu tên — chỉ giữ ký tự an toàn, tránh path traversal từ tên vật phẩm.</summary>
+    public static string SanitizeItemId(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "";
+        var chars = name.Trim().ToCharArray();
+        for (int i = 0; i < chars.Length; i++)
+        {
+            char c = chars[i];
+            if (char.IsLetterOrDigit(c) || c is '_' or '-') continue;
+            chars[i] = '_';
+        }
+        return new string(chars);
+    }
+
     // ---------------- đổ cá vào cốp xe ----------------
 
     /// <summary>
@@ -818,7 +898,9 @@ internal sealed class FishingConfig
             }
         }
         catch { /* file hong -> config rong, user khoanh lai */ }
-        return new FishingConfig();
+        var empty = new FishingConfig();
+        empty.Normalize();
+        return empty;
     }
 
     public FishingProfile GetOrCreate(Screen screen)
@@ -841,6 +923,7 @@ internal sealed class FishingConfig
             p.Width = b.Width;
             p.Height = b.Height;
         }
+        p.Normalize();
         return p;
     }
 

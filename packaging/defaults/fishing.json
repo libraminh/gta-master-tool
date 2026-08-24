@@ -17,10 +17,10 @@
         "H": 34
       },
       "Reject": {
-        "X": 40,
+        "X": 50,
         "Y": 1021,
-        "W": 352,
-        "H": 82
+        "W": 342,
+        "H": 85
       },
       "Keep": {
         "X": 952,
@@ -143,6 +143,15 @@
         "striped_bass",
         "trout"
       ],
+      "AutoReleaseItems": [
+        "crayfish"
+      ],
+      "CatchTitle": {
+        "X": 928,
+        "Y": 352,
+        "W": 545,
+        "H": 137
+      },
       "KeepBand": {
         "X": 933,
         "Y": 625,
@@ -173,6 +182,10 @@
   "DoneFill01": 0.95,
   "WaitKeepMs": 8000,
   "BlindKeepClick": true,
+  "AutoReleaseEnabled": true,
+  "ReleaseGapPx": 8,
+  "CatchTitleNccMin": 0.75,
+  "CatchTitleMarginMin": 0.05,
   "KeepAppearMs": 400,
   "KeepGoneMs": 1500,
   "KeepHoverMs": 320,

@@ -1,10 +1,23 @@
 GtaMiniGameBot - ban portable
 =============================
 
+QUAN TRONG - lam truoc khi chay
+-------------------------------
+Neu may nay TUNG chay ban GtaMiniGameBot nao truoc day, XOA thu muc nay di:
+    %APPDATA%\GtaMiniGameBot
+
+App chi chep config sang khi ben do CHUA CO file. Khong xoa thi may se giu config
+cu va KHONG nhan duoc bo vung da khoanh san trong zip nay - bot chay nhu chua
+setup gi. May moi tinh chua tung chay thi bo qua muc nay.
+
+Do cung la cach reset ve trang khi canh chinh loan xa nga.
+
 Cach chay
 ---------
 1. Giai nen CA thu muc ra mot cho bat ky (Desktop, D:\tools, ...).
    Phai giu nguyen ca cac file va thu muc con, dung tach rieng file exe ra.
+   Rieng car-template.png BUOC PHAI nam canh exe - app doc no ngay tai do chu
+   khong chep vao %APPDATA% nhu cac file config khac.
 2. Chay GtaMiniGameBot.exe. Khong can cai .NET, tat ca da nam trong exe.
 3. Windows co the bao "Windows protected your PC" (SmartScreen) vi exe chua ky.
    Bam "More info" -> "Run anyway".
@@ -14,20 +27,31 @@ Yeu cau
 -------
 - Windows 10/11 64-bit.
 - Game chay o che do cua so hoac borderless.
-- Vung da khoanh san (job cau ca) canh cho man hinh 2560x1440. Man hinh khac do
-  phan giai thi van chay duoc nhung phai vao app khoanh lai vung cho dung.
+- Man hinh 2560x1440. Toan bo vung da khoanh la toa do pixel tuyet doi cho do
+  phan giai nay. Man hinh khac thi job Cau ca se doi khoanh lai tu dau va job
+  Gian khoan dau se doc sai cho. Job Tho dien va Tho mo khong phu thuoc do
+  phan giai.
 
 Da khoanh san nhung gi
 ----------------------
-Zip nay kem san toan bo vung + anh mau cua job CAU CA cho 2560x1440: thanh keo ca,
-mau con ca, nut Keep, cac o tui do / cop xe, menu radial va bo mau chu so de doc
-can nang. Chay len la dung duoc luon, khong phai setup lai tu dau.
+Chay len la dung duoc luon, khong phai setup lai:
 
-Cac job khac (gian khoan dau, tho mo) van phai tu canh chinh. Job tho moc thi xem
-muc rieng ben duoi.
+- CAU CA: day du. Thanh keo ca, mau con ca, nut Keep/Reject, luoi phim nhanh /
+  ba lo / cop xe, menu radial, bo mau chu so doc can nang, va bo 126 icon vat
+  pham de nhan dang ca theo icon.
+    + Tu do cop: BAT san. Bot nhan ca theo icon nen khong phu thuoc o khai bao.
+    + Tha ra (tu tha vat pham rac): BAT san, dang cai cho CRAYFISH (tom hum dat).
+      Muon them loai khac thi vao form Tha ra, khoanh ten cua loai do roi luu -
+      moi loai can mot mau ten rieng.
+- GIAN KHOAN DAU: day du, kem ca mau dong ho toc do (car-template.png).
+- THO MO: day du - job nay chi go phim theo nhip, khong can khoanh vung.
+- THO DIEN: day du. Cac vung duoc suy tu do phan giai nen chay o man hinh nao
+  cung duoc. Kem san mau "Tuong tac" cho che do tu di, nhung tu di de TAT san
+  - muon dung thi vao tab Dien tich o "tu di".
+- THO MOC: CHUA khoanh (xem muc rieng ben duoi). Job van chay nhung chi go E mu.
 
-Job Tho moc
------------
+Job Tho moc - cai duy nhat phai tu canh
+---------------------------------------
 Prompt "[E] KHAI THAC" gan vao GOC CAY chu khong phai HUD co dinh - do tren anh
 chup that cua cung mot cai cay, prompt nam o y=841 roi y=944 khi camera doi goc.
 Nen bot khong khoanh o co dinh ma quet trong mot BANG rong.
@@ -58,14 +82,13 @@ Du lieu nguoi dung
 ------------------
 Config, vung da khoanh va anh mau duoc luu o:
     %APPDATA%\GtaMiniGameBot
-Lan chay dau tien app se chep config.json, fishing.json, wood.json, car-template.png
-va cac thu muc fishing\, wood\ trong thu muc exe sang do lam mac dinh.
 
-QUAN TRONG: app chi chep sang khi ben do CHUA CO file do. Ai da tung chay ban cu
-roi thi se khong nhan duoc vung khoanh san - muon lay ban mac dinh moi thi xoa
-thu muc %APPDATA%\GtaMiniGameBot roi chay lai.
+Lan chay dau tien app chep tu thu muc exe sang do:
+  - file : fishing.json, config.json, hotkeys.json, miner.json, wood.json,
+           electric.json
+  - thu muc: fishing\, items\, electric\  (va wood\ neu co)
 
-Do cung la cach reset ve trang khi canh chinh loan xa nga.
+car-template.png KHONG duoc chep - app doc thang tu thu muc exe, nen dung xoa no.
 
 Luu y
 -----

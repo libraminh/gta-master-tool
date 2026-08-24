@@ -142,7 +142,7 @@
     "MaxAttempts": 3,
     "LogEveryMs": 1000
   },
-  "AutoWalk": true,
+  "AutoWalk": false,
   "AutoLoop": true,
   "Mode": "Both",
   "WindowMatch": "PlayXGTA",

@@ -23,6 +23,9 @@ internal sealed class FishingPanel : UserControl
     private readonly DarkButton _btnKeepBand = new();
     private readonly DarkButton _btnAltProbe = new();
     private readonly DarkButton _btnTrunkSetup = new();
+    private readonly DarkCheck _releaseEnabled = new();
+    private readonly DarkButton _btnReleaseCatalog = new();
+    private readonly Label _releaseStatus = new();
     private readonly DarkCheck _dumpEnabled = new();
     private readonly DarkSpin _everyN = new();
     private readonly DarkSpin _dumpEvery = new();
@@ -38,6 +41,7 @@ internal sealed class FishingPanel : UserControl
     private readonly System.Windows.Forms.Timer _timer = new();
     private string _jobKey = HotkeyText.Job();
     private bool _syncingDumpUi;
+    private bool _syncingReleaseUi;
 
     // ---------------- phan hien so lieu ----------------
     private readonly PhaseTrack _phase = new();
@@ -66,6 +70,7 @@ internal sealed class FishingPanel : UserControl
         FillScreens();
         RefreshProfileLabel();
         RefreshDumpStatus();
+        RefreshReleaseStatus();
         LoadThumbs();
         ShowState(FishingState.Idle);
 
@@ -76,6 +81,7 @@ internal sealed class FishingPanel : UserControl
         Append($"Khoanh thanh + cá rồi {_jobKey} để bật/tắt câu.");
         Append("CẤT VÀO: ôm trọn khối nền màu của nút trái — bot lấy màu và kích thước nút từ ô này.");
         Append("Vùng quét: khoanh cả khoảng nút trượt lên/xuống — tên cá dài đẩy hàng nút xuống.");
+        Append("Thả ra: chọn loài (mặc định Tôm càng) rồi khoanh chữ tên + chụp mẫu — khớp thì ấn THẢ RA.");
         Append("Game nên cửa sổ không viền / fullscreen windowed — exclusive có thể che overlay.");
     }
 
@@ -341,6 +347,29 @@ internal sealed class FishingPanel : UserControl
             "Chụp mẫu “không đứng gần mặt nước”", CaptureNoWater);
         y += Theme.Px(294);
 
+        // ---- Tu tha loai da chon ----
+        var rel = new DarkGroup
+        {
+            Title = "Thả ra",
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(128))
+        };
+        host.Controls.Add(rel);
+
+        _releaseEnabled.Text = "Tự thả loài đã chọn";
+        _releaseEnabled.BackColor = Theme.Surface;
+        _releaseEnabled.SetBounds(Theme.Px(12), Theme.Px(22), w - Theme.Px(24), Theme.Px(22));
+        _releaseEnabled.CheckedChanged += OnReleaseEnabledChanged;
+        rel.Controls.Add(_releaseEnabled);
+
+        _releaseStatus.SetBounds(Theme.Px(12), Theme.Px(50), w - Theme.Px(24), Theme.Px(36));
+        _releaseStatus.Font = Theme.DataSm;
+        _releaseStatus.BackColor = Theme.Surface;
+        rel.Controls.Add(_releaseStatus);
+
+        Btn(rel, _btnReleaseCatalog, Theme.Px(12), Theme.Px(90), Theme.Px(184),
+            "Chọn loại thả ra…", OpenReleaseCatalog);
+        y += Theme.Px(138);
+
         // ---- Do ca vao cop xe ----
         var dump = new DarkGroup
         {
@@ -468,6 +497,7 @@ internal sealed class FishingPanel : UserControl
         _reader = null;
         RefreshProfileLabel();
         RefreshDumpStatus();
+        RefreshReleaseStatus();
         LoadThumbs();
         ClearLive();
     }
@@ -552,6 +582,51 @@ internal sealed class FishingPanel : UserControl
             : $"quay mặt sau khi đổ: giữ S {_cfg.AfterDumpTurnMs} ms");
     }
 
+    private void RefreshReleaseStatus()
+    {
+        var screen = SelectedScreen;
+        var p = screen is null ? null : _cfg.TryGet(screen);
+
+        _syncingReleaseUi = true;
+        try { _releaseEnabled.SetCheckedQuiet(_cfg.AutoReleaseEnabled == true); }
+        finally { _syncingReleaseUi = false; }
+
+        if (p is null)
+        {
+            _releaseStatus.Text = "chưa có hồ sơ cho màn hình này";
+            _releaseStatus.ForeColor = Theme.Dim;
+            return;
+        }
+
+        string text = p.DescribeReleaseStatus(p.Key);
+        _releaseStatus.Text = text;
+        _releaseStatus.ForeColor = text.Contains("đủ mẫu", StringComparison.Ordinal)
+            ? Theme.Good
+            : text.StartsWith("chưa chọn", StringComparison.Ordinal) ? Theme.Dim : Theme.Warn;
+    }
+
+    private void OnReleaseEnabledChanged()
+    {
+        if (_syncingReleaseUi) return;
+        _cfg.AutoReleaseEnabled = _releaseEnabled.Checked;
+        try { _cfg.Save(); } catch { }
+        Append(_releaseEnabled.Checked ? "bật tự thả loài đã chọn" : "tắt tự thả");
+    }
+
+    private void OpenReleaseCatalog()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi chọn loại thả"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var p = _cfg.GetOrCreate(screen);
+        using (var f = new ReleaseCatalogForm(_cfg, screen, p))
+            f.ShowDialog(FindForm());
+
+        _cfg = FishingConfig.Load();
+        RefreshReleaseStatus();
+    }
+
     private void OpenTrunkSetup()
     {
         if (IsRunning) { Append("đang câu — dừng bot trước khi cấu hình"); return; }
@@ -565,6 +640,7 @@ internal sealed class FishingPanel : UserControl
         _cfg = FishingConfig.Load();
         RefreshProfileLabel();
         RefreshDumpStatus();
+        RefreshReleaseStatus();
     }
 
     private void RefreshProfileLabel()
@@ -1072,6 +1148,8 @@ internal sealed class FishingPanel : UserControl
         _btnKeepBand.Enabled = !running;
         _btnAltProbe.Enabled = !running;
         _btnTrunkSetup.Enabled = !running;
+        _btnReleaseCatalog.Enabled = !running;
+        _releaseEnabled.Enabled = !running;
         _dumpEnabled.Enabled = !running;
         _everyN.Enabled = !running;
         _dumpEvery.Enabled = !running;
@@ -1239,7 +1317,10 @@ internal sealed class FishingPanel : UserControl
         _phase.Update(_state, _cfg);
 
         _tileCatch.Value = _state.Catches.ToString();
-        _tileCatch.Foot = _state.CatchesSinceDump > 0 ? $"chưa đổ: {_state.CatchesSinceDump} con" : "";
+        var feet = new List<string>();
+        if (_state.CatchesSinceDump > 0) feet.Add($"chưa đổ: {_state.CatchesSinceDump} con");
+        if (_state.Released > 0) feet.Add($"thả: {_state.Released}");
+        _tileCatch.Foot = string.Join(" · ", feet);
 
         _tileRate.Value = _state.CatchesPerHour < 0 ? "--" : $"{_state.CatchesPerHour:0}";
         _tileRate.Unit = _state.CatchesPerHour < 0 ? "" : "con";
