@@ -425,13 +425,21 @@ internal sealed class ElectricPanel : UserControl
         string instruction = shot.Name switch
         {
             "board" => "Mở bảng nước/điện trong game, để nguyên màn đó.",
-            "nav-far" => "Đứng XA điểm làm việc: minimap có chấm vàng, nhưng KHÔNG thấy mốc vàng " +
-                         "dưới đất trong khung hình.",
-            "nav-marker" => "Đứng chỗ NHÌN THẤY mốc vàng dưới đất, nhưng CHƯA hiện nút E.",
-            "nav-prompt" => "Đứng vào mốc cho HIỆN nút [E] TƯƠNG TÁC. Ảnh này vừa để kiểm, vừa để " +
-                            "cắt mẫu chữ.",
-            "nav-pair-a" => "ĐỨNG YÊN, đừng đi. Chụp ảnh A. Xong xoay camera ~90° rồi chụp ảnh B.",
-            "nav-pair-b" => "Vẫn ĐỨNG YÊN ở đúng chỗ cũ, camera đã xoay ~90° so với ảnh A.",
+            // Ca bo anh nav phai chup o GOC NHIN THU NHAT — do la goc bot chay. Chup o goc 3 thi
+            // khung hinh khac han (co than nhan vat, cu ly toi moc khac), va phan kiem anh that
+            // cua --verify-nav se soi nham thu.
+            "nav-far" => "GÓC 1. Đứng XA điểm làm việc: minimap có chấm vàng, nhưng KHÔNG thấy mốc " +
+                         "vàng dưới đất trong khung hình.",
+            "nav-marker" => "GÓC 1. Đứng chỗ NHÌN THẤY mốc vàng dưới đất, nhưng CHƯA hiện nút E.",
+            "nav-prompt" => "GÓC 1. Đứng vào mốc cho HIỆN nút [E] TƯƠNG TÁC. Ảnh này vừa để kiểm, " +
+                            "vừa để cắt mẫu chữ.",
+            // Cap nay la ca kiem DUY NHAT soi duoc phep kiem thi sai tren khung that, va o goc 1
+            // thi thi sai la hang rao duy nhat con lai (khong con hop bong nhan vat). Phai co moc
+            // vang trong khung, khong thi ca kiem bi bo qua — dung loi cua bo anh cu.
+            "nav-pair-a" => "GÓC 1. ĐỨNG YÊN, đừng đi. Phải NHÌN THẤY mốc vàng trong khung. " +
+                            "Chụp ảnh A, xong xoay camera sang phải một chút rồi chụp ảnh B.",
+            "nav-pair-b" => "GÓC 1. Vẫn ĐỨNG YÊN đúng chỗ cũ, camera đã xoay so với ảnh A, mốc vàng " +
+                            "vẫn trong khung.",
             _ => "Mở panel đi dây trong game, để nguyên màn đó."
         };
 

@@ -33,8 +33,25 @@ internal sealed class ProgressTracker
         if (drop > 0) _hist.RemoveRange(0, drop);
     }
 
-    /// <summary>Đã có đủ lịch sử phủ hết cửa sổ chưa.</summary>
-    public bool Ready(long now) => _hist.Count >= 2 && now - _hist[0].T >= _nav.ProgressWindowMs;
+    /// <summary>
+    /// Đã có đủ lịch sử phủ hết cửa sổ chưa — VÀ mẫu mới nhất có còn tươi không.
+    ///
+    /// Vế thứ hai bắt buộc phải có, và thiếu nó là lỗi đã giết cả lượt chạy 25/08. Mất dấu chấm
+    /// thì không có <see cref="Push"/> mới nào, nhưng <c>_hist</c> vẫn còn nguyên: mốc cửa sổ cứ
+    /// trôi tới cho tới khi MỌI mẫu đều nằm trước nó, lúc đó <see cref="Delta"/> so mẫu cuối với
+    /// chính nó và trả 0. Mà 0 > −MinProgressRef, nên <see cref="Stalled"/> báo kẹt VĨNH VIỄN.
+    ///
+    /// Log 25/08 01:00:13 — bot đang khoá mốc 3D, lệch 1.4°, đất trôi 3.3 (trên ngưỡng, tức đang
+    /// đi thật) — vẫn bị tuyên "kẹt (Δxa=+1.0/3s)". Cú trượt sau đó xoay camera văng 164°, mất
+    /// sạch tín hiệu, quét 12 s rồi hỏng lượt.
+    ///
+    /// Hết tươi thì trả false để bộ lái rơi về tín hiệu đất trôi, chứ KHÔNG phải để nó tự suy ra
+    /// "không đo được nghĩa là đang kẹt".
+    /// </summary>
+    public bool Ready(long now) =>
+        _hist.Count >= 2
+        && now - _hist[0].T >= _nav.ProgressWindowMs
+        && now - _hist[^1].T <= _nav.ProgressStaleMs;
 
     /// <summary>Cự ly bây giờ trừ cự ly đầu cửa sổ. Âm = đang tiến tới gần.</summary>
     public double Delta(long now)
@@ -110,8 +127,17 @@ internal sealed class EscapeLadder
     /// <summary>Số bậc trượt đã dùng của BÊN hiện tại.</summary>
     public int Rung { get; private set; }
 
-    /// <summary>Cự ly lúc bắt đầu quãng chấm điểm gần nhất — mốc để nói "có thoát hay không".</summary>
+    /// <summary>
+    /// Cự ly lúc MỞ ĐỢT. Bất biến suốt đợt — đây mới là mốc trả lời "đã thoát hay chưa".
+    ///
+    /// Tách khỏi <see cref="LastDist"/> vì gộp chung là lỗi đã thấy trong log 25/08: đợt mở ở
+    /// xa=7, thang đẩy nhân vật ra 8 → 7 → 10, rồi cú lùi kéo về 9 và được tuyên "thoát" — đóng
+    /// đợt ở chỗ XA HƠN lúc mở. Mốc bị đặt lại mỗi bậc nên bậc nào cũng chỉ phải hơn bậc trước.
+    /// </summary>
     public double StartDist { get; private set; }
+
+    /// <summary>Cự ly ngay trước bậc vừa thi hành — chỉ để đo bậc đó có nhúc nhích gì không.</summary>
+    public double LastDist { get; private set; }
 
     /// <summary>Mở đợt mới. Trả false nếu đợt đang mở (chỉ nhập vào, giữ nguyên bên và bậc).</summary>
     public bool Open(double dist, bool preferRight)
@@ -124,6 +150,7 @@ internal sealed class EscapeLadder
         _flipped = false;
         _jumped = false;
         StartDist = dist;
+        LastDist = dist;
         return true;
     }
 
@@ -135,8 +162,11 @@ internal sealed class EscapeLadder
         _jumped = false;
     }
 
-    /// <summary>Cập nhật mốc cự ly trước khi đi lại — dùng sau mỗi bậc.</summary>
-    public void MarkDistance(double dist) => StartDist = dist;
+    /// <summary>
+    /// Ghi cự ly ngay trước khi thi hành một bậc. CHỈ đụng <see cref="LastDist"/> —
+    /// <see cref="StartDist"/> phải giữ nguyên tới hết đợt, xem chú thích ở đó.
+    /// </summary>
+    public void MarkDistance(double dist) => LastDist = dist;
 
     /// <summary>Bậc tiếp theo. Mỗi lần gọi trả về ĐÚNG MỘT hành động vật lý.</summary>
     public EscapeStep Next()

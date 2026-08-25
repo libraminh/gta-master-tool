@@ -309,7 +309,7 @@ internal sealed class NavBot
                 return NavStopReason.Unreachable;
             }
 
-            bool close = dot.Found && dot.DistRef <= _nav.SprintMinDistRef * 2;
+            bool close = dot.Found && dot.DistRef <= _nav.NearDistRef;
             if (close) { wasClose = true; closeSince = now; }
 
             bool heavy = now - lastHeavy >= _nav.HeavyReadEveryMs;
@@ -414,7 +414,7 @@ internal sealed class NavBot
 
                 // Dem tu luc VAO pha quet, khong tu dau luot: di duoc mot phut roi moi mat dau cham
                 // ma tinh la het gio quet thi luot nao cung chet ngay giay dau.
-                if (now - scanSince > _nav.ScanTimeoutMs)
+                if (now - scanSince > ScanBudgetMs())
                 {
                     detail = $"quét {(now - scanSince) / 1000.0:F0}s không thấy chấm vàng nào";
                     ReleaseAll();
@@ -423,7 +423,8 @@ internal sealed class NavBot
 
                 Hold(w: false, a: false, d: false, s: false, shift: false);
                 Yaw(_nav.ScanYawCounts);
-                Trace(ref lastLog, now, $"quét tìm chấm ({(now - scanSince) / 1000.0:F1}s)");
+                Trace(ref lastLog, now, $"quét tìm chấm ({(now - scanSince) / 1000.0:F1}s" +
+                                        $"/{ScanBudgetMs() / 1000.0:F0}s)");
                 continue;
             }
 
@@ -440,6 +441,10 @@ internal sealed class NavBot
                 // Mat dau cham dung luc cham diem (dang bam moc 3D, hoac cham bi che): khong co cu
                 // ly de so, roi ve tin hieu nhanh. Coi "khong co cu ly" la "chua thoat" thi bot se
                 // leo thang oan trong khi no dang di ngon lanh theo moc.
+                //
+                // So voi StartDist cua CA DOT, khong phai vi tri truoc bac vua roi: thang co the
+                // day nhan vat ra xa dan (log 25/08: 7 → 8 → 7 → 10), va lay moc theo tung bac thi
+                // mot cu keo ve 9 cung tinh la "thoat" — dong dot o cho xa hon luc mo.
                 bool better = dot.Found
                     ? dot.DistRef <= _escape.StartDist - _nav.MinProgressRef
                     : stillSince == 0;
@@ -457,7 +462,8 @@ internal sealed class NavBot
                     // Da co bang chung: di binh thuong ca quang ma cu ly khong nhuc nhich. Leo bac
                     // NGAY, khong cho bo theo doi gom lai du 3 s lich su.
                     Emit($"chưa thoát (xa {(dot.Found ? dot.DistRef.ToString("F0") : "?")} " +
-                         $"so với {_escape.StartDist:F0}) — leo bậc");
+                         $"so với đầu đợt {_escape.StartDist:F0}, trước bậc {_escape.LastDist:F0}) " +
+                         "— leo bậc");
 
                     if (!RunStep(ct, dot))
                     {
@@ -482,11 +488,12 @@ internal sealed class NavBot
             if (bias == 0) TrackWrongWay(errDeg, source);
 
             bool aligned = Math.Abs(steer) <= _nav.TurnOnlyDeg;
-            bool sprint = aligned
-                          && bias == 0
-                          && Math.Abs(steer) <= _nav.SprintMaxDeg
-                          && dot.Found && dot.DistRef >= _nav.SprintMinDistRef
-                          && !(_nav.SprintOnlyWhenFar && marker.Locked);
+
+            // Chay cho toi khi THAY VONG TRON VANG — khong con cua cu ly toi thieu, va goc cho phep
+            // rong hon nhieu. Theo ban Python (sprint_angle_deg 52, world_sprint_area_max 2600).
+            // Ban cu tat chay tu xa=26 nen di bo gan het quang duong: log 25/08 chi chay duoc
+            // 32→29 roi di bo suot 26→7. Luat nam trong ShouldSprint/NearRing de kiem duoc offline.
+            bool sprint = ShouldSprint(_nav, steer, bias, marker.SeenAreaRef, dot.Found, dot.DistRef);
 
             Hold(w: aligned, a: false, d: false, s: false, shift: sprint);
 
@@ -536,11 +543,38 @@ internal sealed class NavBot
 
             Trace(ref lastLog, now,
                 $"{source} lệch={errDeg:F1}°{(bias == 0 ? "" : $" (lệch né {bias:+0;-0}°)")} " +
-                $"chuột={counts:+#;-#;0} {(sprint ? "chạy" : aligned ? "đi" : "xoay tại chỗ")} " +
+                $"chuột={counts:+#;-#;0} " +
+                $"{(sprint ? "chạy" : aligned ? $"đi({WhyWalk(marker, dot)})" : "xoay tại chỗ")} " +
                 $"xa={(dot.Found ? dot.DistRef.ToString("F0") : "?")} " +
                 $"Δxa={(_progress.Ready(now) ? _progress.Delta(now).ToString("+0.0;-0.0;0.0") : "?")} " +
                 $"đất={flow:F1} {PromptText(prompt)} {(marker.Locked ? "mốc✓" : marker.Note)}");
         }
+    }
+
+    /// <summary>
+    /// Hạn giờ quét, tính đủ cho ÍT NHẤT một vòng 360° cộng biên.
+    ///
+    /// Vì sao không để hằng số: tốc độ quay khi quét là <c>ScanYawCounts</c> count mỗi
+    /// <c>TickMs</c>, đổi ra độ thì phải chia cho <see cref="_countsPerDeg"/> — con số chỉ biết
+    /// được SAU khi hiệu chuẩn, và nó phụ thuộc độ nhạy chuột của từng máy.
+    ///
+    /// Log 25/08 cho thấy hậu quả khi bỏ qua: đo được 16.89 count/độ → 18 count mỗi 50 ms là
+    /// 21.3 °/s → một vòng cần 16.9 s, trong khi <c>ScanTimeoutMs</c> là 12 s. Bot không bao giờ
+    /// quét hết một vòng, chỉ tới ~256° rồi bỏ lượt — mục tiêu nằm trong 100° còn lại thì vĩnh
+    /// viễn không thấy. Cả ba lượt của phiên đó đều chết đúng kiểu này.
+    ///
+    /// Vẫn tôn trọng <c>ScanTimeoutMs</c> làm sàn: người dùng chỉnh nó lên thì phải có tác dụng.
+    /// </summary>
+    private long ScanBudgetMs()
+    {
+        double cpd = _countsPerDeg > 0 ? _countsPerDeg : _nav.FallbackCountsPerDeg;
+        double degPerTick = _nav.ScanYawCounts / Math.Max(0.2, cpd);
+        if (degPerTick <= 0) return _nav.ScanTimeoutMs;
+
+        double ticks = 360.0 / degPerTick;
+        double fullTurnMs = ticks * Math.Max(1, _nav.TickMs) * _nav.ScanTurnMargin;
+
+        return (long)Math.Max(_nav.ScanTimeoutMs, Math.Min(fullTurnMs, _nav.ScanMaxMs));
     }
 
     /// <summary>Bấm E xong thì chờ minigame hiện ra.</summary>
@@ -617,6 +651,40 @@ internal sealed class NavBot
 
         double k = (_detourUntil - now) / (double)_nav.DetourBiasMs;
         return _nav.DetourBiasDeg * Math.Clamp(k, 0, 1) * (_detourSide ? +1 : -1);
+    }
+
+    /// <summary>
+    /// "Đã thấy vòng tròn vàng dưới đất chưa" — mốc để chuyển từ CHẠY sang ĐI BỘ.
+    ///
+    /// Tách ra thành hàm THUẦN và static để <c>--verify-nav</c> chấm được cả bảng quyết định mà
+    /// không cần dựng khung hình nào. Vòng lái là vòng kín: mỗi lần chỉnh ngưỡng ở đây mà phải vào
+    /// game mới biết đúng sai thì rất đắt.
+    /// </summary>
+    internal static bool NearRing(NavSettings nav, double seenAreaRef, bool dotFound, double distRef) =>
+        seenAreaRef >= nav.WalkMarkerAreaRef || (dotFound && distRef <= nav.WalkMinDistRef);
+
+    /// <summary>
+    /// Có được phép chạy không. Cũng thuần, cùng lý do trên.
+    /// </summary>
+    internal static bool ShouldSprint(NavSettings nav, double steerDeg, double bias,
+                                      double seenAreaRef, bool dotFound, double distRef)
+    {
+        bool aligned = Math.Abs(steerDeg) <= nav.TurnOnlyDeg;
+        return aligned
+               && bias == 0
+               && Math.Abs(steerDeg) <= nav.SprintMaxDeg
+               && !NearRing(nav, seenAreaRef, dotFound, distRef);
+    }
+
+    /// <summary>
+    /// Vì sao đang đi bộ chứ không chạy. Chỉ để log — nhưng là dòng log quan trọng nhất khi cần
+    /// biết bot có tắt chạy quá sớm không, đúng thứ đã phải mò bằng tay từ log 25/08.
+    /// </summary>
+    private string WhyWalk(MarkerFix marker, DotFix dot)
+    {
+        if (marker.SeenAreaRef >= _nav.WalkMarkerAreaRef) return $"thấy vòng dt={marker.SeenAreaRef:F0}";
+        if (dot.Found && dot.DistRef <= _nav.WalkMinDistRef) return $"sát đích xa={dot.DistRef:F0}";
+        return "lệch quá";
     }
 
     private static string SideName(bool right) => right ? "PHẢI" : "TRÁI";

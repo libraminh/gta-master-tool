@@ -119,7 +119,8 @@ internal sealed class ElectricProfile
 
     /// <summary>
     /// Hộp che bóng nhân vật, canh giữa và dính đáy màn — nơi logo vàng trên áo ngồi.
-    /// Xem <see cref="NavSettings.SilhouetteWidthFrac"/> để biết vì sao bắt buộc phải có.
+    /// Rỗng khi tỉ lệ = 0, và đó là mặc định vì job này chạy ở GÓC 1 (không có nhân vật trên màn).
+    /// Xem <see cref="NavSettings.SilhouetteWidthFrac"/>.
     /// </summary>
     public Rectangle SilhouetteBox(NavSettings nav)
     {

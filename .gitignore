@@ -18,6 +18,7 @@ app/debug/
 app/bot-log.txt
 app/overlay-log.txt
 **/verify-report.txt
+**/verify-*.txt
 **/pick-car-template.txt
 
 # Local capture dumps (too large for git)

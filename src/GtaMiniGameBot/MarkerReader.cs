@@ -48,6 +48,17 @@ internal sealed class MarkerFix
 
     public double AreaRef { get; init; }
 
+    /// <summary>
+    /// Diện tích khối vàng hợp lệ TO NHẤT của khung này, 0 nếu không có khối nào. Khác
+    /// <see cref="AreaRef"/> ở chỗ nó có giá trị kể cả khi CHƯA khoá.
+    ///
+    /// Vì sao cần: luật chạy/đi bộ hỏi "đã thấy vòng tròn vàng dưới đất chưa", mà chờ tới lúc khoá
+    /// thì quá muộn — khoá đòi kiểm thị sai, tức đòi camera phải xoay, mà lúc chạy thẳng tới đích
+    /// thì camera đứng yên. Log 25/08 00:58:53 cho thấy đúng cảnh đó: mốc đã nằm trong khung nhưng
+    /// bộ dò chỉ báo "chờ camera xoay để kiểm thị sai" suốt ba giây.
+    /// </summary>
+    public double SeenAreaRef { get; init; }
+
     /// <summary>Vì sao chưa khoá — để log nói được lý do thay vì im lặng.</summary>
     public string Note { get; init; } = "";
 
@@ -74,6 +85,11 @@ internal sealed class MarkerFix
 /// là THỊ SAI: xoay camera thì mốc trôi ngang trên màn, còn logo áo và HUD thì không. Vì vậy
 /// <see cref="Update"/> chỉ cấp khoá sau khi thấy ứng viên trôi đúng chiều; không xoay camera thì
 /// giữ nguyên khoá cũ chứ không cấp khoá mới.
+///
+/// TỪ KHI CHUYỂN SANG GÓC 1: bẫy (1) không còn — không có lưng áo trên màn — nên hộp bóng nhân vật
+/// đã tắt (<see cref="NavSettings.SilhouetteWidthFrac"/> = 0). Đổi lại, THỊ SAI thành hàng rào DUY
+/// NHẤT chặn mọi vật vàng đứng im: biển báo, đèn, tay cầm vũ khí. Siết hay nới
+/// <see cref="NavSettings.ParallaxMinPxRef"/> giờ không còn lớp thứ hai đỡ phía sau.
 /// </summary>
 internal sealed class MarkerReader : IDisposable
 {
@@ -94,6 +110,9 @@ internal sealed class MarkerReader : IDisposable
     private long _lastLockMs;
     private double _lockCx, _lockCy, _lockArea;
     private bool _locked;
+
+    /// <summary>Diện tích ứng viên hợp lệ to nhất của khung vừa quét — nguồn của MarkerFix.SeenAreaRef.</summary>
+    private double _seenArea;
 
     private MarkerReader(NavSettings nav, ElectricProfile p, IPixelSource src, Point frameOrigin,
                          Rectangle silhouette, Rectangle[] hudMasks)
@@ -241,6 +260,33 @@ internal sealed class MarkerReader : IDisposable
         return outp;
     }
 
+    /// <summary>
+    /// Gộp lý do bị loại của mọi ứng viên, kèm khối to nhất bị bỏ — để log nói được VÌ SAO không
+    /// có mốc, chứ không chỉ nói là không có.
+    ///
+    /// Vì sao đáng thêm: log 25/08 lặp đúng một câu "không thấy khối vàng nào hợp lệ" suốt lúc bot
+    /// đứng cách mốc có 7 đơn vị cự ly — chỗ đó mốc phải to đầy khung. Câu đó không phân biệt được
+    /// "bị hộp bóng nhân vật nuốt" với "nhỏ quá cửa diện tích", mà hai ca đó sửa theo hai hướng
+    /// ngược nhau.
+    /// </summary>
+    private static string WhyNone(List<MarkerCandidate> all)
+    {
+        if (all is null || all.Count == 0) return " (không có khối vàng nào trong vùng quét)";
+
+        int sil = all.Count(c => c.InSilhouette);
+        var biggest = all.OrderByDescending(c => c.AreaRef).First();
+
+        var byReason = all
+            .Where(c => !c.Ok)
+            .GroupBy(c => c.Reject)
+            .OrderByDescending(g => g.Count())
+            .Select(g => $"{g.Key}×{g.Count()}");
+
+        return $" ({all.Count} khối, {sil} trùng bóng nhân vật; " +
+               $"to nhất dt={biggest.AreaRef:F0}{(biggest.InSilhouette ? " TRÙNG BÓNG" : "")}; " +
+               $"{string.Join(", ", byReason)})";
+    }
+
     private static Rectangle Shrink(Rectangle r, int step) =>
         new(r.X / step, r.Y / step, Math.Max(1, r.Width / step), Math.Max(1, r.Height / step));
 
@@ -255,16 +301,21 @@ internal sealed class MarkerReader : IDisposable
     /// </summary>
     public MarkerFix Update(long nowMs, int yawCounts)
     {
-        var best = Scan()
+        var all = Scan();
+        var best = all
             .Where(c => c.Ok)
             .OrderByDescending(c => c.AreaRef)
             .FirstOrDefault();
+
+        // Ghi lai TRUOC moi nhanh thoat: Hold() va Relock() deu phai dinh kem so nay, va no phai
+        // la cua CHINH khung vua quet chu khong phai cua khung truoc.
+        _seenArea = best?.AreaRef ?? 0.0;
 
         if (best is null)
         {
             _hasPrev = false;
             _streak = 0;
-            return Hold(nowMs, "không thấy khối vàng nào hợp lệ");
+            return Hold(nowMs, "không thấy khối vàng nào hợp lệ" + WhyNone(all));
         }
 
         // Khoi vang nay co phai chinh cai moc dang khoa khong. Neu dung thi khong bat kiem thi sai
@@ -319,7 +370,11 @@ internal sealed class MarkerReader : IDisposable
         _lockCy = c.Cy;
         _lockArea = c.AreaRef;
         _lastLockMs = nowMs;
-        return new MarkerFix { Locked = true, Fresh = fresh, Cx = c.Cx, Cy = c.Cy, AreaRef = c.AreaRef };
+        return new MarkerFix
+        {
+            Locked = true, Fresh = fresh, Cx = c.Cx, Cy = c.Cy, AreaRef = c.AreaRef,
+            SeenAreaRef = _seenArea
+        };
     }
 
     private MarkerFix Hold(long nowMs, string note)
@@ -329,11 +384,11 @@ internal sealed class MarkerReader : IDisposable
             {
                 Locked = true, Fresh = false,
                 Cx = _lockCx, Cy = _lockCy, AreaRef = _lockArea,
-                Note = note
+                SeenAreaRef = _seenArea, Note = note
             };
 
         _locked = false;
-        return new MarkerFix { Locked = false, Note = note };
+        return new MarkerFix { Locked = false, SeenAreaRef = _seenArea, Note = note };
     }
 
     /// <summary>Bỏ khoá và mọi lịch sử — gọi khi bắt đầu một lượt tiếp cận mới.</summary>
@@ -343,6 +398,7 @@ internal sealed class MarkerReader : IDisposable
         _streak = 0;
         _locked = false;
         _lastLockMs = 0;
+        _seenArea = 0;
     }
 
     public void Dispose() => _src?.Dispose();
