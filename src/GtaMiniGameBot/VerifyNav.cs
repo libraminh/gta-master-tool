@@ -630,6 +630,32 @@ internal static class VerifyNav
                       Math.Abs(ofy - nav.MinimapOriginYFrac) < 1e-9,
                       $"{ofx:F3}/{ofy:F3}");
 
+        // Ca da XAY RA THAT, 25/08 11:36: buoc hai khoanh lai nguyen ca minimap. Tam o van nam
+        // trong o minimap nen ban dau lot qua, goc thanh TAM BAN DO (fy=0.498) thay vi cho mui ten
+        // (fy=0.768). Lech 61 px → goc bi ghim ~180°, bot xoay tai cho mai khong chiu di, va cu ly
+        // dao dong 30↔59 khi dung yen.
+        {
+            var real = new ElectricProfile { Device = "test", Width = 2560, Height = 1440 };
+            real.Normalize();
+            real.Minimap = new FishingRect { X = 40, Y = 1135, W = 358, H = 226 };
+            real.MinimapArrow = new FishingRect { X = 41, Y = 1133, W = 358, H = 229 };
+
+            var (bfx, bfy) = real.MinimapOrigin(nav);
+            fail += Check("khoanh nhầm CẢ minimap ở bước 2 → từ chối",
+                          !real.MinimapMeasured &&
+                          Math.Abs(bfy - nav.MinimapOriginYFrac) < 1e-9,
+                          $"ô mũi tên 358×229 trên minimap 358×226 → {bfx:F3}/{bfy:F3} " +
+                          $"(nếu nhận thì ra 0.503/0.498 — sai 61px)");
+
+            // Va o dung co nho thi phai nhan. So do tu chinh anh nav-marker cua nguoi dung.
+            real.MinimapArrow = new FishingRect { X = 204, Y = 1297, W = 24, H = 24 };
+            var (gfx, gfy) = real.MinimapOrigin(nav);
+            fail += Check("ô mũi tên nhỏ đúng chỗ → nhận",
+                          real.MinimapMeasured &&
+                          Math.Abs(gfx - 0.492) < 0.005 && Math.Abs(gfy - 0.770) < 0.005,
+                          $"{gfx:F3}/{gfy:F3} (đo trên ảnh thật: 0.492/0.768)");
+        }
+
         return fail;
     }
 

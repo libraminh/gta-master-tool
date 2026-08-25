@@ -169,9 +169,16 @@ internal sealed class NavBot
                 return;
             }
 
-            Emit($"bắt đầu. minimap {_mini.Region.Width}×{_mini.Region.Height}, " +
+            var (ofx, ofy) = _p.MinimapOrigin(_nav);
+            Emit($"bắt đầu. minimap {_mini.Region.Width}×{_mini.Region.Height} " +
+                 $"gốc mũi tên {ofx:F3}/{ofy:F3}" +
+                 $"{(_p.MinimapMeasured ? " (đã khoanh tay)" : " (SUY RA, chưa khoanh)")}, " +
                  $"băng prompt {_prompt.Region.Width}×{_prompt.Region.Height}, " +
                  $"hộp bóng nhân vật {_marker.SilhouetteBox.Width}×{_marker.SilhouetteBox.Height}.");
+
+            if (_nav.CountsPerDegSaved > 0)
+                Emit($"dùng tỉ lệ đã lưu {_nav.CountsPerDegSaved:F2} count/độ (dấu {_nav.YawSignSaved:+#;-#}) " +
+                     "để quét theo bậc — thấy chấm rồi vẫn hiệu chuẩn lại");
 
             WaitWindow(ct);
             NormalizePitch(ct);

@@ -354,14 +354,15 @@ internal sealed class ElectricPanel : UserControl
 
         var host = FindForm();
 
-        var map = RegionPicker.Run(host, screen, "Khoanh MINIMAP",
+        var map = RegionPicker.Run(host, screen, "Bước 1/2 — khoanh MINIMAP",
             "Kéo ôm TRỌN khung minimap (góc dưới-trái). Ôm rộng tay một chút cũng được, " +
-            "nhưng đừng để lọt hàng icon máu/giáp phía dưới.");
+            "nhưng đừng để lọt hàng icon máu/giáp phía dưới. Bước sau sẽ khoanh riêng mũi tên.");
         if (map is null) { Append("đã huỷ khoanh minimap"); return; }
 
-        var arrow = RegionPicker.Run(host, screen, "Khoanh MŨI TÊN người chơi",
-            "Kéo một ô NHỎ ôm mũi tên trắng của bạn ở giữa minimap. Tâm ô này là gốc đo mọi " +
-            "góc và cự ly, nên ôm sát mũi tên.");
+        var arrow = RegionPicker.Run(host, screen, "Bước 2/2 — khoanh MŨI TÊN NGƯỜI CHƠI",
+            "Ô NHỎ THÔI, chỉ ôm cái mũi tên trắng của bạn (cỡ bằng đầu ngón tay trên màn). " +
+            "ĐỪNG khoanh lại cả minimap — tâm ô này là gốc đo mọi góc và cự ly, khoanh cả bản đồ " +
+            "là gốc rơi vào giữa bản đồ và bot sẽ xoay tại chỗ mãi không chịu đi.");
         if (arrow is null) { Append("đã huỷ — chưa khoanh mũi tên nên KHÔNG lưu gì cả"); return; }
 
         var mapRect = FishingRect.FromRelative(map.Relative);
@@ -370,13 +371,14 @@ internal sealed class ElectricPanel : UserControl
         if (!mapRect.IsSet) { Append("ô minimap quá nhỏ — khoanh lại"); return; }
         if (!arrowRect.IsSet) { Append("ô mũi tên quá nhỏ (cần ít nhất 8×8) — khoanh lại"); return; }
 
-        // Chan truoc khi ghi: mui ten ngoai o minimap la khoanh nham, va neu de lot thi
-        // MinimapOrigin lang le roi ve so mac dinh — nguoi dung tuong da do ma thuc ra chua.
-        double cx = arrowRect.X + arrowRect.W / 2.0, cy = arrowRect.Y + arrowRect.H / 2.0;
-        if (cx < mapRect.X || cx > mapRect.X + mapRect.W ||
-            cy < mapRect.Y || cy > mapRect.Y + mapRect.H)
+        // Chan truoc khi ghi. Thieu ve "du nho" o day chinh la loi da lam hong luot chay 25/08
+        // 11:36 — xem ElectricProfile.ArrowLooksSane.
+        if (!ElectricProfile.ArrowLooksSane(mapRect, arrowRect))
         {
-            Append("mũi tên nằm NGOÀI ô minimap — không lưu. Khoanh lại cả hai bước.");
+            Append($"ô mũi tên {arrowRect.W}×{arrowRect.H} không hợp lệ so với minimap " +
+                   $"{mapRect.W}×{mapRect.H} — KHÔNG lưu.");
+            Append("   bước 2 phải là một ô NHỎ ôm riêng mũi tên trắng, không phải khoanh lại cả " +
+                   "bản đồ. Bấm lại “Khoanh minimap…” và làm lại cả hai bước.");
             return;
         }
 
