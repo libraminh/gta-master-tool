@@ -125,6 +125,13 @@ internal sealed class FishingProfile
     public FishingRect Reject { get; set; } = new();
     public FishingRect Keep { get; set; } = new();
 
+    /// <summary>
+    /// Ô ngay chỗ hai tay đang cầm cần câu, khoanh lúc ĐANG câu. Mẫu chấm trên ô này lại là
+    /// ảnh chụp lúc ĐỨNG YÊN (idle.png) — xem <see cref="FishingConfig.IdleTemplatePath"/>.
+    /// Tuỳ chọn: thiếu thì vòng câu chạy y như cũ.
+    /// </summary>
+    public FishingRect Rod { get; set; } = new();
+
     // ---------------- đổ cá vào cốp xe ----------------
 
     public bool TrunkDumpEnabled { get; set; }
@@ -342,6 +349,41 @@ internal sealed class FishingConfig
     /// thiết rơi cùng một khoảng.
     /// </summary>
     public double NoWaterNccMin { get; set; } = 0.75;
+
+    // ---------------- mất cần câu ----------------
+    //
+    // Lượt "chết": cá không cắn, không chê mồi, không hiện gì, và HUD có khi VẪN vẽ thanh
+    // (log thật: "thanh=đã mở fill=73.6%" sau trọn 25 s). Pixel HUD không tách được ca đó
+    // khỏi một cú thả đang sống. Thứ tách được nằm trên người: lúc chết nhân vật đứng idle,
+    // tay buông, không cầm cần.
+    //
+    // Vì sao mẫu là ảnh lúc ĐỨNG YÊN chứ không phải lúc cầm cần — bắn khi NCC CAO chứ không
+    // phải khi thấp:
+    //   Hỏng an toàn. Có chuyện lạ (nhân vật xoay, NPC che, pose khác) thì NCC tụt, tức là
+    //   KHÔNG bắn, vòng câu chạy như cũ. Làm ngược lại thì mọi chuyện lạ đều thành "thả lại",
+    //   và thả lại nhầm là cắt ngang một cú thả đang sống.
+    //   Thêm nữa pose đứng lặp lại y hệt nên ngưỡng dễ chọn, còn pose cầm cần xoay theo
+    //   animation nên điểm dập dềnh.
+
+    /// <summary>Ngưỡng nhận pose đứng yên (không cầm cần), chấm trên ô <see cref="FishingProfile.Rod"/>.</summary>
+    public double IdleNccMin { get; set; } = 0.75;
+
+    /// <summary>Bao nhiêu khung liên tiếp trên ngưỡng thì mới tin. Như <see cref="BiteDebounceFrames"/>.</summary>
+    public int IdleFrames { get; set; } = 3;
+
+    /// <summary>
+    /// Bỏ qua bấy nhiêu ms đầu mỗi lượt chờ. Bấm 4 + Space xong nhân vật CÒN ĐANG giơ cần lên,
+    /// lúc đó vẫn còn là pose đứng — không chừa khoảng này thì lượt nào cũng bị kết luận chết
+    /// ngay sau khi thả. Mốc riêng chứ không dùng <see cref="CastCooldownMs"/> (1.5 s): cái đó
+    /// canh cho thông báo chê mồi, ngắn hơn hẳn animation giơ cần.
+    /// </summary>
+    public int IdleGraceMs { get; set; } = 3_000;
+
+    /// <summary>
+    /// Bật thì thấy pose đứng là thả lại luôn. Tắt (mặc định) thì vẫn ĐO và ghi log đầy đủ,
+    /// chỉ không hành động — để chạy thử một phiên rồi chọn ngưỡng theo số thật.
+    /// </summary>
+    public bool? IdleRecastEnabled { get; set; }
 
     /// <summary>
     /// Sai lệch cho phép mỗi kênh màu khi dò nền nút CẤT VÀO. Đo trên 3 ảnh panel thật
@@ -688,6 +730,9 @@ internal sealed class FishingConfig
         if (FishNccMin <= 0) FishNccMin = 0.75;
         if (RejectNccMin <= 0) RejectNccMin = 0.75;
         if (NoWaterNccMin <= 0) NoWaterNccMin = 0.75;
+        if (IdleNccMin is <= 0 or > 1) IdleNccMin = 0.75;
+        if (IdleFrames <= 0) IdleFrames = 3;
+        if (IdleGraceMs < 0) IdleGraceMs = 3_000;
         if (KeepColorTol <= 0) KeepColorTol = 20;
         if (KeepDensityMin <= 0 || KeepDensityMin > 1) KeepDensityMin = 0.55;
         if (KeepNccMin == 0 || KeepNccMin > 1) KeepNccMin = 0.30;   // <0 = cố ý tắt, giữ nguyên
@@ -812,6 +857,15 @@ internal sealed class FishingConfig
     public static string RejectTemplatePath(string key) => Path.Combine(ProfileDir(key), "reject.png");
     /// <summary>Mẫu thông báo "không đứng gần mặt nước". Cùng ô với reject.png, khác ảnh.</summary>
     public static string NoWaterTemplatePath(string key) => Path.Combine(ProfileDir(key), "no-water.png");
+    /// <summary>
+    /// Ảnh xem lại của ô tay cầm cần — chụp lúc ĐANG câu, chỉ để nhìn cho biết đã khoanh trúng
+    /// chỗ nào. KHÔNG phải mẫu để chấm: mẫu là <see cref="IdleTemplatePath"/>.
+    /// </summary>
+    public static string RodPreviewPath(string key) => Path.Combine(ProfileDir(key), "rod.png");
+
+    /// <summary>Mẫu pose đứng yên. Cùng ô với rod.png, khác ảnh — chụp lúc đã buông tay.</summary>
+    public static string IdleTemplatePath(string key) => Path.Combine(ProfileDir(key), "idle.png");
+
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
     public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");
 
