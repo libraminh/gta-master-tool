@@ -85,6 +85,7 @@ internal static class VerifyNav
             fail += PromptCases(cfg, profile);
             fail += EscapeCases(cfg);
             fail += SprintCases(cfg);
+            fail += ScanCases(cfg, profile);
         }
         finally
         {
@@ -537,6 +538,97 @@ internal static class VerifyNav
 
         fail += Check("giữ chạy lâu hơn hẳn luật cũ", newStop < oldStop,
                       $"luật cũ thôi chạy ở xa={oldStop}, luật mới ở xa={newStop}");
+
+        return fail;
+    }
+
+    /// <summary>
+    /// Quét theo bậc và gốc minimap.
+    ///
+    /// Vì sao đáng kiểm ngoài game: cả hai đều là số học thuần, mà sai thì chỉ lộ ra sau một lượt
+    /// chạy hỏng. Log 25/08 có cả ba lượt chết vì "quét 12s không thấy chấm vàng nào" — không một
+    /// khung hình nào trong đó cho thấy nguyên nhân.
+    /// </summary>
+    private static int ScanCases(ElectricConfig cfg, ElectricProfile p)
+    {
+        Console.WriteLine("  [quét theo bậc]");
+        int fail = 0;
+        var nav = cfg.Nav;
+
+        double stepDeg = 360.0 / nav.ScanSteps;
+        double sweepMs = nav.ScanSteps * (double)(nav.ScanStepSettleMs + nav.ScanNudgeSettleMs);
+
+        fail += Check("một vòng quét phủ đủ 360°",
+                      Math.Abs(nav.ScanSteps * stepDeg - 360.0) < 0.001,
+                      $"{nav.ScanSteps} bậc × {stepDeg:F0}° = {nav.ScanSteps * stepDeg:F0}°");
+
+        // So voi quet muot o chinh ti le do duoc trong game 25/08.
+        double smoothMs = 360.0 / (nav.ScanYawCounts / 16.89) * nav.TickMs;
+        fail += Check("nhanh hơn hẳn quét mượt",
+                      nav.ScanSweeps * sweepMs < smoothMs / 3.0,
+                      $"{nav.ScanSweeps} vòng bậc = {nav.ScanSweeps * sweepMs / 1000:F1}s, " +
+                      $"một vòng mượt = {smoothMs / 1000:F1}s");
+
+        // Bay lon nhat khi doi sang quet bac: ne khong du thi moc 3D khong bao gio khoa duoc
+        // trong luc quet, ma log 25/08 01:00:10 cho thay chinh duong do cuu ca luot.
+        fail += Check("cú né đủ lớn cho phép kiểm thị sai",
+                      nav.ScanNudgeCounts > nav.ParallaxMinCounts,
+                      $"né {nav.ScanNudgeCounts} count, ngưỡng thị sai {nav.ParallaxMinCounts}");
+
+        // Va neu ai do go tay mot so qua nho vao json thi Normalize phai EP len, khong duoc de yen.
+        // Ca tren chi soi so MAC DINH nen khong bat duoc chuyen nay.
+        {
+            var bad = new ElectricConfig();
+            bad.Nav.ScanNudgeCounts = 5;
+            bad.Normalize();
+
+            fail += Check("né quá nhỏ trong json → Normalize ép lên",
+                          bad.Nav.ScanNudgeCounts > bad.Nav.ParallaxMinCounts,
+                          $"gõ 5 → thành {bad.Nav.ScanNudgeCounts} (ngưỡng {bad.Nav.ParallaxMinCounts})");
+        }
+
+        // Ne khong duoc lon toi muc lam lech buoc goc.
+        fail += Check("cú né nhỏ hơn hẳn một bậc",
+                      nav.ScanNudgeCounts < stepDeg * 16.89 / 4,
+                      $"né {nav.ScanNudgeCounts} count so với một bậc {stepDeg * 16.89:F0} count");
+
+        // Chi canh bao: 4 bac la lua chon co y thuc, khong phai loi.
+        double blind = stepDeg - 2 * nav.HalfFovDeg;
+        Console.WriteLine(blind > 0
+            ? $"    [vùng mù mốc 3D] {stepDeg:F0}°/bậc so với góc nhìn {2 * nav.HalfFovDeg:F0}° → " +
+              $"mù {blind:F0}° mỗi bậc (chấm minimap không ảnh hưởng; muốn phủ kín thì ScanSteps ≥ " +
+              $"{Math.Ceiling(360.0 / (2 * nav.HalfFovDeg))})"
+            : $"    [vùng mù mốc 3D] không có — {stepDeg:F0}°/bậc nằm trong góc nhìn {2 * nav.HalfFovDeg:F0}°");
+
+        // ---- goc minimap suy tu o mui ten ----
+        Console.WriteLine("  [gốc minimap]");
+
+        var probe = new ElectricProfile { Device = "test", Width = p.Width, Height = p.Height };
+        probe.Normalize();
+
+        var (dfx, dfy) = probe.MinimapOrigin(nav);
+        fail += Check("chưa khoanh mũi tên → dùng số mặc định",
+                      Math.Abs(dfx - nav.MinimapOriginXFrac) < 1e-9 &&
+                      Math.Abs(dfy - nav.MinimapOriginYFrac) < 1e-9,
+                      $"{dfx:F3}/{dfy:F3}");
+
+        // O minimap 400x300 @100,900; mui ten 20x20 tam tai (300, 1140) → 0.5 / 0.8.
+        probe.Minimap = new FishingRect { X = 100, Y = 900, W = 400, H = 300 };
+        probe.MinimapArrow = new FishingRect { X = 290, Y = 1130, W = 20, H = 20 };
+
+        var (fx, fy) = probe.MinimapOrigin(nav);
+        fail += Check("khoanh mũi tên → suy đúng tỉ lệ",
+                      Math.Abs(fx - 0.5) < 1e-6 && Math.Abs(fy - 0.8) < 1e-6,
+                      $"{fx:F3}/{fy:F3} (đòi 0.500/0.800)");
+
+        // Mui ten ngoai o minimap: phai roi ve so mac dinh, KHONG duoc kep ve bien — kep la ra mot
+        // goc sai ma trong van hop le, roi moi phep do lech am tham.
+        probe.MinimapArrow = new FishingRect { X = 700, Y = 1130, W = 20, H = 20 };
+        var (ofx, ofy) = probe.MinimapOrigin(nav);
+        fail += Check("mũi tên ngoài ô minimap → từ chối, về mặc định",
+                      Math.Abs(ofx - nav.MinimapOriginXFrac) < 1e-9 &&
+                      Math.Abs(ofy - nav.MinimapOriginYFrac) < 1e-9,
+                      $"{ofx:F3}/{ofy:F3}");
 
         return fail;
     }

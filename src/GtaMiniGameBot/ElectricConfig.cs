@@ -53,6 +53,15 @@ internal sealed class ElectricProfile
     public FishingRect Minimap { get; set; } = new();
 
     /// <summary>
+    /// Ô nhỏ ôm MŨI TÊN NGƯỜI CHƠI trong minimap — gốc của mọi phép đo góc và cự ly.
+    ///
+    /// Vì sao lưu Ô chứ không lưu hai tỉ lệ đã tính sẵn: tỉ lệ chỉ có nghĩa khi gắn với một ô
+    /// minimap cụ thể. Khoanh lại riêng ô minimap mà quên khoanh lại mũi tên thì tỉ lệ cũ thành
+    /// rác — còn ô này là toạ độ MÀN HÌNH, khoanh lại ô minimap xong nó vẫn đúng chỗ.
+    /// </summary>
+    public FishingRect MinimapArrow { get; set; } = new();
+
+    /// <summary>
     /// Băng quét prompt "[E] TƯƠNG TÁC". Rỗng thì lấy 60%×50% giữa màn, đúng mặc định của job thợ
     /// mộc — prompt đo trên ảnh thật nằm ~62% ngang / ~57% dọc nên lọt.
     /// </summary>
@@ -106,6 +115,36 @@ internal sealed class ElectricProfile
 
     /// <summary>Vùng minimap: ô đã khoanh, không thì quy đổi <c>target_roi_ref</c> của Python.</summary>
     public FishingRect ScanMinimap() => Minimap.IsSet ? Minimap : FromRef(18, 770, 320, 1026);
+
+    /// <summary>
+    /// Vị trí mũi tên người chơi TRONG ô minimap, theo tỉ lệ. Mọi góc và cự ly đo từ điểm này.
+    ///
+    /// Ưu tiên ô đã khoanh tay; chưa khoanh thì rơi về số trong <see cref="NavSettings"/> — số đó
+    /// suy từ config bản Python ở 1080p và CHƯA đo trên máy nào cả, nên khoanh tay là cách duy
+    /// nhất biết chắc.
+    ///
+    /// Mũi tên nằm ngoài ô minimap thì bỏ qua, không kẹp về biên: kẹp là ra một gốc sai mà trông
+    /// vẫn hợp lệ, rồi mọi phép đo lệch âm thầm. Thà dùng số mặc định còn biết đường mà ngờ.
+    /// </summary>
+    public (double Fx, double Fy) MinimapOrigin(NavSettings nav)
+    {
+        var map = ScanMinimap();
+        if (MinimapArrow.IsSet && map.IsSet)
+        {
+            double cx = MinimapArrow.X + MinimapArrow.W / 2.0;
+            double cy = MinimapArrow.Y + MinimapArrow.H / 2.0;
+            double fx = (cx - map.X) / map.W;
+            double fy = (cy - map.Y) / map.H;
+
+            if (fx is >= 0 and <= 1 && fy is >= 0 and <= 1) return (fx, fy);
+        }
+
+        return (nav.MinimapOriginXFrac, nav.MinimapOriginYFrac);
+    }
+
+    /// <summary>Đã khoanh tay cả ô minimap lẫn mũi tên chưa — để UI nói rõ trạng thái.</summary>
+    [JsonIgnore]
+    public bool MinimapMeasured => Minimap.IsSet && MinimapArrow.IsSet;
 
     /// <summary>Băng quét prompt: ô đã khoanh, không thì 60%×50% giữa màn.</summary>
     public FishingRect ScanPromptBand()
