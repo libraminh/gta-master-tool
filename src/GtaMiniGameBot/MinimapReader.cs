@@ -251,8 +251,11 @@ internal sealed class MinimapReader : IDisposable
 
     private DotFix Fix(PointF at, bool held)
     {
-        double ox = _src.Region.Width * _nav.MinimapOriginXFrac;
-        double oy = _src.Region.Height * _nav.MinimapOriginYFrac;
+        // Hoi profile chu khong doc thang NavSettings: goc nay CHI co nghia khi gan voi mot o
+        // minimap cu the, ma o do la cua tung profile. Xem ElectricProfile.MinimapOrigin.
+        var (fx, fy) = _p.MinimapOrigin(_nav);
+        double ox = _src.Region.Width * fx;
+        double oy = _src.Region.Height * fy;
 
         double dx = at.X - ox, dy = at.Y - oy;
         double bearing = Math.Atan2(dx, -dy) * 180.0 / Math.PI;

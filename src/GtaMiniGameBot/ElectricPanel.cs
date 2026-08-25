@@ -29,6 +29,7 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
     private readonly DarkButton _btnPrompt = new();
+    private readonly DarkButton _btnMinimap = new();
     private readonly Label _navState = new();
     private readonly LogView _log = new();
 
@@ -159,7 +160,7 @@ internal sealed class ElectricPanel : UserControl
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(88))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(118))
         };
         host.Controls.Add(navBox);
 
@@ -180,10 +181,15 @@ internal sealed class ElectricPanel : UserControl
         _btnPrompt.Click += (_, _) => CropPromptTemplate();
         navBox.Controls.Add(_btnPrompt);
 
+        _btnMinimap.Text = "Khoanh minimap…";
+        _btnMinimap.SetBounds(Theme.Px(330), Theme.Px(53), Theme.Px(212), Theme.Px(26));
+        _btnMinimap.Click += (_, _) => PickMinimap();
+        navBox.Controls.Add(_btnMinimap);
+
         _navState.AutoSize = false;
         _navState.Font = Theme.DataSm;
         _navState.BackColor = Theme.Surface;
-        _navState.SetBounds(Theme.Px(330), Theme.Px(54), w - Theme.Px(342), Theme.Px(18));
+        _navState.SetBounds(Theme.Px(12), Theme.Px(84), w - Theme.Px(24), Theme.Px(18));
         navBox.Controls.Add(_navState);
 
         var help = new DarkGroup
@@ -310,11 +316,109 @@ internal sealed class ElectricPanel : UserControl
 
     private void RefreshNavState()
     {
-        bool ready = _profile.PromptReady && File.Exists(ElectricConfig.PromptTemplatePath(_profile.Key));
-        _navState.Text = ready
-            ? $"mẫu TƯƠNG TÁC: chữ cao {_profile.PromptTextH}px, khe {_profile.PromptGapSplit}px"
-            : "chưa có mẫu TƯƠNG TÁC — chụp “nav-prompt” rồi khoanh";
-        _navState.ForeColor = ready ? Theme.GoodText : Theme.Dim;
+        bool prompt = _profile.PromptReady && File.Exists(ElectricConfig.PromptTemplatePath(_profile.Key));
+        bool map = _profile.MinimapMeasured;
+
+        if (!prompt)
+        {
+            _navState.Text = "chưa có mẫu TƯƠNG TÁC — chụp “nav-prompt” rồi khoanh";
+            _navState.ForeColor = Theme.Dim;
+            return;
+        }
+
+        var (fx, fy) = _profile.MinimapOrigin(_cfg.Nav);
+        _navState.Text =
+            $"mẫu TƯƠNG TÁC: chữ cao {_profile.PromptTextH}px, khe {_profile.PromptGapSplit}px  |  " +
+            (map
+                ? $"minimap đã khoanh, gốc mũi tên {fx:F3}/{fy:F3}"
+                : "minimap CHƯA khoanh — đang dùng ô suy từ mốc 1080p");
+        _navState.ForeColor = map ? Theme.GoodText : Theme.Dim;
+    }
+
+    /// <summary>
+    /// Khoanh ô minimap rồi khoanh mũi tên người chơi, hai bước liền nhau.
+    ///
+    /// Vì sao phải khoanh cả mũi tên chứ không chỉ ô minimap: gốc đo góc và cự ly là TỈ LỆ so với
+    /// chính ô minimap, nên khoanh ô mới mà giữ tỉ lệ cũ là hỏng cả hai. Xem
+    /// <see cref="ElectricProfile.MinimapOrigin"/>.
+    ///
+    /// Khoanh xong soi lại NGAY trên một khung chụp thật: trước đây muốn biết ô có đúng không thì
+    /// phải vào game chạy cả lượt rồi đọc log, giờ đọc một dòng là biết.
+    /// </summary>
+    private void PickMinimap()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi khoanh minimap"); return; }
+
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var host = FindForm();
+
+        var map = RegionPicker.Run(host, screen, "Bước 1/2 — khoanh MINIMAP",
+            "Kéo ôm TRỌN khung minimap (góc dưới-trái). Ôm rộng tay một chút cũng được, " +
+            "nhưng đừng để lọt hàng icon máu/giáp phía dưới. Bước sau sẽ khoanh riêng mũi tên.");
+        if (map is null) { Append("đã huỷ khoanh minimap"); return; }
+
+        var arrow = RegionPicker.Run(host, screen, "Bước 2/2 — khoanh MŨI TÊN NGƯỜI CHƠI",
+            "Ô NHỎ THÔI, chỉ ôm cái mũi tên trắng của bạn (cỡ bằng đầu ngón tay trên màn). " +
+            "ĐỪNG khoanh lại cả minimap — tâm ô này là gốc đo mọi góc và cự ly, khoanh cả bản đồ " +
+            "là gốc rơi vào giữa bản đồ và bot sẽ xoay tại chỗ mãi không chịu đi.");
+        if (arrow is null) { Append("đã huỷ — chưa khoanh mũi tên nên KHÔNG lưu gì cả"); return; }
+
+        var mapRect = FishingRect.FromRelative(map.Relative);
+        var arrowRect = FishingRect.FromRelative(arrow.Relative);
+
+        if (!mapRect.IsSet) { Append("ô minimap quá nhỏ — khoanh lại"); return; }
+        if (!arrowRect.IsSet) { Append("ô mũi tên quá nhỏ (cần ít nhất 8×8) — khoanh lại"); return; }
+
+        // Chan truoc khi ghi. Thieu ve "du nho" o day chinh la loi da lam hong luot chay 25/08
+        // 11:36 — xem ElectricProfile.ArrowLooksSane.
+        if (!ElectricProfile.ArrowLooksSane(mapRect, arrowRect))
+        {
+            Append($"ô mũi tên {arrowRect.W}×{arrowRect.H} không hợp lệ so với minimap " +
+                   $"{mapRect.W}×{mapRect.H} — KHÔNG lưu.");
+            Append("   bước 2 phải là một ô NHỎ ôm riêng mũi tên trắng, không phải khoanh lại cả " +
+                   "bản đồ. Bấm lại “Khoanh minimap…” và làm lại cả hai bước.");
+            return;
+        }
+
+        _profile.Minimap = mapRect;
+        _profile.MinimapArrow = arrowRect;
+        _cfg.Save();
+
+        var (fx, fy) = _profile.MinimapOrigin(_cfg.Nav);
+        Append($"đã khoanh minimap {mapRect.W}×{mapRect.H} @{mapRect.X},{mapRect.Y}; " +
+               $"gốc mũi tên {fx:F3}/{fy:F3}");
+
+        RefreshNavState();
+        ProbeMinimap(screen);
+    }
+
+    /// <summary>Chụp một khung rồi báo ngay ô vừa khoanh đọc ra cái gì.</summary>
+    private void ProbeMinimap(Screen screen)
+    {
+        var reader = MinimapReader.Open(_cfg, screen, _profile, out string problem);
+        if (reader is null) { Append("không mở được vùng minimap: " + problem); return; }
+
+        try
+        {
+            var found = reader.Scan();
+            var dot = found.FirstOrDefault(c => c.Ok);
+
+            if (dot is null)
+            {
+                Append($"soi thử: KHÔNG thấy chấm vàng nào ({found.Count} khối trong ô). " +
+                       "Nếu trong game đang có điểm làm thì ô còn sai — khoanh lại.");
+                foreach (var c in found.Take(6)) Append("   " + c);
+                return;
+            }
+
+            var fix = reader.Read(Environment.TickCount64);
+            Append($"soi thử: thấy chấm — {(fix.Found ? $"góc={fix.BearingDeg:F1}° xa={fix.DistRef:F0}" : "nhưng chưa chốt được")}");
+            foreach (var c in found.Take(6)) Append("   " + c);
+        }
+        catch (Exception ex) { Append("soi thử lỗi: " + ex.Message); }
+        finally { reader.Dispose(); }
     }
 
     /// <summary>
@@ -517,6 +621,19 @@ internal sealed class ElectricPanel : UserControl
         {
             _rounds = n;
             _status.Text = $"Đang giải — {_rounds} lượt";
+        });
+
+        // Luu ti le count/do vua do duoc. Qua Post() vi day la su kien tu luong bot, ma ca repo
+        // chi ghi config tu luong UI. Chi ghi khi so THAY DOI dang ke — hieu chuan chay lai moi
+        // luot, ghi file moi lan la thua.
+        _bot.Calibrated += (cpd, sign) => Post(() =>
+        {
+            if (Math.Abs(_cfg.Nav.CountsPerDegSaved - cpd) < 0.05 && _cfg.Nav.YawSignSaved == sign) return;
+
+            _cfg.Nav.CountsPerDegSaved = cpd;
+            _cfg.Nav.YawSignSaved = sign;
+            _cfg.Save();
+            Append($"đã lưu {cpd:F2} count/độ (dấu {sign:+#;-#}) — lần sau quét theo bậc được ngay");
         });
         _bot.Stopped += msg => Post(() =>
         {

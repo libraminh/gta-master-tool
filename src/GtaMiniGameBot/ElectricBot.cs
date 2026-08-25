@@ -40,6 +40,9 @@ internal sealed class ElectricBot
 
     public event Action<string> Log;
     public event Action<int> RoundsChanged;
+
+    /// <summary>Bộ điều hướng đo xong count/độ — panel lưu lại để lần chạy sau khỏi đo lại.</summary>
+    public event Action<double, int> Calibrated;
     public event Action<string> Stopped;
 
     public void Start()
@@ -199,6 +202,7 @@ internal sealed class ElectricBot
 
         _navBot = new NavBot(_cfg, _screen, _profile) { PanelVisible = panelVisible };
         _navBot.Log += Emit;
+        _navBot.Calibrated += (cpd, sign) => Calibrated?.Invoke(cpd, sign);
         _navBot.Stopped += (r, m) => { reason = r; detail = m; done.Set(); };
         _navBot.Start();
 

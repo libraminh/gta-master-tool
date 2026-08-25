@@ -53,6 +53,15 @@ internal sealed class ElectricProfile
     public FishingRect Minimap { get; set; } = new();
 
     /// <summary>
+    /// Ô nhỏ ôm MŨI TÊN NGƯỜI CHƠI trong minimap — gốc của mọi phép đo góc và cự ly.
+    ///
+    /// Vì sao lưu Ô chứ không lưu hai tỉ lệ đã tính sẵn: tỉ lệ chỉ có nghĩa khi gắn với một ô
+    /// minimap cụ thể. Khoanh lại riêng ô minimap mà quên khoanh lại mũi tên thì tỉ lệ cũ thành
+    /// rác — còn ô này là toạ độ MÀN HÌNH, khoanh lại ô minimap xong nó vẫn đúng chỗ.
+    /// </summary>
+    public FishingRect MinimapArrow { get; set; } = new();
+
+    /// <summary>
     /// Băng quét prompt "[E] TƯƠNG TÁC". Rỗng thì lấy 60%×50% giữa màn, đúng mặc định của job thợ
     /// mộc — prompt đo trên ảnh thật nằm ~62% ngang / ~57% dọc nên lọt.
     /// </summary>
@@ -106,6 +115,62 @@ internal sealed class ElectricProfile
 
     /// <summary>Vùng minimap: ô đã khoanh, không thì quy đổi <c>target_roi_ref</c> của Python.</summary>
     public FishingRect ScanMinimap() => Minimap.IsSet ? Minimap : FromRef(18, 770, 320, 1026);
+
+    /// <summary>
+    /// Vị trí mũi tên người chơi TRONG ô minimap, theo tỉ lệ. Mọi góc và cự ly đo từ điểm này.
+    ///
+    /// Ưu tiên ô đã khoanh tay; chưa khoanh thì rơi về số trong <see cref="NavSettings"/> — số đó
+    /// suy từ config bản Python ở 1080p và CHƯA đo trên máy nào cả, nên khoanh tay là cách duy
+    /// nhất biết chắc.
+    ///
+    /// Mũi tên nằm ngoài ô minimap thì bỏ qua, không kẹp về biên: kẹp là ra một gốc sai mà trông
+    /// vẫn hợp lệ, rồi mọi phép đo lệch âm thầm. Thà dùng số mặc định còn biết đường mà ngờ.
+    /// </summary>
+    public (double Fx, double Fy) MinimapOrigin(NavSettings nav)
+    {
+        var map = ScanMinimap();
+        if (ArrowLooksSane(map, MinimapArrow))
+        {
+            double cx = MinimapArrow.X + MinimapArrow.W / 2.0;
+            double cy = MinimapArrow.Y + MinimapArrow.H / 2.0;
+            return ((cx - map.X) / map.W, (cy - map.Y) / map.H);
+        }
+
+        return (nav.MinimapOriginXFrac, nav.MinimapOriginYFrac);
+    }
+
+    /// <summary>
+    /// Ô mũi tên tối đa được bằng ngần này lần bề ngang/cao ô minimap.
+    ///
+    /// Mũi tên người chơi đo trên ảnh thật 2K chỉ ~25×30 px trong ô 358×226, tức 7%×13%. Để 0.35
+    /// là rộng tay chán, nhưng vẫn chặn đứng ca đã xảy ra: khoanh lại CẢ CÁI MINIMAP ở bước hai.
+    /// </summary>
+    private const double ArrowMaxFrac = 0.35;
+
+    /// <summary>
+    /// Ô mũi tên có ra hồn không: nằm trong ô minimap VÀ đủ nhỏ.
+    ///
+    /// Vế "đủ nhỏ" là vế đã thiếu và nó làm hỏng cả lượt chạy 25/08 11:36. Bản đầu chỉ kiểm tâm có
+    /// nằm trong ô minimap không — mà khoanh nguyên cái minimap lần hai thì điều đó hiển nhiên
+    /// đúng, nên gốc thành TÂM BẢN ĐỒ (fy=0.498) thay vì chỗ mũi tên (fy=0.768).
+    ///
+    /// Hậu quả không hề nhẹ: gốc lệch 61 px, chấm đích luôn rơi phía dưới gốc nên góc bị ghim ở
+    /// ~180°, bot xoay tại chỗ mãi không bao giờ chịu đi. Cự ly cũng loạn — đứng yên mà xa dao
+    /// động 30↔59, vì đo từ một điểm không phải tâm quay.
+    /// </summary>
+    public static bool ArrowLooksSane(FishingRect map, FishingRect arrow)
+    {
+        if (!arrow.IsSet || !map.IsSet) return false;
+        if (arrow.W > map.W * ArrowMaxFrac || arrow.H > map.H * ArrowMaxFrac) return false;
+
+        double cx = arrow.X + arrow.W / 2.0, cy = arrow.Y + arrow.H / 2.0;
+        return cx >= map.X && cx <= map.X + map.W &&
+               cy >= map.Y && cy <= map.Y + map.H;
+    }
+
+    /// <summary>Đã khoanh tay cả ô minimap lẫn mũi tên chưa — để UI nói rõ trạng thái.</summary>
+    [JsonIgnore]
+    public bool MinimapMeasured => ArrowLooksSane(ScanMinimap(), MinimapArrow);
 
     /// <summary>Băng quét prompt: ô đã khoanh, không thì 60%×50% giữa màn.</summary>
     public FishingRect ScanPromptBand()

@@ -98,6 +98,15 @@ internal sealed class NavBot
         _p = profile;
         _progress = new ProgressTracker(cfg.Nav);
         _escape = new EscapeLadder(cfg.Nav);
+
+        // Nap ti le da do lan truoc de quet theo bac chay duoc NGAY, khong phai cho toi luc thay
+        // cham moi hieu chuan duoc. Nhung KHONG dat _calibrated = true: thay cham roi thi van do
+        // lai tu te, nen doi do nhay chuot trong game cung tu sua duoc.
+        if (_nav.CountsPerDegSaved > 0)
+        {
+            _countsPerDeg = _nav.CountsPerDegSaved;
+            _yawSign = _nav.YawSignSaved;
+        }
     }
 
     public bool Running => _thread is { IsAlive: true };
@@ -105,6 +114,9 @@ internal sealed class NavBot
     public event Action<string> Log;
 
     public event Action<NavStopReason, string> Stopped;
+
+    /// <summary>Đo xong count/độ và dấu xoay — bên ngoài lưu lại để lần chạy sau khỏi đo lại.</summary>
+    public event Action<double, int> Calibrated;
 
     /// <summary>
     /// Hỏi bên ngoài "minigame đã hiện chưa" sau khi bấm E. <see cref="ElectricBot"/> cắm hai bộ
@@ -157,9 +169,16 @@ internal sealed class NavBot
                 return;
             }
 
-            Emit($"bắt đầu. minimap {_mini.Region.Width}×{_mini.Region.Height}, " +
+            var (ofx, ofy) = _p.MinimapOrigin(_nav);
+            Emit($"bắt đầu. minimap {_mini.Region.Width}×{_mini.Region.Height} " +
+                 $"gốc mũi tên {ofx:F3}/{ofy:F3}" +
+                 $"{(_p.MinimapMeasured ? " (đã khoanh tay)" : " (SUY RA, chưa khoanh)")}, " +
                  $"băng prompt {_prompt.Region.Width}×{_prompt.Region.Height}, " +
                  $"hộp bóng nhân vật {_marker.SilhouetteBox.Width}×{_marker.SilhouetteBox.Height}.");
+
+            if (_nav.CountsPerDegSaved > 0)
+                Emit($"dùng tỉ lệ đã lưu {_nav.CountsPerDegSaved:F2} count/độ (dấu {_nav.YawSignSaved:+#;-#}) " +
+                     "để quét theo bậc — thấy chấm rồi vẫn hiệu chuẩn lại");
 
             WaitWindow(ct);
             NormalizePitch(ct);
@@ -254,6 +273,7 @@ internal sealed class NavBot
         _marker.Forget();
         _ground.Reset();
         _progress.Reset();
+        ResetScan();
         _escape.Close();
         _judgeAt = 0;
         _detourUntil = 0;
@@ -422,11 +442,26 @@ internal sealed class NavBot
                 }
 
                 Hold(w: false, a: false, d: false, s: false, shift: false);
-                Yaw(_nav.ScanYawCounts);
-                Trace(ref lastLog, now, $"quét tìm chấm ({(now - scanSince) / 1000.0:F1}s" +
-                                        $"/{ScanBudgetMs() / 1000.0:F0}s)");
+
+                if (Stepped)
+                {
+                    if (!StepScan(now, ref lastLog))
+                    {
+                        detail = $"quét {_nav.ScanSweeps} vòng ({_nav.ScanSteps} bậc) không thấy chấm vàng nào";
+                        ReleaseAll();
+                        return NavStopReason.Unreachable;
+                    }
+                }
+                else
+                {
+                    Yaw(_nav.ScanYawCounts);
+                    Trace(ref lastLog, now, $"quét mượt ({(now - scanSince) / 1000.0:F1}s" +
+                                            $"/{ScanBudgetMs() / 1000.0:F0}s) — chưa biết count/độ");
+                }
                 continue;
             }
+
+            ResetScan();
 
             scanSince = now;
 
@@ -549,6 +584,102 @@ internal sealed class NavBot
                 $"Δxa={(_progress.Ready(now) ? _progress.Delta(now).ToString("+0.0;-0.0;0.0") : "?")} " +
                 $"đất={flow:F1} {PromptText(prompt)} {(marker.Locked ? "mốc✓" : marker.Note)}");
         }
+    }
+
+    // ================================================================ quet theo bac
+
+    /// <summary>Chặng trong một bậc quét.</summary>
+    private enum ScanLeg
+    {
+        /// <summary>Vừa giật xong, đang chờ camera dừng hẳn.</summary>
+        Settle,
+
+        /// <summary>Đã đọc; vừa né nhẹ, đang chờ để đọc lại cho phép kiểm thị sai.</summary>
+        Nudge
+    }
+
+    private ScanLeg _scanLeg;
+    private long _scanLegUntil;
+    private int _scanStep, _scanSweep;
+    private bool _scanArmed;
+
+    /// <summary>
+    /// Có đổi được độ ra count không. Không thì phải quét mượt — bước góc tính sai thì bốn cú giật
+    /// chẳng đi tới đâu, mà lại còn tưởng là đã quét đủ vòng.
+    /// </summary>
+    private bool Stepped => _countsPerDeg > 0;
+
+    private void ResetScan()
+    {
+        _scanArmed = false;
+        _scanStep = 0;
+        _scanSweep = 0;
+        _scanLeg = ScanLeg.Settle;
+        _scanLegUntil = 0;
+    }
+
+    /// <summary>
+    /// Một nhịp của vòng quét theo bậc. Trả false khi đã quét đủ <c>ScanSweeps</c> vòng mà không
+    /// thấy gì — lúc đó bỏ lượt.
+    ///
+    /// Mỗi bậc đi qua hai chặng: giật → chờ ổn định → ĐỌC → né nhẹ → chờ → ĐỌC lại. Lần đọc thứ
+    /// hai là lần duy nhất phép kiểm thị sai có đầu vào, vì nó có <c>_yawSinceHeavy</c> khác 0.
+    /// Bỏ chặng né đi thì mốc 3D không bao giờ khoá được trong lúc quét — xem
+    /// <see cref="NavSettings.ScanNudgeCounts"/>.
+    ///
+    /// Không tự đọc gì ở đây: vòng chạy chính đã đọc chấm mỗi tick và đọc mốc mỗi
+    /// <c>HeavyReadEveryMs</c>. Việc của hàm này chỉ là XOAY và ĐỢI đúng nhịp.
+    /// </summary>
+    private bool StepScan(long now, ref long lastLog)
+    {
+        double stepDeg = 360.0 / Math.Max(2, _nav.ScanSteps);
+
+        if (!_scanArmed)
+        {
+            _scanArmed = true;
+            _scanStep = 0;
+            _scanSweep = 0;
+            // Bac dau tien doc NGAY tai cho dang dung, chua giat — huong hien tai cung la mot
+            // trong cac huong can soi, giat truoc la bo phi no.
+            EnterLeg(now, ScanLeg.Settle, _nav.ScanStepSettleMs);
+            Emit($"quét theo bậc: {_nav.ScanSteps} bậc × {stepDeg:F0}°, tối đa {_nav.ScanSweeps} vòng");
+            return true;
+        }
+
+        if (now < _scanLegUntil) return true;
+
+        if (_scanLeg == ScanLeg.Settle)
+        {
+            // Da doc xong o huong nay. Ne nhe de lan doc sau cham duoc thi sai.
+            Yaw(_nav.ScanNudgeCounts);
+            EnterLeg(now, ScanLeg.Nudge, _nav.ScanNudgeSettleMs);
+            return true;
+        }
+
+        // Xong ca hai lan doc cua bac nay — sang bac sau.
+        _scanStep++;
+        if (_scanStep >= _nav.ScanSteps)
+        {
+            _scanStep = 0;
+            _scanSweep++;
+            if (_scanSweep >= _nav.ScanSweeps) return false;
+        }
+
+        // Tru phan da ne di, khong thi moi bac lech them mot chut va sau mot vong lech han.
+        int counts = (int)Math.Round(stepDeg * _countsPerDeg) - _nav.ScanNudgeCounts;
+        Yaw(counts * _yawSign);
+        EnterLeg(now, ScanLeg.Settle, _nav.ScanStepSettleMs);
+
+        Trace(ref lastLog, now,
+            $"quét bậc {_scanStep + 1}/{_nav.ScanSteps} vòng {_scanSweep + 1}/{_nav.ScanSweeps} " +
+            $"({stepDeg:F0}°/bậc, {counts:+#;-#;0} count)");
+        return true;
+    }
+
+    private void EnterLeg(long now, ScanLeg leg, int ms)
+    {
+        _scanLeg = leg;
+        _scanLegUntil = now + ms;
     }
 
     /// <summary>
@@ -777,6 +908,11 @@ internal sealed class NavBot
         _countsPerDeg = Math.Clamp(Math.Abs(_nav.CalibrateCounts / delta), 0.2, 60.0);
         Emit($"hiệu chuẩn: {_nav.CalibrateCounts} count → {delta:F1}° " +
              $"(={_countsPerDeg:F2} count/độ, dấu {_yawSign:+#;-#}), minimap XOAY THEO CAMERA");
+
+        // Bao ra ngoai de LUU lai — lan chay sau quet theo bac duoc ngay tu dau, khoi phai quet
+        // muot cho toi luc thay cham. KHONG tu goi _cfg.Save() o day: ca repo chi ghi config tu
+        // luong UI, ghi tu luong bot la mo ra dua ghi file.
+        Calibrated?.Invoke(_countsPerDeg, _yawSign);
     }
 
     /// <summary>Số count cần bắn để bù <paramref name="errDeg"/>, đã kẹp và có vùng chết.</summary>
