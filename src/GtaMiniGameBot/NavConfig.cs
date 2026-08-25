@@ -430,8 +430,63 @@ internal sealed class NavSettings
     /// <summary>Trần cứng cho hạn quét, phòng khi hiệu chuẩn ra tỉ lệ vô lý làm hạn phình vô hạn.</summary>
     public int ScanMaxMs { get; set; } = 45000;
 
-    /// <summary>Count chuột mỗi vòng lúc quét tìm chấm. Đủ để xoay hết một vòng trong vài giây.</summary>
+    /// <summary>
+    /// Count chuột mỗi vòng lúc quét MƯỢT. Chỉ còn dùng cho nhánh dự phòng — khi chưa biết
+    /// <see cref="CountsPerDegSaved"/> thì không đổi được độ ra count, nên phải xoay mượt.
+    /// </summary>
     public int ScanYawCounts { get; set; } = 18;
+
+    // ---------------------------------------------------------------- quet theo bac
+
+    /// <summary>
+    /// Chia vòng quét thành ngần này bậc, mỗi bậc giật một phát rồi đứng đọc.
+    ///
+    /// Nhanh hơn quét mượt hơn chục lần: đo được 16.89 count/độ thì một vòng mượt mất 16.9 s, còn
+    /// 4 bậc chỉ mất khoảng 1.3 s. Log 25/08 có cả ba lượt chết vì xoay 12 s không kịp hết vòng.
+    ///
+    /// ĐÁNH ĐỔI, ghi rõ chứ không giấu: <see cref="HalfFovDeg"/> = 30 tức góc nhìn ~60°, nên 4 bậc
+    /// × 90° để lại 30° MÙ giữa hai bậc — một phần ba vòng tròn không được nhìn, xét theo MỐC 3D.
+    /// Với CHẤM MINIMAP thì vô hại: minimap xoay theo camera nên cự ly chấm bất biến, chấm nằm
+    /// trong khung là thấy ở mọi hướng. Cần phủ kín cả mốc 3D thì nâng lên 6 — sửa trong json,
+    /// không phải build lại.
+    /// </summary>
+    public int ScanSteps { get; set; } = 4;
+
+    /// <summary>Giật xong chờ ngần này ms cho camera dừng hẳn và game vẽ xong rồi mới đọc.</summary>
+    public int ScanStepSettleMs { get; set; } = 220;
+
+    /// <summary>
+    /// Sau khi đọc ở mỗi bậc thì né thêm ngần này count — nhỏ thôi, chỉ để phép kiểm thị sai có
+    /// đầu vào.
+    ///
+    /// Bắt buộc phải có, và đây là chỗ dễ làm hỏng nhất khi đổi sang quét bậc: log 25/08 01:00:10
+    /// cho thấy mốc 3D KHOÁ ĐƯỢC TRONG LÚC ĐANG QUÉT và chính nó cứu cả lượt. Xoay mượt tự nó cấp
+    /// thị sai; nhảy bậc rồi đứng im thì <c>_yawSinceHeavy = 0</c>, bộ dò mốc báo "chờ camera xoay"
+    /// mãi mãi và đường cứu đó chết. Phải lớn hơn <see cref="ParallaxMinCounts"/>.
+    /// </summary>
+    public int ScanNudgeCounts { get; set; } = 30;
+
+    /// <summary>Chờ ngần này ms sau cú né rồi đọc lại — lần đọc này mới chấm được thị sai.</summary>
+    public int ScanNudgeSettleMs { get; set; } = 110;
+
+    /// <summary>Quét đủ ngần này vòng mà không thấy chấm thì bỏ lượt.</summary>
+    public int ScanSweeps { get; set; } = 3;
+
+    /// <summary>
+    /// Tỉ lệ count/độ đo được ở lần chạy trước, 0 = chưa từng đo.
+    ///
+    /// Giải cái vòng luẩn quẩn: quét bậc cần biết count/độ để đổi 90° ra count, nhưng
+    /// <c>CalibrateYaw</c> chỉ chạy được khi ĐÃ THẤY chấm — mà lúc quét thì chưa thấy. Không có số
+    /// này thì phải dùng <see cref="FallbackCountsPerDeg"/> = 3.0, lệch 5.6 lần so với số đo thật
+    /// 16.89: mỗi "bước 90°" thực ra chỉ xoay ~16°, bốn bước chưa hết một phần sáu vòng.
+    ///
+    /// Số này chỉ để KHỞI ĐỘNG. Thấy chấm rồi thì vẫn hiệu chuẩn lại tử tế, nên đổi độ nhạy chuột
+    /// trong game cũng tự sửa được.
+    /// </summary>
+    public double CountsPerDegSaved { get; set; }
+
+    /// <summary>Dấu xoay đo được ở lần chạy trước, đi kèm <see cref="CountsPerDegSaved"/>.</summary>
+    public int YawSignSaved { get; set; } = 1;
 
     /// <summary>
     /// Đã tới gần rồi mà mất dấu chấm thì ĐỨNG YÊN chờ prompt ngần này ms, chưa quay đi quét.
@@ -559,6 +614,18 @@ internal sealed class NavSettings
         ScanTurnMargin = Math.Clamp(ScanTurnMargin <= 0 ? 1.25 : ScanTurnMargin, 1.0, 4.0);
         ScanMaxMs = Math.Clamp(ScanMaxMs <= 0 ? 45000 : ScanMaxMs, ScanTimeoutMs, 300000);
         ScanYawCounts = Math.Clamp(ScanYawCounts <= 0 ? 18 : ScanYawCounts, 1, 400);
+        ScanSteps = Math.Clamp(ScanSteps <= 0 ? 4 : ScanSteps, 2, 36);
+        ScanStepSettleMs = Math.Clamp(ScanStepSettleMs <= 0 ? 220 : ScanStepSettleMs, 40, 3000);
+        ScanNudgeSettleMs = Math.Clamp(ScanNudgeSettleMs <= 0 ? 110 : ScanNudgeSettleMs, 20, 3000);
+        ScanSweeps = Math.Clamp(ScanSweeps <= 0 ? 3 : ScanSweeps, 1, 50);
+
+        // Ne phai lon hon nguong thi sai, khong thi moc khong bao gio khoa duoc trong luc quet —
+        // xem chu thich ScanNudgeCounts. Ep chu khong chi kep: de nguoi dung dat 5 la hong am tham.
+        ScanNudgeCounts = Math.Clamp(ScanNudgeCounts <= 0 ? 30 : ScanNudgeCounts, 1, 400);
+        if (ScanNudgeCounts <= ParallaxMinCounts) ScanNudgeCounts = ParallaxMinCounts * 3;
+
+        CountsPerDegSaved = CountsPerDegSaved <= 0 ? 0 : Math.Clamp(CountsPerDegSaved, 0.2, 60.0);
+        YawSignSaved = YawSignSaved < 0 ? -1 : 1;
         NearHoldMs = Math.Clamp(NearHoldMs < 0 ? 2500 : NearHoldMs, 0, 20000);
         NearPushMs = Math.Clamp(NearPushMs < 0 ? 2000 : NearPushMs, 0, 20000);
         ApproachTimeoutMs = Math.Clamp(ApproachTimeoutMs <= 0 ? 90000 : ApproachTimeoutMs, 5000, 600000);
