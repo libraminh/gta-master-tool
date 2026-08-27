@@ -14,6 +14,16 @@ internal sealed class CellInfo
     public int Index { get; init; }
     /// <summary>Ô đã co vào, toạ độ màn hình thật.</summary>
     public Rectangle Rect { get; init; }
+
+    /// <summary>
+    /// Ô CHƯA co — nguyên khung game vẽ, toạ độ màn hình thật.
+    ///
+    /// <see cref="Rect"/> đã bị co 15% mỗi cạnh để bỏ viền ô khỏi phép đo trống/có đồ. Ai cần
+    /// biết ô nằm ĐÂU trên màn (chứ không phải đo pixel trong ô) thì phải dùng khung này: panel
+    /// vật phẩm mọc ra theo khung thật, nên suy từ khung đã co là lệch 18 px ở mọi mốc.
+    /// </summary>
+    public Rectangle Full { get; init; }
+
     public Point Centre { get; init; }
     public CellState State { get; init; }
     public double Chroma { get; init; }
@@ -158,7 +168,7 @@ internal sealed class GridScanner : IDisposable
     private CellInfo Classify(int index, Rectangle cell, byte[] gray, int w, int h, double chroma)
     {
         if (gray.Length < w * h || w < 4 || h < 4)
-            return new CellInfo { Index = index, Rect = cell, Centre = Mid(cell), State = CellState.Occupied };
+            return new CellInfo { Index = index, Rect = cell, Full = _grid.Cell(_screen, index), Centre = Mid(cell), State = CellState.Occupied };
 
         var sig = CellSignature.Build(gray, w, h, _cfg.BadgeFrac);
         double std = CellSignature.StdDev(sig);
@@ -173,6 +183,7 @@ internal sealed class GridScanner : IDisposable
         {
             Index = index,
             Rect = cell,
+            Full = _grid.Cell(_screen, index),
             Centre = Mid(cell),
             State = empty ? CellState.Empty : CellState.Occupied,
             // Trong ma lech cao la o dang tai icon, khong phai o rong. Chi co nghia khi o doc

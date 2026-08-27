@@ -49,6 +49,11 @@ internal sealed class FishingState
     /// rồi tưởng là hai chuyện riêng.
     /// </summary>
     public int NoWater { get; init; }
+    /// <summary>
+    /// Cú thả bị chặn vì "không có cá nào phù hợp với cần và độ sâu". Cũng từng rơi vào
+    /// <see cref="CastMissed"/> như <see cref="NoWater"/>, cùng lưu ý về việc đừng cộng dồn.
+    /// </summary>
+    public int NoFish { get; init; }
     public int CastMissed { get; init; }
     /// <summary>
     /// Cú thả bị cắt sớm vì thấy nhân vật đứng yên, không cầm cần. Ăn thẳng vào

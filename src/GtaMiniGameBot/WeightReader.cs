@@ -185,12 +185,12 @@ internal sealed class WeightReader : IDisposable
     /// từng ảnh — dạy mẫu cho nó là dạy một con số ngẫu nhiên. Trong khi đó nó là ký tự thấp
     /// duy nhất trong chuỗi: mọi chữ số và dấu gạch chéo đều cao hết dòng.
     /// </summary>
-    private static bool IsDot(Rectangle box, int tallest) =>
+    internal static bool IsDot(Rectangle box, int tallest) =>
         tallest > 0
         && box.Height <= tallest * DotMaxHeightFrac
         && box.Width <= Math.Max(3, tallest * 0.5);
 
-    private static GlyphGuess ClassifyBox(byte[] gray, int w, int h, Rectangle box, int tallest,
+    internal static GlyphGuess ClassifyBox(byte[] gray, int w, int h, Rectangle box, int tallest,
                                           DigitAtlas atlas, FishingConfig cfg)
         => IsDot(box, tallest)
             ? new GlyphGuess('.', 1.0, -2, box.Width, box.Height)
@@ -201,7 +201,7 @@ internal sealed class WeightReader : IDisposable
     /// đủ tách nó thành hai khối, thành ra chuỗi có hai dấu chấm và bị từ chối.
     /// Chỉ gộp khối THẤP với khối THẤP nên không thể vô tình dính hai chữ số vào nhau.
     /// </summary>
-    private static List<GlyphBox> MergeDotPieces(List<GlyphBox> boxes)
+    internal static List<GlyphBox> MergeDotPieces(List<GlyphBox> boxes)
     {
         if (boxes.Count < 2) return boxes;
 
@@ -232,7 +232,7 @@ internal sealed class WeightReader : IDisposable
     /// nhận ra được chắc chắn. Nhờ vậy cắt sai không thể sinh ra số sai: nửa nào không nhận ra
     /// thì nhát cắt bị loại, khối giữ nguyên và cả lần đọc bị từ chối như cũ.
     /// </summary>
-    private static List<GlyphBox> SplitTouching(List<GlyphBox> boxes, byte[] bin, byte[] gray,
+    internal static List<GlyphBox> SplitTouching(List<GlyphBox> boxes, byte[] bin, byte[] gray,
                                                 int w, int h, DigitAtlas atlas, FishingConfig cfg,
                                                 int tallest)
     {

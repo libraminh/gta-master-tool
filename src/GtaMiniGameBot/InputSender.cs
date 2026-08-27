@@ -116,6 +116,68 @@ internal static class InputSender
     public static void LeftDown() => MouseButton(Native.MOUSEEVENTF_LEFTDOWN);
     public static void LeftUp() => MouseButton(Native.MOUSEEVENTF_LEFTUP);
 
+    public static void RightDown() => MouseButton(Native.MOUSEEVENTF_RIGHTDOWN);
+    public static void RightUp() => MouseButton(Native.MOUSEEVENTF_RIGHTUP);
+
+    /// <summary>
+    /// Chuot PHAI tai mot diem cua man kho do.
+    ///
+    /// Cung bai hoc voi <see cref="DragSmooth"/>: re bang SetCursorPos chu khong ban
+    /// MOUSEEVENTF_MOVE (game doc thanh lenh xoay camera), va nha chuot mot lan tai cho truoc khi
+    /// nhan de UI chot trang thai hover. Thieu cu nha moi do thi panel vat pham hien ra cho o ma
+    /// con tro VUA ROI KHOI, khong phai o vua tro toi.
+    /// </summary>
+    public static void RightClickAt(Point p, int steps, int stepDelayMs, int hoverMs, int holdMs)
+    {
+        try { LeftUp(); } catch { }
+        MoveCursorOnlySmooth(p.X, p.Y, Math.Max(4, steps), stepDelayMs);
+        Thread.Sleep(hoverMs);
+
+        RightDown();
+        try { Thread.Sleep(holdMs); }
+        finally { RightUp(); }
+    }
+
+    /// <summary>Click TRAI tai mot diem, cung loi re chi-SetCursorPos.</summary>
+    public static void LeftClickAt(Point p, int steps, int stepDelayMs, int hoverMs, int holdMs)
+    {
+        MoveCursorOnlySmooth(p.X, p.Y, Math.Max(4, steps), stepDelayMs);
+        Thread.Sleep(hoverMs);
+
+        LeftDown();
+        try { Thread.Sleep(holdMs); }
+        finally { LeftUp(); }
+    }
+
+    /// <summary>Scancode phim Backspace — xoa o nhap truoc khi go so moi.</summary>
+    public const ushort VK_BACKSPACE = 0x08;
+
+    /// <summary>
+    /// Go mot so nguyen vao o nhap cua game.
+    ///
+    /// Di qua <see cref="TapKey"/> nen van la scancode that — o nhap cua game la lop NUI
+    /// (Chromium) nhung phim van phai vao bang duong raw input nhu moi thu khac.
+    /// </summary>
+    public static void TypeNumber(int value, int gapMs = 40)
+    {
+        foreach (char c in value.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        {
+            if (c < '0' || c > '9') continue;
+            TapKey((ushort)(0x30 + (c - '0')));
+            Thread.Sleep(gapMs);
+        }
+    }
+
+    /// <summary>Xoa o nhap bang cach go Backspace nhieu nhat co the — khong dua vao Ctrl+A.</summary>
+    public static void ClearNumberField(int taps, int gapMs = 30)
+    {
+        for (int i = 0; i < taps; i++)
+        {
+            TapKey(VK_BACKSPACE, 40);
+            Thread.Sleep(gapMs);
+        }
+    }
+
     /// <summary>
     /// Keo tha mot o kho do.
     ///
