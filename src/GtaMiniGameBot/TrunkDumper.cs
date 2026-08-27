@@ -48,9 +48,22 @@ internal sealed class TrunkDumper : IDisposable
     private readonly ItemCatalog _catalog;
     private readonly HashSet<string> _fishItems;
 
+    /// <summary>Null khi người dùng tắt tính năng tách.</summary>
+    private readonly ItemSplitter _splitter;
+
     private int _ocrFails;
     private int _trunkFullStrikes;
     private int _noFishStrikes;
+
+    /// <summary>
+    /// Đã dùng lượt tách của phiên này chưa.
+    ///
+    /// Chỉ tách MỘT lần: tách xong là cốp còn chưa đủ chỗ cho một con nữa, nên lần tách sau chỉ
+    /// đẻ thêm ô lẻ trong ba lô mà không thêm được kg nào vào cốp. Đặt cờ ngay khi bắt đầu chứ
+    /// không đợi kết quả — hỏng kiểu gì cũng không thử lại, để một panel đọc mãi không ra không
+    /// biến thành vòng chuột phải bất tận.
+    /// </summary>
+    private bool _splitUsed;
 
     public bool OcrHealthy { get; private set; } = true;
     public string AtlasMissing => _bagWeight?.AtlasMissing ?? "";
@@ -87,7 +100,7 @@ internal sealed class TrunkDumper : IDisposable
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
                         TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
                         GridScanner hotbar, GridScanner bag, GridScanner pockets,
-                        GridScanner trunk, ItemCatalog catalog)
+                        GridScanner trunk, ItemCatalog catalog, DigitAtlas atlas)
     {
         _cfg = cfg;
         _screen = screen;
@@ -115,6 +128,8 @@ internal sealed class TrunkDumper : IDisposable
         // quen buoc nay la moi phep do deu nhiem.
         var b = screen.Bounds;
         _park = new Point(b.Left + 40, b.Top + 40);
+
+        _splitter = cfg.SplitEnabled ? new ItemSplitter(cfg, screen, atlas, log) : null;
     }
 
     public static TrunkDumper Create(FishingConfig cfg, Screen screen, FishingProfile p,
@@ -178,7 +193,7 @@ internal sealed class TrunkDumper : IDisposable
             new GridScanner(cfg, screen, p.Bag),
             p.Pockets.IsSet ? new GridScanner(cfg, screen, p.Pockets) : null,
             new GridScanner(cfg, screen, p.Trunk),
-            catalog);
+            catalog, atlas);
     }
 
     // ---------------------------------------------------------------- đọc KG
@@ -273,8 +288,11 @@ internal sealed class TrunkDumper : IDisposable
 
         // Biet truoc la khong lot thi KHONG keo thu. Cu keo hong lam game hien thong bao do
         // "Kho do da day" va bot chi biet la "keo that bai", khong phan biet duoc voi keo truot.
+        //
+        // Nhung khong lot KHONG con la het chuyen: cho trong cuoi cung cua cop van nhoi duoc
+        // bang mot chong ca da tach nho. TrySplitTail lam viec do roi moi ket luan.
         if (fishKg >= 0 && TrunkFreeKg >= 0 && fishKg > TrunkFreeKg)
-            return ConcludeTrunkFull(
+            return TrySplitTail(
                 $"cốp còn {TrunkFreeKg:F1} kg mà chỗ cá đang có {fishKg:F1} kg", ct);
 
         int moved = 0;
@@ -363,7 +381,7 @@ internal sealed class TrunkDumper : IDisposable
             _noFishStrikes = 0;
         }
 
-        if (fullWhy is not null) return ConcludeTrunkFull(fullWhy, ct);
+        if (fullWhy is not null) return TrySplitTail(fullWhy, ct);
 
         _opener.CloseAll(ct);
         Sleep(ct, _cfg.AfterDumpMs);
@@ -378,6 +396,179 @@ internal sealed class TrunkDumper : IDisposable
     /// </summary>
     private bool CouldBeFull(double fishKg) =>
         TrunkFreeKg < 0 || fishKg < 0 || TrunkFreeKg <= fishKg + _cfg.DumpMarginKg;
+
+    /// <summary>
+    /// Lưới cuối trước khi kết luận cốp đầy: tách một chồng cá cho vừa chỗ trống rồi kéo nốt.
+    ///
+    /// Vì sao đặt ở ĐÂY chứ không xen vào vòng kéo: kéo trọn ô luôn rẻ hơn (một cú kéo, không
+    /// chuột phải, không hộp thoại), nên cứ để vòng trên vét sạch những ô còn lọt đã. Tách chỉ
+    /// giải quyết đúng phần thừa cuối cùng — chỗ mà trước giờ bị bỏ trắng.
+    ///
+    /// Mọi đường hỏng đều rơi về <see cref="ConcludeTrunkFull"/> với lý do gốc kèm lý do phụ.
+    /// Không đường nào ném: cốp đầy vẫn là kết cục bình thường của một phiên câu, và tách hỏng
+    /// không được phép biến nó thành lỗi.
+    /// </summary>
+    private DumpResult TrySplitTail(string why, CancellationToken ct)
+    {
+        if (_splitter is null || _splitUsed) return ConcludeTrunkFull(why, ct);
+        _splitUsed = true;
+
+        MeasureTrunkFree();
+        if (TrunkFreeKg < 0)
+            return ConcludeTrunkFull(why + "; chưa đọc được KG cốp nên không tách được", ct);
+
+        // Xem con o trong da, truoc khi bo cong doc panel: tach ra ma khong co cho tha thi cong
+        // coc, va con de lai mot o le trong ba lo.
+        var dest = NextEmptyTrunkCell(ct);
+        if (dest is null)
+            return ConcludeTrunkFull(why + "; cốp không còn ô trống để nhận phần tách", ct);
+
+        var source = NextFish(ct, out string scanNote, out string species);
+        if (scanNote is not null) _log(scanNote);
+        if (source is null)
+            return ConcludeTrunkFull(why + "; không còn ô cá nào để tách", ct);
+
+        var before = OccupiedSnapshot();
+        var attempt = _splitter.SplitToFit(source.Value.Cell, TrunkFreeKg, _cfg.DumpMarginKg,
+                                           _cfg.KgPerUnitOf(species), ct);
+        LearnKgPerUnit(species, attempt.Read);
+
+        // Panel bao ca chong LOT tron thi keo thang, khong tach gi ca.
+        //
+        // Ca nay xay ra that va truoc gio bi bo lo: cua chan tren dem TONG cho ca cua ba luoi,
+        // nen mot cum 26 kg chan het luot do du trong do co o chi 5 kg thua suc lot 22 kg con
+        // lai. Bay gio co panel noi ro tung o nang bao nhieu, khong con phai doan theo tong nua.
+        if (attempt.Outcome == SplitOutcome.FitsWhole)
+        {
+            // Chua tach gi thi chua tieu luot tach — de danh cho luc that su can.
+            _splitUsed = false;
+
+            var whole = NextEmptyTrunkCell(ct);
+            if (whole is null)
+                return ConcludeTrunkFull($"{why}; {attempt.Why} nhưng cốp hết ô trống", ct);
+
+            if (!DragOne(source.Value.Scanner, source.Value.Cell, whole, ct))
+                return ConcludeTrunkFull($"{why}; {attempt.Why} mà kéo vẫn không vào", ct);
+
+            _bagWeight.ResetHistory();
+            MeasureTrunkFree();
+            _trunkFullStrikes = 0;
+            _log($"{attempt.Why} — đã kéo trọn ô" +
+                 (TrunkFreeKg >= 0 ? $", cốp còn trống {TrunkFreeKg:F1} kg" : ""));
+
+            _opener.CloseAll(ct);
+            Sleep(ct, _cfg.AfterDumpMs);
+            TurnBack(ct);
+            _bagWeight.ResetHistory();
+            return DumpResult.Ok;
+        }
+
+        if (attempt.Outcome != SplitOutcome.Done)
+            return ConcludeTrunkFull($"{why}; {attempt.Why}", ct);
+
+        // O moi la o VUA XUAT HIEN, khong phai "o trong dau tien". Game co the tha phan tach vao
+        // bat ky cho nao con trong, va doan sai o thi cu keo sau do lai loi mot mon do khac di.
+        var fresh = NewCell(before, ct);
+        if (fresh is null)
+            return ConcludeTrunkFull(
+                $"{why}; đã tách {attempt.Units} con nhưng không nhận ra ô mới nằm đâu", ct);
+
+        // Cua kiem chat nhat cua ca tinh nang: hoi lai chinh o vua tach xem no dung la bay
+        // nhieu con va nang bay nhieu kg khong. Doc duoc ma lech thi thoi, dung keo.
+        var check = _splitter.Peek(fresh.Value.Cell, ct);
+        _splitter.ClosePanel(ct);
+
+        if (check.Ok && check.Count != attempt.Units)
+            return ConcludeTrunkFull(
+                $"{why}; ô mới có {check.Count} con chứ không phải {attempt.Units} — không kéo", ct);
+        if (check.Ok && check.TotalKg > TrunkFreeKg)
+            return ConcludeTrunkFull(
+                $"{why}; ô mới nặng {check.TotalKg:F1} kg mà cốp chỉ còn {TrunkFreeKg:F1} — không kéo", ct);
+        if (!check.Ok)
+            _log($"cảnh báo: không đọc lại được ô vừa tách ({check.Reason}) — vẫn kéo thử");
+
+        // Doc lai o trong: panel vua che mat luoi cop mot luc, va o dich chon truoc do co the
+        // khong con dung nua.
+        dest = NextEmptyTrunkCell(ct);
+        if (dest is null)
+            return ConcludeTrunkFull($"{why}; tách xong thì cốp hết ô trống", ct);
+
+        if (!DragOne(fresh.Value.Scanner, fresh.Value.Cell, dest, ct))
+            return ConcludeTrunkFull(
+                $"{why}; đã tách {attempt.Units} con nhưng kéo vẫn không vào", ct);
+
+        _bagWeight.ResetHistory();
+        double after = ReadBagWeightNow();
+        MeasureTrunkFree();
+        _log($"đã nhồi nốt {attempt.Units} con vào cốp" +
+             (after >= 0 ? $", ba lô còn {after:F1} kg" : "") +
+             (TrunkFreeKg >= 0 ? $", cốp còn trống {TrunkFreeKg:F1} kg" : ""));
+
+        // Van la "cop day": cho con lai khong du cho mot con nua. Ghi strike nhu moi lan khac de
+        // tang tren dem dung — chi khac la lan nay cop da duoc vet sach truoc khi dong so.
+        return ConcludeTrunkFull($"đã tách và nhồi nốt {attempt.Units} con, {why}", ct);
+    }
+
+    /// <summary>
+    /// Ghi lại kg mỗi con vừa đọc được từ panel, để lần sau đọc hỏng vẫn tách được.
+    ///
+    /// Chỉ học khi BIẾT loài — chế độ ô khai báo cố ý không nhìn icon nên nó không biết trong ô
+    /// là con gì, mà ghi một con số vào ô "không rõ loài" thì lần sau đem áp cho loài khác.
+    /// Ghi đè giá trị cũ: panel là nguồn chính xác nhất đang có, và cá cùng loài thì cùng cân.
+    /// </summary>
+    private void LearnKgPerUnit(string species, SplitPanelRead read)
+    {
+        if (species is null || read is not { Ok: true }) return;
+
+        double per = read.KgPerUnit;
+        if (per < _cfg.SplitMinUnitKg || per > _cfg.SplitMaxUnitKg) return;
+
+        if (_cfg.KgPerUnit.TryGetValue(species, out double old) && Math.Abs(old - per) < 0.0005) return;
+
+        _cfg.KgPerUnit[species] = per;
+        _log($"ghi nhớ {species} = {per:0.000} kg mỗi con" +
+             (old > 0 ? $" (trước ghi {old:0.000})" : ""));
+        try { _cfg.Save(); } catch (Exception ex) { _log("lưu cấu hình lỗi: " + ex.Message); }
+    }
+
+    /// <summary>Tập ô ĐANG CÓ ĐỒ của mọi lưới nguồn — chụp trước khi tách để nhận ra ô mới.</summary>
+    private HashSet<(string Grid, int Index)> OccupiedSnapshot()
+    {
+        var set = new HashSet<(string, int)>();
+        foreach (var (label, scanner) in _sources)
+        foreach (var c in scanner.ScanScreen())
+            if (c.State != CellState.Empty) set.Add((label, c.Index));
+        return set;
+    }
+
+    /// <summary>
+    /// Ô vừa mọc thêm so với <paramref name="before"/>. Null khi không có, hoặc khi có NHIỀU HƠN
+    /// MỘT — nhiều ô mới nghĩa là không biết ô nào là phần vừa tách, mà không biết thì không kéo.
+    /// </summary>
+    private (GridScanner Scanner, CellInfo Cell)? NewCell(HashSet<(string, int)> before,
+                                                          CancellationToken ct)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var found = new List<(GridScanner, CellInfo)>();
+            foreach (var (label, scanner) in _sources)
+            foreach (var c in scanner.ScanScreen())
+                if (c.State != CellState.Empty && !before.Contains((label, c.Index)))
+                    found.Add((scanner, c));
+
+            if (found.Count == 1) return found[0];
+            if (found.Count > 1)
+            {
+                _log($"sau khi tách thấy {found.Count} ô mới — không dám đoán ô nào là phần vừa tách");
+                return null;
+            }
+
+            if (attempt >= _cfg.ScanRetries) return null;
+            _log($"chưa thấy ô mới sau khi tách, quét lại sau {_cfg.ScanRetryGapMs} ms " +
+                 $"(lượt {attempt + 1}/{_cfg.ScanRetries})");
+            Sleep(ct, _cfg.ScanRetryGapMs);
+        }
+    }
 
     /// <summary>
     /// Ghi một strike "cốp không nhận nữa", dọn màn hình rồi quay mặt lại như một lượt đổ bình
@@ -455,6 +646,12 @@ internal sealed class TrunkDumper : IDisposable
     {
         public (GridScanner Scanner, CellInfo Cell)? Fish;
         public string Note;
+
+        /// <summary>
+        /// Loài nhận ra ở ô sắp kéo. null ở chế độ ô khai báo — ở đó bot cố ý không nhìn icon,
+        /// nên nó thật sự không biết trong ô là con gì.
+        /// </summary>
+        public string Species;
         /// <summary>Vì sao nghĩ là đang tải. null = không có dấu hiệu, quét lại cũng vô ích.</summary>
         public string Loading;
         public readonly List<string> Skipped = new();
@@ -478,6 +675,10 @@ internal sealed class TrunkDumper : IDisposable
     /// tải — nó chỉ có thể thấy thêm cá, hoặc không thấy gì.
     /// </summary>
     private (GridScanner Scanner, CellInfo Cell)? NextFish(CancellationToken ct, out string note)
+        => NextFish(ct, out note, out _);
+
+    private (GridScanner Scanner, CellInfo Cell)? NextFish(CancellationToken ct, out string note,
+                                                           out string species)
     {
         ScanPass pass = null;
 
@@ -507,6 +708,7 @@ internal sealed class TrunkDumper : IDisposable
                  "đường truyền tải ảnh chậm thì nới ScanRetries / ScanRetryGapMs");
 
         note = pass.Note;
+        species = pass.Species;
         return pass.Fish;
     }
 
@@ -566,6 +768,7 @@ internal sealed class TrunkDumper : IDisposable
                       $"{guess.Runner} {guess.RunnerScore:F2} — cả hai đều là cá nên vẫn kéo"
                     : $"kéo {label} #{cell.Index} — {guess}";
                 pass.Fish = (scanner, cell);
+                pass.Species = fishName;
                 return pass;
             }
         }
@@ -767,5 +970,6 @@ internal sealed class TrunkDumper : IDisposable
         _bag?.Dispose();
         _pockets?.Dispose();
         _trunk?.Dispose();
+        _splitter?.Dispose();
     }
 }

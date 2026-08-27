@@ -386,6 +386,43 @@ internal sealed class FishingConfig
     public bool? IdleRecastEnabled { get; set; }
 
     /// <summary>
+    /// Ngưỡng nhận thông báo "Không có cá nào phù hợp với cần và độ sâu câu của bạn" — thông báo
+    /// THỨ BA vẽ trên cùng ô đó. Ngưỡng riêng, cùng lý do như <see cref="NoWaterNccMin"/>.
+    /// </summary>
+    public double NoFishNccMin { get; set; } = 0.75;
+
+    /// <summary>
+    /// Ngưỡng nhận thông báo "Khu vực này hiện không có cá để câu" — thông báo THỨ TƯ trên cùng ô.
+    /// Cùng loại với <see cref="NoFishNccMin"/> (đều là "không câu được ở đây") nên dùng chung
+    /// <see cref="NoFishRetries"/>, nhưng ảnh khác nên ngưỡng phải riêng.
+    /// </summary>
+    public double NoFishAreaNccMin { get; set; } = 0.75;
+
+    /// <summary>
+    /// Thấy thông báo "không có cá phù hợp" thì câu lại bấy nhiêu lần nữa rồi mới chịu dừng phiên.
+    /// 0 = dừng ngay lần đầu.
+    ///
+    /// Khác hẳn chê mồi / xa nước: hai cái đó là race thoáng qua, thả lại một cú là hết. Sai cần
+    /// hoặc sai độ sâu là tình trạng DAI DẲNG — cứ thả lại là lại đúng thông báo đó, nên câu tiếp
+    /// chỉ tổ quay vòng hàng giờ. Vẫn chừa vài lượt thử vì một khung NCC đọc nhầm không đáng để
+    /// giết cả phiên đang chạy tốt.
+    ///
+    /// KHÔNG phải <see cref="NoFishTries"/> — cái đó là số lượt thử lại khi ĐỔ CỐP không thấy cá.
+    /// </summary>
+    public int NoFishRetries { get; set; } = 2;
+
+    /// <summary>
+    /// Thấy "không đứng gần mặt nước" thì câu lại bấy nhiêu lần nữa rồi mới dừng phiên.
+    /// 0 = dừng ngay lần đầu.
+    ///
+    /// Khác <see cref="NoFishRetries"/> ở CHỖ DÙNG chứ không ở con số. Cái này chặn tình huống
+    /// nhân vật thật sự rời mép nước và không bao giờ tự về — trước đây bot quay vòng mãi mãi.
+    /// Nhưng "xa nước" cũng là chuyện thường ngày sau mỗi lượt đổ cốp, nên nếu bot hay dừng nhầm
+    /// thì nâng số này lên trong fishing.json, không phải build lại.
+    /// </summary>
+    public int NoWaterRetries { get; set; } = 2;
+
+    /// <summary>
     /// Sai lệch cho phép mỗi kênh màu khi dò nền nút CẤT VÀO. Đo trên 3 ảnh panel thật
     /// (nền nút ≈ #223D41): 16–26 đều dò đúng, dưới 14 thì cắt mất phần dưới nút vì nền
     /// nút có gradient nhẹ, từ 28 thì mask lan sang nền panel — chỉ cách nút ~27 mỗi
@@ -591,6 +628,28 @@ internal sealed class FishingConfig
 
     /// <summary>Cho phép tải icon thiếu từ images.xgta.network. Tắt = app hoàn toàn không ra mạng.</summary>
     public bool AllowIconDownload { get; set; } = true;
+
+    // -- báo Discord --
+    /// <summary>
+    /// Bắn một tin vào kênh Discord riêng mỗi khi phiên câu kết thúc. Nằm cạnh
+    /// <see cref="AllowIconDownload"/> vì cùng một loại quyết định: cho app ra mạng hay không.
+    /// Mặc định TẮT — chưa ai dán webhook thì đừng tự gọi ra ngoài.
+    /// </summary>
+    public bool DiscordNotifyEnabled { get; set; }
+
+    /// <summary>
+    /// Webhook URL của kênh Discord. Webhook chỉ ghi được vào MỘT kênh trong server, không DM
+    /// được — muốn có chuông thì ping bằng <see cref="DiscordUserId"/>. Lộ URL này chỉ dẫn tới
+    /// bị spam đúng kênh đó, không mất quyền gì; đấy là lý do chọn webhook thay vì bot token.
+    /// </summary>
+    public string DiscordWebhookUrl { get; set; } = "";
+
+    /// <summary>
+    /// Discord User ID để @ping cho nổ chuông điện thoại (bật Developer Mode → chuột phải nick
+    /// → Copy User ID). Rỗng = vẫn gửi tin nhưng im lặng.
+    /// </summary>
+    public string DiscordUserId { get; set; } = "";
+
     /// <summary>Hỏng liên tiếp bấy nhiêu lần thì bỏ hẳn OCR cho phần còn lại của phiên.</summary>
     public int WeightOcrFailMax { get; set; } = 3;
     /// <summary>Hai lần đọc liên tiếp lệch quá bấy nhiêu kg = đọc sai, không phải câu được cá to.</summary>
@@ -723,6 +782,158 @@ internal sealed class FishingConfig
     public double HeaderNccMin { get; set; } = 0.70;
     public int ShotCountdownSec { get; set; } = 5;
 
+    // ---------------------------------------------------------------- tách chồng cá
+    //
+    // Chuot phai vao mot o kho do thi game hien panel vat pham: dong dau la "15 ĐƠN VỊ / 26.250
+    // KG", duoi cung la dai ba nut DÙNG | TÁCH | VỨT. Tach ra dung so con vua cho trong con lai
+    // cua cop la cach duy nhat khong bo trang may kg cuoi — xem ItemSplitter.
+    //
+    // Moi con so o day la TI LE so voi be rong/cao man hinh chu khong phai pixel: cung mot bo
+    // chay duoc ca 1920 lan 2560, giong loi da dung cho AltSearchBand.
+
+    /// <summary>Tắt là quay về nguyên hành vi cũ: không lọt thì kết luận cốp đầy, không tách.</summary>
+    public bool SplitEnabled { get; set; } = true;
+
+    // -- dò nút TÁCH của panel vật phẩm --
+    public double SplitBandLeftFrac { get; set; } = 0.10;
+    public double SplitBandTopFrac { get; set; } = 0.10;
+    public double SplitBandWidthFrac { get; set; } = 0.55;
+    public double SplitBandHeightFrac { get; set; } = 0.80;
+
+    /// <summary>
+    /// Kích thước một nút, đo trên ảnh chụp thật: 156×125 px ở 2560×1440.
+    /// Nút chiếm ~1/3 bề ngang panel, mà panel rộng ~18.5% màn.
+    /// </summary>
+    public double SplitButtonWidthFrac { get; set; } = 0.061;
+    public double SplitButtonHeightFrac { get; set; } = 0.087;
+
+    // -- hình dạng panel, đo trên ảnh chụp thật 2560×1440 (27/08) --
+    //
+    // Panel NEO theo o vua chuot phai: mep trai lui ra ngoai mep o 10 px, dinh thut xuong 5 px.
+    // Be ngang co dinh 474 px. Chi co DAY la troi, vi phan mo ta loai ca dai ngan khac nhau —
+    // nen dai ba nut phai tim bang cach quet, xem SplitScan*.
+    public double SplitPanelWidthFrac { get; set; } = 0.185;
+    public double SplitPanelDxFrac { get; set; } = 0.004;
+
+    /// <summary>
+    /// Dò panel bằng cách dịch ô đọc sang ngang: mỗi nấc bao xa, và toả ra tối đa bao xa.
+    /// Có nó vì công thức "panel neo mép trái theo ô" khớp ô này mà trượt ô khác — xem
+    /// <c>ItemSplitter.LocatePanel</c>.
+    /// </summary>
+    public double SplitPanelScanStepFrac { get; set; } = 0.016;
+    public double SplitPanelScanReachFrac { get; set; } = 0.30;
+
+    /// <summary>Quét dọc tìm dải nút: từ đâu tới đâu, tính từ mép TRÊN ô vừa chuột phải.</summary>
+    public double SplitScanTopFrac { get; set; } = 0.14;
+    public double SplitScanBottomFrac { get; set; } = 0.45;
+
+    /// <summary>Bước quét. Nhỏ hơn nửa chiều cao nút thì không thể nhảy qua mất dải nút.</summary>
+    public double SplitScanStepFrac { get; set; } = 0.022;
+
+    /// <summary>Khối xanh nhỏ hơn ngần này phần diện tích kỳ vọng thì không phải nút.</summary>
+    public double SplitButtonAreaFracMin { get; set; } = 0.40;
+
+    /// <summary>Tỉ lệ thật đo được: 156/125 = 1.25.</summary>
+    public double SplitButtonAspect { get; set; } = 1.25;
+
+    /// <summary>
+    /// Dung sai tỉ lệ. Hẹp có chủ ý: nút của game là viên cố định, không co giãn theo nội dung,
+    /// nên nới rộng chỉ tổ nhận cả những mảng xanh vuông vắn chẳng phải nút. Đo được ở
+    /// <c>--verify-split</c>: để 0.45 thì một khối 130×130 (tỉ lệ 1.00) vẫn lọt và bị click.
+    /// Với tỉ lệ thật 1.25 thì 0.20 vừa đủ bao biến thiên đo được mà vẫn loại hẳn hình vuông.
+    /// </summary>
+    public double SplitButtonAspectTol { get; set; } = 0.20;
+
+    /// <summary>Nút là viên đặc — chữ trắng khoét vào giữa nhưng nền vẫn kín.</summary>
+    public double SplitButtonFillMin { get; set; } = 0.55;
+
+    /// <summary>
+    /// Khối xanh lớn thứ hai được phép to bằng bao nhiêu phần khối nhất. Vượt là từ chối cả
+    /// lượt: hai khối ngang nhau nghĩa là không biết cái nào là nút, mà nút VỨT thì nằm ngay
+    /// cạnh — không biết thì không được click.
+    /// </summary>
+    public double SplitButtonRivalMax { get; set; } = 0.60;
+
+    // -- đọc dòng "n ĐƠN VỊ / x.xxx KG" --
+    /// <summary>Từ mép TRÊN ô vừa chuột phải xuống tới dòng chữ. Panel neo đỉnh theo ô đó.</summary>
+    public double SplitLineTopFrac { get; set; } = 0.022;
+    public double SplitLineHeightFrac { get; set; } = 0.024;
+    public double SplitLineLeftFrac { get; set; } = 0.055;
+
+    /// <summary>
+    /// Bề ngang ô đọc, tính theo bề ngang panel. Rộng hơn dòng chữ thật khá nhiều có chủ ý:
+    /// bên phải dòng đó là khoảng trống của panel nên không sợ lấn phải chữ khác, còn cắt hụt
+    /// một chữ số cuối thì cả lần đọc mất dạng và bot bỏ luôn lượt tách.
+    /// </summary>
+    public double SplitLineWidthFrac { get; set; } = 0.75;
+
+    /// <summary>Quét lệch mấy mốc lên/xuống, mỗi mốc cách nhau <see cref="SplitLineNudgeFrac"/>.</summary>
+    public int SplitLineNudges { get; set; } = 3;
+    public double SplitLineNudgeFrac { get; set; } = 0.004;
+
+    /// <summary>
+    /// Hở bao nhiêu (so với chiều cao chữ) thì tính là sang TỪ mới. Đây là chỗ ngăn "15 ĐƠN"
+    /// dính thành "150" khi chữ Ơ bị chấm nhầm ra số 0.
+    /// </summary>
+    public double SplitWordGapFrac { get; set; } = 0.35;
+
+    // -- cổng lành mạnh cho hai con số đọc được --
+    public int SplitMaxUnits { get; set; } = 999;
+    public double SplitMaxStackKg { get; set; } = 200.0;
+    public double SplitMinUnitKg { get; set; } = 0.01;
+    public double SplitMaxUnitKg { get; set; } = 60.0;
+
+    // -- hộp thoại TÁCH VẬT PHẨM (luôn nằm giữa màn) --
+    public double SplitDialogWidthFrac { get; set; } = 0.40;
+    public double SplitDialogHeightFrac { get; set; } = 0.42;
+    public double SplitDialogOkWidthFrac { get; set; } = 0.073;
+    public double SplitDialogOkHeightFrac { get; set; } = 0.040;
+    public int SplitDialogWhiteMin { get; set; } = 200;
+
+    /// <summary>Ô nhập nằm bao nhiêu phần chiều cao màn PHÍA TRÊN tâm nút TÁCH.</summary>
+    public double SplitDialogInputDyFrac { get; set; } = 0.082;
+    public double SplitDialogInputWidthFrac { get; set; } = 0.10;
+    public double SplitDialogInputHeightFrac { get; set; } = 0.035;
+
+    /// <summary>Nút HUỶ cách nút TÁCH bao nhiêu bề ngang nút, tính từ mép trái sang trái.</summary>
+    public double SplitDialogCancelDxFrac { get; set; } = 0.55;
+
+    // -- nhịp --
+    /// <summary>
+    /// Chờ bao lâu sau khi rê con trỏ lên một nút rồi mới chụp để xem nó có sáng lên.
+    ///
+    /// Đây là nhịp của phép xác nhận quan trọng nhất trong cả tính năng: nút TÁCH bị kẹp giữa
+    /// DÙNG và VỨT, nên trước mỗi cú bấm bot phải để GAME tự chỉ ra "chỗ này là một nút". Chụp
+    /// quá sớm là chụp lúc hiệu ứng sáng chưa vẽ xong, và bot sẽ kết luận sai là không có nút.
+    /// </summary>
+    public int SplitHoverMs { get; set; } = 260;
+
+    public int SplitPanelWaitMs { get; set; } = 400;
+    public int SplitPanelRetries { get; set; } = 2;
+    public int SplitDialogWaitMs { get; set; } = 400;
+    public int SplitDialogRetries { get; set; } = 2;
+    public int SplitAfterClickMs { get; set; } = 250;
+    public int SplitAfterSplitMs { get; set; } = 600;
+
+    /// <summary>Số nhát Backspace dọn ô nhập trước khi gõ — ô có thể còn số của lần trước.</summary>
+    public int SplitClearTaps { get; set; } = 6;
+
+    /// <summary>
+    /// Kg mỗi con theo loài, khoá là tên trong <see cref="FishingProfile.FishItems"/>.
+    ///
+    /// Bot tự điền: mỗi lần đọc được panel vật phẩm nó biết chính xác "15 con / 26.250 kg" nên
+    /// ghi lại 1.750 cho loài đó. Bảng này chỉ được dùng khi lần đọc panel HỎNG — chữ số trên
+    /// panel là cỡ thứ ba, khác cả tử số lẫn mẫu số của thanh KG, nên rất có thể bộ mẫu chưa có
+    /// nó. Không có bảng thì lần tách đầu tiên của một máy mới luôn hỏng.
+    ///
+    /// Sửa tay được: xem <see cref="FishingPanel"/> → "Kg mỗi con…".
+    /// </summary>
+    public Dictionary<string, double> KgPerUnit { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Kg mỗi con đã biết của một loài, hoặc -1.</summary>
+    public double KgPerUnitOf(string species) =>
+        species is not null && KgPerUnit.TryGetValue(species, out double v) && v > 0 ? v : -1;
+
     /// <summary>Json cũ thiếu field thì về 0 — khôi phục mặc định, không đoán timeout = 0.</summary>
     public void Normalize()
     {
@@ -730,6 +941,11 @@ internal sealed class FishingConfig
         if (FishNccMin <= 0) FishNccMin = 0.75;
         if (RejectNccMin <= 0) RejectNccMin = 0.75;
         if (NoWaterNccMin <= 0) NoWaterNccMin = 0.75;
+        if (NoFishNccMin <= 0) NoFishNccMin = 0.75;
+        if (NoFishAreaNccMin <= 0) NoFishAreaNccMin = 0.75;
+        // 0 hop le (dung ngay lan dau), chi chan so am.
+        if (NoFishRetries < 0) NoFishRetries = 2;
+        if (NoWaterRetries < 0) NoWaterRetries = 2;
         if (IdleNccMin is <= 0 or > 1) IdleNccMin = 0.75;
         if (IdleFrames <= 0) IdleFrames = 3;
         if (IdleGraceMs < 0) IdleGraceMs = 3_000;
@@ -778,6 +994,14 @@ internal sealed class FishingConfig
         if (MinDropKg <= 0) MinDropKg = 0.5;
         if (ItemNccMin is <= 0 or > 1) ItemNccMin = 0.70;
         if (ItemMarginMin is < 0 or > 1) ItemMarginMin = 0.05;
+
+        DiscordWebhookUrl = DiscordWebhookUrl?.Trim() ?? "";
+        // Chi giu chu so: nguoi dung hay dan ca "<@123>" hoac keo theo khoang trang.
+        DiscordUserId = new string((DiscordUserId ?? "").Where(char.IsDigit).ToArray());
+        // URL khong dung dang webhook Discord thi coi nhu chua cau hinh — tat han co, khong thi
+        // moi phien lai POST mu vao mot dia chi la roi do loi ra log.
+        if (!DiscordNotifier.IsWebhookUrl(DiscordWebhookUrl)) DiscordNotifyEnabled = false;
+
         if (WeightOcrFailMax <= 0) WeightOcrFailMax = 3;
         if (MaxWeightJumpKg <= 0) MaxWeightJumpKg = 5.0;
 
@@ -837,6 +1061,70 @@ internal sealed class FishingConfig
         if (HeaderNccMin is <= 0 or > 1) HeaderNccMin = 0.70;
         if (ShotCountdownSec <= 0) ShotCountdownSec = 5;
 
+        // Tach chong ca. Json cu khong co field nao trong so nay, nen deu ve 0 — ma 0 o day
+        // khong phai "tat" ma la "chia cho 0" hoac "nhan moi khoi xanh lam nut". Dua lai mac
+        // dinh het, tru SplitEnabled (bool, mac dinh true da dung).
+        if (SplitBandLeftFrac is < 0 or > 0.9) SplitBandLeftFrac = 0.10;
+        if (SplitBandTopFrac is < 0 or > 0.9) SplitBandTopFrac = 0.10;
+        if (SplitBandWidthFrac is <= 0 or > 1) SplitBandWidthFrac = 0.55;
+        if (SplitBandHeightFrac is <= 0 or > 1) SplitBandHeightFrac = 0.80;
+
+        if (SplitButtonWidthFrac is <= 0 or > 0.5) SplitButtonWidthFrac = 0.061;
+        if (SplitButtonHeightFrac is <= 0 or > 0.5) SplitButtonHeightFrac = 0.087;
+        if (SplitPanelWidthFrac is <= 0 or > 1) SplitPanelWidthFrac = 0.185;
+        if (SplitPanelDxFrac is < 0 or > 0.2) SplitPanelDxFrac = 0.004;
+        if (SplitPanelScanStepFrac is <= 0 or > 0.2) SplitPanelScanStepFrac = 0.016;
+        if (SplitPanelScanReachFrac is <= 0 or > 1) SplitPanelScanReachFrac = 0.30;
+        if (SplitScanTopFrac is < 0 or > 1) SplitScanTopFrac = 0.14;
+        if (SplitScanBottomFrac <= SplitScanTopFrac || SplitScanBottomFrac > 1) SplitScanBottomFrac = 0.45;
+        if (SplitScanStepFrac is <= 0 or > 0.2) SplitScanStepFrac = 0.022;
+        if (SplitButtonAreaFracMin is <= 0 or > 1) SplitButtonAreaFracMin = 0.40;
+        if (SplitButtonAspect <= 0) SplitButtonAspect = 1.25;
+        if (SplitButtonAspectTol <= 0) SplitButtonAspectTol = 0.20;
+        if (SplitButtonFillMin is <= 0 or > 1) SplitButtonFillMin = 0.55;
+        if (SplitButtonRivalMax is <= 0 or >= 1) SplitButtonRivalMax = 0.60;
+
+        if (SplitLineTopFrac is <= 0 or > 0.5) SplitLineTopFrac = 0.022;
+        if (SplitLineHeightFrac is <= 0 or > 0.2) SplitLineHeightFrac = 0.024;
+        if (SplitLineLeftFrac is < 0 or > 0.5) SplitLineLeftFrac = 0.055;
+        if (SplitLineWidthFrac is <= 0 or > 1) SplitLineWidthFrac = 0.75;
+        if (SplitLineNudges is < 0 or > 12) SplitLineNudges = 3;
+        if (SplitLineNudgeFrac is <= 0 or > 0.05) SplitLineNudgeFrac = 0.004;
+        if (SplitWordGapFrac is <= 0 or > 2) SplitWordGapFrac = 0.35;
+
+        if (SplitMaxUnits <= 0) SplitMaxUnits = 999;
+        if (SplitMaxStackKg <= 0) SplitMaxStackKg = 200.0;
+        if (SplitMinUnitKg <= 0) SplitMinUnitKg = 0.01;
+        if (SplitMaxUnitKg <= SplitMinUnitKg) SplitMaxUnitKg = 60.0;
+
+        if (SplitDialogWidthFrac is <= 0 or > 1) SplitDialogWidthFrac = 0.40;
+        if (SplitDialogHeightFrac is <= 0 or > 1) SplitDialogHeightFrac = 0.42;
+        if (SplitDialogOkWidthFrac is <= 0 or > 0.5) SplitDialogOkWidthFrac = 0.073;
+        if (SplitDialogOkHeightFrac is <= 0 or > 0.5) SplitDialogOkHeightFrac = 0.040;
+        if (SplitDialogWhiteMin is <= 0 or > 255) SplitDialogWhiteMin = 200;
+        if (SplitDialogInputDyFrac is <= 0 or > 0.5) SplitDialogInputDyFrac = 0.082;
+        if (SplitDialogInputWidthFrac is <= 0 or > 1) SplitDialogInputWidthFrac = 0.10;
+        if (SplitDialogInputHeightFrac is <= 0 or > 0.5) SplitDialogInputHeightFrac = 0.035;
+        if (SplitDialogCancelDxFrac <= 0) SplitDialogCancelDxFrac = 0.55;
+
+        if (SplitHoverMs <= 0) SplitHoverMs = 260;
+        if (SplitPanelWaitMs <= 0) SplitPanelWaitMs = 400;
+        if (SplitPanelRetries < 0) SplitPanelRetries = 2;
+        if (SplitDialogWaitMs <= 0) SplitDialogWaitMs = 400;
+        if (SplitDialogRetries < 0) SplitDialogRetries = 2;
+        if (SplitAfterClickMs <= 0) SplitAfterClickMs = 250;
+        if (SplitAfterSplitMs <= 0) SplitAfterSplitMs = 600;
+        if (SplitClearTaps is < 0 or > 40) SplitClearTaps = 6;
+
+        // Dung lai tu dien khong phan biet hoa thuong: System.Text.Json dung lai Dictionary
+        // bang bo so sanh MAC DINH, nen ban nap tu json tra loi "khong thay catfish" khi json
+        // ghi "Catfish". Loc luon cac gia tri vo nghia — mot so 0 lot vao la mot phep chia cho 0.
+        KgPerUnit = new Dictionary<string, double>(
+            (KgPerUnit ?? new Dictionary<string, double>())
+                .Where(kv => !string.IsNullOrWhiteSpace(kv.Key)
+                             && kv.Value >= SplitMinUnitKg && kv.Value <= SplitMaxUnitKg),
+            StringComparer.OrdinalIgnoreCase);
+
         foreach (var p in Profiles.Values) p?.Normalize();
     }
 
@@ -857,6 +1145,12 @@ internal sealed class FishingConfig
     public static string RejectTemplatePath(string key) => Path.Combine(ProfileDir(key), "reject.png");
     /// <summary>Mẫu thông báo "không đứng gần mặt nước". Cùng ô với reject.png, khác ảnh.</summary>
     public static string NoWaterTemplatePath(string key) => Path.Combine(ProfileDir(key), "no-water.png");
+    /// <summary>Mẫu thông báo "không có cá nào phù hợp với cần và độ sâu". Cũng cùng ô với reject.png.</summary>
+    public static string NoFishTemplatePath(string key) => Path.Combine(ProfileDir(key), "no-fish.png");
+    /// <summary>Mẫu thông báo "khu vực này hiện không có cá để câu". Cũng cùng ô với reject.png.</summary>
+    public static string NoFishAreaTemplatePath(string key) =>
+        Path.Combine(ProfileDir(key), "no-fish-area.png");
+
     /// <summary>
     /// Ảnh xem lại của ô tay cầm cần — chụp lúc ĐANG câu, chỉ để nhìn cho biết đã khoanh trúng
     /// chỗ nào. KHÔNG phải mẫu để chấm: mẫu là <see cref="IdleTemplatePath"/>.
@@ -865,6 +1159,7 @@ internal sealed class FishingConfig
 
     /// <summary>Mẫu pose đứng yên. Cùng ô với rod.png, khác ảnh — chụp lúc đã buông tay.</summary>
     public static string IdleTemplatePath(string key) => Path.Combine(ProfileDir(key), "idle.png");
+
 
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
     public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");

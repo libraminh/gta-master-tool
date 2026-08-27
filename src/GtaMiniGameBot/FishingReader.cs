@@ -7,6 +7,10 @@ internal sealed class FishingSnapshot
     public bool RejectConfigured { get; init; }
     /// <summary>Đã có mẫu "không đứng gần mặt nước". Tuỳ chọn — thiếu thì mọi thứ chạy như cũ.</summary>
     public bool NoWaterConfigured { get; init; }
+    /// <summary>Đã có mẫu "không có cá phù hợp". Tuỳ chọn — thiếu thì mọi thứ chạy như cũ.</summary>
+    public bool NoFishConfigured { get; init; }
+    /// <summary>Đã có mẫu "khu vực này hết cá". Tuỳ chọn — thiếu thì mọi thứ chạy như cũ.</summary>
+    public bool NoFishAreaConfigured { get; init; }
     public bool KeepConfigured { get; init; }
 
     /// <summary>HUD thanh câu đang hiện (đủ pixel cyan). False nếu chưa khoanh hoặc không thấy.</summary>
@@ -28,6 +32,22 @@ internal sealed class FishingSnapshot
     /// </summary>
     public bool NoWaterNotice { get; init; }
     public double NoWaterScore { get; init; } = -1;
+
+    /// <summary>
+    /// Thông báo "Không có cá nào phù hợp với cần và độ sâu câu của bạn" đang hiện. Thông báo thứ
+    /// ba dùng chung ô với hai cái trên, nhưng nghĩa thì ngược hẳn: đây KHÔNG phải race thoáng
+    /// qua mà là tình trạng dai dẳng — thả lại bao nhiêu lần cũng vẫn thế cho tới khi đổi cần
+    /// hoặc đổi chỗ câu. Xem nhánh xử lý trong <see cref="FishingBot"/>.
+    /// </summary>
+    public bool NoFishNotice { get; init; }
+    public double NoFishScore { get; init; } = -1;
+
+    /// <summary>
+    /// Thông báo "Khu vực này hiện không có cá để câu" đang hiện. Cùng loại dai dẳng với
+    /// <see cref="NoFishNotice"/> — khác ở chỗ phải đổi CHỖ chứ không phải đổi cần.
+    /// </summary>
+    public bool NoFishAreaNotice { get; init; }
+    public double NoFishAreaScore { get; init; } = -1;
 
     /// <summary>Đã có ô tay cầm cần + mẫu pose đứng. Tuỳ chọn — thiếu thì mọi thứ chạy như cũ.</summary>
     public bool IdleConfigured { get; init; }
@@ -74,18 +94,24 @@ internal sealed class FishingReader : IDisposable
     private readonly GrayTemplate _fishTpl;
     private readonly GrayTemplate _rejectTpl;
     private readonly GrayTemplate _noWaterTpl;
+    private readonly GrayTemplate _noFishTpl;
+    private readonly GrayTemplate _noFishAreaTpl;
     private readonly GrayTemplate _keepTpl;
     private readonly GrayTemplate _idleTpl;
     private readonly KeepLocator _keepLocator;
     private readonly string _fishProblem;
     private readonly string _rejectProblem;
     private readonly string _noWaterProblem;
+    private readonly string _noFishProblem;
+    private readonly string _noFishAreaProblem;
     private readonly string _keepProblem;
     private readonly string _idleProblem;
 
     public string FishTemplateProblem => _fishProblem;
     public string RejectTemplateProblem => _rejectProblem;
     public string NoWaterTemplateProblem => _noWaterProblem;
+    public string NoFishTemplateProblem => _noFishProblem;
+    public string NoFishAreaTemplateProblem => _noFishAreaProblem;
     public string KeepTemplateProblem => _keepProblem;
     public string IdleTemplateProblem => _idleProblem;
 
@@ -116,15 +142,21 @@ internal sealed class FishingReader : IDisposable
             var abs = FishingConfig.ToAbsolute(screen, profile.Reject);
             _reject = new RegionReader(abs);
             (_rejectTpl, _rejectProblem) = LoadTemplate(FishingConfig.RejectTemplatePath(profile.Key), abs.Size, "thông báo");
-            // Cung O do, khac anh — game ve hai thong bao nay cung mot cho. Truyen cung abs.Size
+            // Cung O do, khac anh — game ve ba thong bao nay cung mot cho. Truyen cung abs.Size
             // nen LoadTemplate tu chan luon ca truong hop mau bi chup lech kich thuoc.
             (_noWaterTpl, _noWaterProblem) = LoadTemplate(
                 FishingConfig.NoWaterTemplatePath(profile.Key), abs.Size, "không gần nước");
+            (_noFishTpl, _noFishProblem) = LoadTemplate(
+                FishingConfig.NoFishTemplatePath(profile.Key), abs.Size, "không có cá phù hợp");
+            (_noFishAreaTpl, _noFishAreaProblem) = LoadTemplate(
+                FishingConfig.NoFishAreaTemplatePath(profile.Key), abs.Size, "khu vực hết cá");
         }
         else
         {
             _rejectProblem = "chưa khoanh ô thông báo";
             _noWaterProblem = "chưa khoanh ô thông báo";
+            _noFishProblem = "chưa khoanh ô thông báo";
+            _noFishAreaProblem = "chưa khoanh ô thông báo";
         }
 
         if (profile?.Rod.IsSet == true)
@@ -211,13 +243,18 @@ internal sealed class FishingReader : IDisposable
 
         double rejectScore = -1;
         double noWaterScore = -1;
+        double noFishScore = -1;
+        double noFishAreaScore = -1;
         bool fail = false;
         bool noWater = false;
-        if (_reject is not null && (_rejectTpl is not null || _noWaterTpl is not null))
+        bool noFish = false;
+        bool noFishArea = false;
+        if (_reject is not null && (_rejectTpl is not null || _noWaterTpl is not null ||
+                                    _noFishTpl is not null || _noFishAreaTpl is not null))
         {
-            // MOT lan chup, MOT buffer, hai mau. Chup rieng cho tung mau thi hai lan doc roi vao
-            // hai khung hinh khac nhau, va thong bao chi hien vai giay — de lech khung la co luc
-            // ca hai deu truot du mat nguoi van thay thong bao nam do.
+            // MOT lan chup, MOT buffer, BON mau. Chup rieng cho tung mau thi bon lan doc roi vao
+            // bon khung hinh khac nhau, va thong bao chi hien vai giay — de lech khung la co luc
+            // ca bon deu truot du mat nguoi van thay thong bao nam do.
             _reject.Refresh();
             var gray = _reject.GrayBuffer(_reject.Region);
 
@@ -230,6 +267,16 @@ internal sealed class FishingReader : IDisposable
             {
                 noWaterScore = _noWaterTpl.Score(gray);
                 noWater = noWaterScore >= _cfg.NoWaterNccMin;
+            }
+            if (_noFishTpl is not null)
+            {
+                noFishScore = _noFishTpl.Score(gray);
+                noFish = noFishScore >= _cfg.NoFishNccMin;
+            }
+            if (_noFishAreaTpl is not null)
+            {
+                noFishAreaScore = _noFishAreaTpl.Score(gray);
+                noFishArea = noFishAreaScore >= _cfg.NoFishAreaNccMin;
             }
         }
 
@@ -273,6 +320,8 @@ internal sealed class FishingReader : IDisposable
             FishConfigured = _fishTpl is not null,
             RejectConfigured = _rejectTpl is not null,
             NoWaterConfigured = _noWaterTpl is not null,
+            NoFishConfigured = _noFishTpl is not null,
+            NoFishAreaConfigured = _noFishAreaTpl is not null,
             KeepConfigured = _keepLocator is not null,
             UiOpen = uiOpen,
             BlueFill01 = fill,
@@ -282,6 +331,10 @@ internal sealed class FishingReader : IDisposable
             RejectScore = rejectScore,
             NoWaterNotice = noWater,
             NoWaterScore = noWaterScore,
+            NoFishNotice = noFish,
+            NoFishScore = noFishScore,
+            NoFishAreaNotice = noFishArea,
+            NoFishAreaScore = noFishAreaScore,
             IdleConfigured = _idleTpl is not null,
             IdlePose = idlePose,
             IdleScore = idleScore,

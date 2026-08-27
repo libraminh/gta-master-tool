@@ -43,6 +43,21 @@ internal static class Program
             return rc;
         }
 
+        if (args.Length > 0 && args[0].Equals("--verify-split", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifySplit.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-split.txt"), report.ToString());
+            return rc;
+        }
+
         if (args.Length > 0 && args[0].Equals("--verify-wood", StringComparison.OrdinalIgnoreCase))
         {
             Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
@@ -115,6 +130,21 @@ internal static class Program
             catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
 
             TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-board.txt"), report.ToString());
+            return rc;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--verify-discord", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifyDiscord.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-discord.txt"), report.ToString());
             return rc;
         }
 

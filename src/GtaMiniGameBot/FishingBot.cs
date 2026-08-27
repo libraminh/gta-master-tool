@@ -9,7 +9,23 @@ internal enum FishingStopReason
     TrunkDump,
     Error,
     /// <summary>Cốp đầy và ba lô cũng đầy — hết chỗ chứa, phiên đã chạy hết mức. Không phải lỗi.</summary>
-    BagFull
+    BagFull,
+    /// <summary>
+    /// Game báo "không có cá nào phù hợp với cần và độ sâu câu của bạn" nhiều lượt liên tiếp.
+    /// Không phải lỗi của bot mà là sai trang bị / sai chỗ câu — người dùng phải đổi cần hoặc
+    /// đổi chỗ, câu tiếp bao nhiêu cũng vô ích.
+    /// </summary>
+    NoFishMatch,
+    /// <summary>
+    /// Game báo "Khu vực này hiện không có cá để câu" nhiều lượt liên tiếp. Cùng loại với
+    /// <see cref="NoFishMatch"/> — khác ở chỗ phải đổi CHỖ CÂU chứ không phải đổi cần.
+    /// </summary>
+    NoFishArea,
+    /// <summary>
+    /// Game báo "Bạn không đứng gần mặt nước" nhiều lượt liên tiếp. Nhân vật đã rời mép nước
+    /// thật — thả lại bao nhiêu cũng vô ích cho tới khi có người lái xe/đi bộ lại chỗ câu.
+    /// </summary>
+    NoWater
 }
 
 /// <summary>
@@ -20,6 +36,34 @@ internal enum FishingStopReason
 internal sealed class BagFullException : Exception
 {
     public BagFullException(string message) : base(message) { }
+}
+
+/// <summary>
+/// Game liên tục báo "không câu được ở đây" — hoặc "không có cá nào phù hợp với cần và độ sâu",
+/// hoặc "khu vực này hiện không có cá để câu". Ném từ trong vòng câu để cắt phiên; khác
+/// <see cref="BagFullException"/> ở chỗ đây KHÔNG phải kết thúc bình thường: chẳng có con cá nào
+/// được câu, và tình trạng chỉ hết khi người dùng đổi cần hoặc đổi chỗ.
+///
+/// Mang theo <see cref="Reason"/> thay vì tách thành hai lớp exception: hai tình huống này đi
+/// chung toàn bộ đường xử lý (chung chuỗi đếm, chung trần thử lại), chỉ khác câu chữ báo ra —
+/// tách lớp thì phải nhân đôi cả catch arm cho đúng một dòng khác biệt.
+/// </summary>
+internal sealed class NoFishMatchException : Exception
+{
+    public FishingStopReason Reason { get; }
+
+    public NoFishMatchException(FishingStopReason reason, string message) : base(message)
+        => Reason = reason;
+}
+
+/// <summary>
+/// Game báo "Bạn không đứng gần mặt nước" nhiều lượt liên tiếp. Cùng vai với
+/// <see cref="NoFishMatchException"/>: cắt phiên khi tình trạng đã rõ là không tự khỏi. Khác ở
+/// chỗ vài lượt đầu tiên là chuyện BÌNH THƯỜNG sau mỗi lần đổ cốp — chỉ chuỗi dài mới là sự cố.
+/// </summary>
+internal sealed class NoWaterException : Exception
+{
+    public NoWaterException(string message) : base(message) { }
 }
 
 /// <summary>
@@ -63,6 +107,19 @@ internal sealed class FishingBot
     private int _rejects;
     /// <summary>Số lần thả câu bị chặn vì "không đứng gần mặt nước". Đếm riêng khỏi _rejects.</summary>
     private int _noWater;
+    /// <summary>Số lần thấy "không có cá phù hợp" cả phiên — chỉ để vẽ thanh tỉ lệ.</summary>
+    private int _noFish;
+    /// <summary>
+    /// Số lần thấy "không có cá phù hợp" LIÊN TIẾP. Đây mới là con số quyết định lúc nào dừng:
+    /// đếm tổng thì một lần đọc nhầm lúc 9 giờ sáng sẽ cộng dồn với một lần lúc 3 giờ chiều rồi
+    /// cắt ngang một phiên hoàn toàn khoẻ mạnh. Đặt lại về 0 ngay khi có cá cắn.
+    /// </summary>
+    private int _noFishStreak;
+    /// <summary>
+    /// Số lần thấy "không đứng gần mặt nước" LIÊN TIẾP, cùng vai với <see cref="_noFishStreak"/>.
+    /// Cũng đặt lại về 0 khi có cá cắn.
+    /// </summary>
+    private int _noWaterStreak;
     private int _castMissed;
     /// <summary>Số lần thả lại vì thấy nhân vật đứng yên, không cầm cần. Đếm riêng khỏi _biteTimeouts.</summary>
     private int _idleRecasts;
@@ -130,6 +187,9 @@ internal sealed class FishingBot
         FishingStopReason.MissingRegions => "chưa khoanh thanh / cá",
         FishingStopReason.TrunkDump => "đổ cốp thất bại",
         FishingStopReason.BagFull => "cốp đầy, ba lô đầy — đi bán cá",
+        FishingStopReason.NoFishMatch => "không có cá hợp cần và độ sâu",
+        FishingStopReason.NoFishArea => "khu vực này hết cá",
+        FishingStopReason.NoWater => "không đứng gần mặt nước",
         _ => "lỗi"
     };
 
@@ -159,8 +219,26 @@ internal sealed class FishingBot
                 Emit(reader.NoWaterTemplateProblem is { } np
                     ? $"“không đứng gần mặt nước”: chưa dùng được ({np}) — vẫn chờ " +
                       $"{_cfg.CastConfirmMs} ms rồi thả lại như cũ"
-                    : $"“không đứng gần mặt nước”: nhận ở ncc ≥ {_cfg.NoWaterNccMin:F2}, " +
-                      $"thấy là thả lại sau {_cfg.RejectRecastMs} ms");
+                    : $"“không đứng gần mặt nước”: nhận ở ncc ≥ {_cfg.NoWaterNccMin:F2}, thấy là " +
+                      $"thả lại sau {_cfg.RejectRecastMs} ms — quá {_cfg.NoWaterRetries} lần liên " +
+                      "tiếp thì báo Discord rồi dừng phiên");
+
+            // Cung la tuy chon, cung ly do. Khac o cho: thieu mau nay thi bot khong chi cham hon
+            // ma quay vong VO TAN — nen dong log phai noi ro cai gia, khong chi noi "chua co mau".
+            if (_profile.Reject.IsSet)
+                Emit(reader.NoFishTemplateProblem is { } fnp
+                    ? $"“không có cá phù hợp”: chưa dùng được ({fnp}) — sai cần/độ sâu sẽ quay " +
+                      "vòng mãi mà không ai báo"
+                    : $"“không có cá phù hợp”: nhận ở ncc ≥ {_cfg.NoFishNccMin:F2}, thấy là báo " +
+                      $"Discord rồi thả lại {_cfg.NoFishRetries} lần, vẫn bị thì dừng phiên");
+
+            // Chung chuoi dem va chung tran voi "khong co ca phu hop" — chi khac cau chu bao ra.
+            if (_profile.Reject.IsSet)
+                Emit(reader.NoFishAreaTemplateProblem is { } fap
+                    ? $"“khu vực hết cá”: chưa dùng được ({fap}) — hồ cạn cá sẽ quay vòng mãi mà " +
+                      "không ai báo"
+                    : $"“khu vực hết cá”: nhận ở ncc ≥ {_cfg.NoFishAreaNccMin:F2}, dùng chung " +
+                      "ngân sách thử lại với “không có cá phù hợp”");
 
             // Cung la tuy chon, va so do LUON chay ke ca khi cong tac tat: dong log timeout se
             // kem "[dung ...]" de biet neu bat len thi tiet kiem duoc bao nhieu, va dong "ca can"
@@ -302,12 +380,68 @@ internal sealed class FishingBot
                     if (biteFrames >= _cfg.BiteDebounceFrames)
                     {
                         _bites++;
+                        // Ca can duoc nghia la day dang o duoi nuoc VA can/do sau deu hop — ca hai
+                        // chuoi hong da dut, khong duoc mang so cu sang tinh tiep.
+                        _noFishStreak = 0;
+                        _noWaterStreak = 0;
                         Emit($"cá cắn (ncc={snap.FishScore:F3}) — giữ S" + IdleNote());
                         HoldS();
                         fighting = true;
                         sawHud = snap.UiOpen;
                         fightSw.Restart();
                         SetPhase(FishingPhase.Fighting);
+                        continue;
+                    }
+
+                    // HAI thong bao "khong cau duoc o day": "khong co ca nao phu hop voi can va do
+                    // sau cau cua ban" (thu ba) va "khu vuc nay hien khong co ca de cau" (thu tu).
+                    // Ca hai ve tren cung o do.
+                    //
+                    // Phai xet TRUOC hai nhanh kia. Bon mau cham tren cung mot vung anh, neu mot
+                    // khung nao do khop nhieu mau thi thu tu if quyet dinh ai thang — ma xu nham
+                    // thanh "che moi" hay "xa nuoc" la quay vong vo tan, dung cai bay ma nhanh nay
+                    // sinh ra de tranh.
+                    //
+                    // Khac han hai cai kia o BAN CHAT: che moi va xa nuoc tu het sau mot cu tha
+                    // lai. Sai can / het ca thi tha lai bao nhieu lan cung ra dung thong bao do.
+                    //
+                    // CHUNG mot chuoi dem cho ca hai, khong tach: neu game doi qua lai giua hai
+                    // thong bao ma dem rieng thi khong chuoi nao cham tran, bot quay vong mai.
+                    bool noFishOk = (snap.NoFishNotice || snap.NoFishAreaNotice)
+                                    && !snap.UiOpen && DateTime.UtcNow >= ignoreFailUntil;
+                    if (noFishOk)
+                    {
+                        // Ca hai cung khop thi mot trong hai la duong tinh gia. Uu tien "khu vuc
+                        // het ca": loi khuyen "di cho khac" van dung ke ca khi that ra la sai can,
+                        // con nguoc lai thi khong.
+                        bool area = snap.NoFishAreaNotice;
+                        string what = area ? "khu vực hết cá" : "không có cá phù hợp";
+                        double ncc = area ? snap.NoFishAreaScore : snap.NoFishScore;
+
+                        _noFish++;
+                        _noFishStreak++;
+
+                        // Lan dau: bao Discord NGAY, khong ping. Bot con dang thu lai — neu may cu
+                        // sau chay duoc thi day la dau vet duy nhat cho biet vua co chuyen. Khong
+                        // ping vi tin dung phien (co ping) co the den chi 3 giay sau do.
+                        if (_noFishStreak == 1 && _cfg.NoFishRetries > 0)
+                            DiscordNotifier.NotifyAlert(_cfg,
+                                area ? "Khu vực này hiện không có cá để câu"
+                                     : "Không có cá phù hợp với cần và độ sâu",
+                                $"đang thử câu lại {_cfg.NoFishRetries} lần nữa", Emit);
+
+                        if (_noFishStreak > _cfg.NoFishRetries)
+                            throw new NoFishMatchException(
+                                area ? FishingStopReason.NoFishArea : FishingStopReason.NoFishMatch,
+                                $"thấy \"{what}\" {_noFishStreak} lần liên tiếp — " +
+                                (area ? "đi chỗ khác câu" : "đổi cần hoặc đổi chỗ câu"));
+
+                        Emit($"{what} (ncc={ncc:F3}) — câu lại " +
+                             $"({_noFishStreak}/{_cfg.NoFishRetries + 1})");
+                        Sleep(ct, _cfg.RejectRecastMs);
+                        Cast(ct, area ? "câu lại (khu vực hết cá)" : "câu lại (sai cần/độ sâu)",
+                            waitRelease: false);
+                        EnterWaiting();
                         continue;
                     }
 
@@ -333,16 +467,37 @@ internal sealed class FishingBot
                     //
                     // Dem rieng, log rieng, khong gop vao _rejects: hai nguyen nhan khac nhau ma
                     // chung mot dong log thi lan sau doc log lai khong phan biet duoc.
+                    //
+                    // Co tran dung nhu nhanh "sai can": neu nhan vat THAT SU roi mep nuoc (xe bi
+                    // day di, bi keo, dung sai cho sau khi do cop) thi thong bao khong bao gio het
+                    // va truoc day bot quay vong ~1 lan/1.5 s cho toi khi co nguoi phat hien.
                     bool noWaterOk = snap.NoWaterNotice && !snap.UiOpen && DateTime.UtcNow >= ignoreFailUntil;
                     if (noWaterOk)
                     {
                         _noWater++;
-                        Emit($"không đứng gần mặt nước (ncc={snap.NoWaterScore:F3}, HUD đóng) — câu lại");
+                        _noWaterStreak++;
+
+                        // Bao o lan THU HAI, khong phai lan dau nhu nhanh "sai can". Lan dau la
+                        // chuyen binh thuong: 77% cu tha ngay sau do cop dinh cai nay roi tu khoi.
+                        // Chuoi reset moi khi co ca can, nen bao o lan dau la moi luot do cop mot
+                        // tin Discord — vai chuc tin mot phien. Lan thu hai moi la bat thuong.
+                        if (_noWaterStreak == 2 && _cfg.NoWaterRetries >= 2)
+                            DiscordNotifier.NotifyAlert(_cfg,
+                                "Không đứng gần mặt nước",
+                                $"thả lại một lần rồi vẫn bị — đang thử thêm " +
+                                $"{_cfg.NoWaterRetries - 1} lần nữa", Emit);
+
+                        if (_noWaterStreak > _cfg.NoWaterRetries)
+                            throw new NoWaterException(
+                                $"thấy \"không đứng gần mặt nước\" {_noWaterStreak} lần liên tiếp — " +
+                                "nhân vật đã rời mép nước");
+
+                        Emit($"không đứng gần mặt nước (ncc={snap.NoWaterScore:F3}, HUD đóng) — " +
+                             $"câu lại ({_noWaterStreak}/{_cfg.NoWaterRetries + 1})");
                         Sleep(ct, _cfg.RejectRecastMs);
                         Cast(ct, "câu lại (không gần nước)", waitRelease: false);
                         // EnterWaiting dat lai ignoreFailUntil = +CastCooldownMs, nen nhanh nay tu
-                        // gioi han ~1 lan thu moi 1.5 s. Khong can khoa dem rieng, ke ca khi nhan
-                        // vat that su dung xa nuoc va thong bao khong bao gio het.
+                        // gioi han ~1 lan thu moi 1.5 s.
                         EnterWaiting();
                         continue;
                     }
@@ -401,6 +556,7 @@ internal sealed class FishingBot
                              $" (thanh={(sawCastHud ? "đã mở" : "chưa mở lần nào")}" +
                              $" fill={snap.BlueFill01 * 100:0.0}% cá={snap.FishScore:F3}" +
                              $" chê={snap.RejectScore:F3} nước={snap.NoWaterScore:F3}" +
+                             $" saicần={snap.NoFishScore:F3} hếtcá={snap.NoFishAreaScore:F3}" +
                              $" đứng={snap.IdleScore:F3})" + IdleNote());
                         _biteTimeouts++;
                         Cast(ct, "câu lại (timeout)");
@@ -455,6 +611,18 @@ internal sealed class FishingBot
             reason = FishingStopReason.BagFull;
             message = ex.Message;
             Emit("--- xong phiên: " + ex.Message + " ---");
+        }
+        catch (NoFishMatchException ex)
+        {
+            reason = ex.Reason;
+            message = ex.Message;
+            Emit("dừng: " + ex.Message);
+        }
+        catch (NoWaterException ex)
+        {
+            reason = FishingStopReason.NoWater;
+            message = ex.Message;
+            Emit("dừng: " + ex.Message);
         }
         catch (TrunkStepException ex)
         {
@@ -1048,6 +1216,7 @@ internal sealed class FishingBot
             Bites = _bites,
             Rejects = _rejects,
             NoWater = _noWater,
+            NoFish = _noFish,
             CastMissed = _castMissed,
             IdleRecasts = _idleRecasts,
             BiteTimeouts = _biteTimeouts,

@@ -8,6 +8,8 @@ internal sealed class FishingPanel : UserControl
 
     /// <summary>Phiên vừa rồi kết thúc vì hết chỗ chứa — cú bấm kế tiếp chỉ để xác nhận, không chạy.</summary>
     private bool _finished;
+    /// <summary>Lý do phiên trước dừng — chỉ để chốt một-lần-bấm in đúng câu nhắc.</summary>
+    private FishingStopReason _stopReason;
 
     private readonly DarkPick _screens = new();
     private readonly Label _profile = new();
@@ -19,6 +21,8 @@ internal sealed class FishingPanel : UserControl
     private readonly DarkButton _btnFish = new();
     private readonly DarkButton _btnReject = new();
     private readonly DarkButton _btnNoWater = new();
+    private readonly DarkButton _btnNoFish = new();
+    private readonly DarkButton _btnNoFishArea = new();
     private readonly DarkButton _btnKeep = new();
     private readonly DarkButton _btnKeepBand = new();
     private readonly DarkCheck _idleEnabled = new();
@@ -26,10 +30,16 @@ internal sealed class FishingPanel : UserControl
     private readonly DarkButton _btnIdle = new();
     private readonly DarkButton _btnAltProbe = new();
     private readonly DarkButton _btnTrunkSetup = new();
+    private readonly DarkButton _btnKgPerUnit = new();
     private readonly DarkCheck _releaseEnabled = new();
     private readonly DarkButton _btnReleaseCatalog = new();
+    private readonly DarkCheck _discordEnabled = new();
+    private readonly DarkButton _btnDiscord = new();
+    private readonly Label _discordStatus = new();
+    private bool _syncingDiscordUi;
     private readonly Label _releaseStatus = new();
     private readonly DarkCheck _dumpEnabled = new();
+    private readonly DarkCheck _splitEnabled = new();
     private readonly DarkSpin _everyN = new();
     private readonly DarkSpin _dumpEvery = new();
     private readonly DarkSpin _turnMs = new();
@@ -38,6 +48,8 @@ internal sealed class FishingPanel : UserControl
     private readonly PictureBox _thumbFish = new();
     private readonly PictureBox _thumbReject = new();
     private readonly PictureBox _thumbNoWater = new();
+    private readonly PictureBox _thumbNoFish = new();
+    private readonly PictureBox _thumbNoFishArea = new();
     private readonly PictureBox _thumbKeep = new();
     private readonly PictureBox _thumbKeepBand = new();
     private readonly PictureBox _thumbIdle = new();
@@ -58,7 +70,8 @@ internal sealed class FishingPanel : UserControl
     private readonly CapacityBar _capBag = new();
     private readonly CapacityBar _capTrunk = new();
 
-    private MeterList.Row _mHud, _mFill, _mFish, _mReject, _mNoWater, _mIdle, _mKeep;
+    private MeterList.Row _mHud, _mFill, _mFish, _mReject, _mNoWater, _mNoFish, _mNoFishArea,
+                          _mIdle, _mKeep;
     private FishingState _state = FishingState.Idle;
     private int _sparkAt = -1;
 
@@ -126,6 +139,8 @@ internal sealed class FishingPanel : UserControl
         DisposeThumb(_thumbFish);
         DisposeThumb(_thumbReject);
         DisposeThumb(_thumbNoWater);
+        DisposeThumb(_thumbNoFish);
+        DisposeThumb(_thumbNoFishArea);
         DisposeThumb(_thumbKeep);
         DisposeThumb(_thumbKeepBand);
         DisposeThumb(_thumbIdle);
@@ -273,7 +288,7 @@ internal sealed class FishingPanel : UserControl
         int y = Theme.Px(10);
 
         // ---- Doc HUD ----
-        var hud = new DarkGroup { Title = "Đọc HUD", Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(202)) };
+        var hud = new DarkGroup { Title = "Đọc HUD", Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(244)) };
         host.Controls.Add(hud);
 
         _watch.Text = "Theo dõi (chỉ đọc, không bấm)";
@@ -287,13 +302,15 @@ internal sealed class FishingPanel : UserControl
         _mFish = _meters.Add("cá cắn");
         _mReject = _meters.Add("chê mồi");
         _mNoWater = _meters.Add("xa nước");
+        _mNoFish = _meters.Add("sai cần");
+        _mNoFishArea = _meters.Add("hết cá");
         _mIdle = _meters.Add("đứng yên");
         _mKeep = _meters.Add("cất vào");
-        // 7 hang x Px(21). Doi so hang thi phai doi ca chieu cao nay, chieu cao group ben tren,
+        // 9 hang x Px(21). Doi so hang thi phai doi ca chieu cao nay, chieu cao group ben tren,
         // va buoc y ben duoi — MeterList khong tu gian.
-        _meters.SetBounds(Theme.Px(12), Theme.Px(48), w - Theme.Px(24), Theme.Px(148));
+        _meters.SetBounds(Theme.Px(12), Theme.Px(48), w - Theme.Px(24), Theme.Px(190));
         hud.Controls.Add(_meters);
-        y += Theme.Px(212);
+        y += Theme.Px(254);
 
         // ---- Ba lo / cop ----
         var kg = new DarkGroup { Title = "Ba lô & cốp xe", Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(152)) };
@@ -312,7 +329,7 @@ internal sealed class FishingPanel : UserControl
         var reg = new DarkGroup
         {
             Title = "Vùng đã khoanh",
-            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(284))
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(348))
         };
         host.Controls.Add(reg);
 
@@ -326,15 +343,26 @@ internal sealed class FishingPanel : UserControl
         _profile.BackColor = Theme.Surface;
         reg.Controls.Add(_profile);
 
-        int tw = (w - Theme.Px(24) - Theme.Px(20)) / 6;
-        AddThumb(reg, _thumbBar, Theme.Px(12) + 0 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Thanh");
-        AddThumb(reg, _thumbFish, Theme.Px(12) + 1 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Cá");
-        AddThumb(reg, _thumbReject, Theme.Px(12) + 2 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Thông báo");
-        AddThumb(reg, _thumbNoWater, Theme.Px(12) + 3 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Xa nước");
-        AddThumb(reg, _thumbKeep, Theme.Px(12) + 4 * (tw + Theme.Px(4)), Theme.Px(78), tw, "CẤT VÀO");
-        AddThumb(reg, _thumbKeepBand, Theme.Px(12) + 5 * (tw + Theme.Px(4)), Theme.Px(78), tw, "Vùng quét");
+        // HAI hang bon o, khong phai mot hang tam. Bon mau thong bao dung chung mot o khoanh nen
+        // gom lai la dung ve y nghia — va o mot hang tam thi moi o chi con ~44px, anh toast rong
+        // thanh mot vet xam khong the kiem bang mat. Hai hang bon o cho ~92px.
+        //
+        // Chia cho SO O MOI HANG, va Px(12) la (so o - 1) x Px(4). Doi so o thi phai sua ca hai.
+        // Moi hang chiem Px(74): nhan Px(14) + Px(2) khe + anh Px(58) — xem AddThumb.
+        int tw = (w - Theme.Px(24) - Theme.Px(12)) / 4;
+        int r1 = Theme.Px(78);
+        AddThumb(reg, _thumbBar, Theme.Px(12) + 0 * (tw + Theme.Px(4)), r1, tw, "Thanh");
+        AddThumb(reg, _thumbFish, Theme.Px(12) + 1 * (tw + Theme.Px(4)), r1, tw, "Cá");
+        AddThumb(reg, _thumbKeep, Theme.Px(12) + 2 * (tw + Theme.Px(4)), r1, tw, "CẤT VÀO");
+        AddThumb(reg, _thumbKeepBand, Theme.Px(12) + 3 * (tw + Theme.Px(4)), r1, tw, "Vùng quét");
 
-        int by = Theme.Px(158);
+        int r2 = r1 + Theme.Px(80);
+        AddThumb(reg, _thumbReject, Theme.Px(12) + 0 * (tw + Theme.Px(4)), r2, tw, "Thông báo");
+        AddThumb(reg, _thumbNoWater, Theme.Px(12) + 1 * (tw + Theme.Px(4)), r2, tw, "Xa nước");
+        AddThumb(reg, _thumbNoFish, Theme.Px(12) + 2 * (tw + Theme.Px(4)), r2, tw, "Sai cần");
+        AddThumb(reg, _thumbNoFishArea, Theme.Px(12) + 3 * (tw + Theme.Px(4)), r2, tw, "Hết cá");
+
+        int by = Theme.Px(238);
         int bw = (w - Theme.Px(24) - Theme.Px(8)) / 3;
         Btn(reg, _btnBar, Theme.Px(12), by, bw, "Khoanh thanh", () => Pick(FishingSlot.Bar));
         Btn(reg, _btnFish, Theme.Px(12) + bw + Theme.Px(4), by, bw, "Khoanh cá", () => Pick(FishingSlot.Fish));
@@ -347,12 +375,15 @@ internal sealed class FishingPanel : UserControl
         Btn(reg, _btnKeepBand, Theme.Px(12) + bw2 + Theme.Px(4), by, bw2, "Khoanh vùng quét nút",
             () => Pick(FishingSlot.KeepBand));
 
-        // Rieng mau nay KHONG khoanh tay: no phai trung khop tung pixel voi o "thong bao" o tren,
-        // nen nut chup lai dung rect do. Xem CaptureNoWater.
+        // Ba mau nay KHONG khoanh tay: chung phai trung khop tung pixel voi o "thong bao" o tren,
+        // nen nut chup lai dung rect do. Xem CaptureNoWater / CaptureNoFish / CaptureNoFishArea.
+        // Nhan rut gon vi hang anh ngay tren da ghi ro ten tung mau.
         by += Theme.Px(34);
-        Btn(reg, _btnNoWater, Theme.Px(12), by, w - Theme.Px(24),
-            "Chụp mẫu “không đứng gần mặt nước”", CaptureNoWater);
-        y += Theme.Px(294);
+        Btn(reg, _btnNoWater, Theme.Px(12), by, bw, "Chụp: xa nước", CaptureNoWater);
+        Btn(reg, _btnNoFish, Theme.Px(12) + bw + Theme.Px(4), by, bw, "Chụp: sai cần", CaptureNoFish);
+        Btn(reg, _btnNoFishArea, Theme.Px(12) + (bw + Theme.Px(4)) * 2, by, bw,
+            "Chụp: hết cá", CaptureNoFishArea);
+        y += Theme.Px(358);
 
         // ---- Mat can cau ----
         //
@@ -408,7 +439,7 @@ internal sealed class FishingPanel : UserControl
         var dump = new DarkGroup
         {
             Title = "Đổ cá vào cốp xe",
-            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(206))
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(258))
         };
         host.Controls.Add(dump);
 
@@ -418,7 +449,14 @@ internal sealed class FishingPanel : UserControl
         _dumpEnabled.CheckedChanged += OnDumpEnabledChanged;
         dump.Controls.Add(_dumpEnabled);
 
-        int ry = Theme.Px(50);
+        _splitEnabled.Text = "Chỗ trống cuối cốp: tách chồng cá cho vừa rồi nhồi nốt";
+        _splitEnabled.BackColor = Theme.Surface;
+        _splitEnabled.SetBounds(Theme.Px(12), Theme.Px(48), w - Theme.Px(24), Theme.Px(22));
+        _splitEnabled.SetCheckedQuiet(_cfg.SplitEnabled);
+        _splitEnabled.CheckedChanged += OnSplitEnabledChanged;
+        dump.Controls.Add(_splitEnabled);
+
+        int ry = Theme.Px(78);
         Lab(dump, "Kiểm tra KG mỗi", Theme.Px(12), ry + Theme.Px(4), Theme.Px(120));
         _everyN.SetBounds(Theme.Px(138), ry, Theme.Px(62), Theme.Px(24));
         _everyN.Min = 1;
@@ -456,6 +494,33 @@ internal sealed class FishingPanel : UserControl
         ry += Theme.Px(40);
         Btn(dump, _btnTrunkSetup, Theme.Px(12), ry, Theme.Px(184), "Cấu hình đổ cốp…", OpenTrunkSetup);
         Btn(dump, _btnAltProbe, Theme.Px(202), ry, Theme.Px(184), "Test giữ Alt (menu xe)", DoAltProbe);
+
+        ry += Theme.Px(34);
+        Btn(dump, _btnKgPerUnit, Theme.Px(12), ry, Theme.Px(184), "Kg mỗi con…", OpenKgPerUnit);
+        y += Theme.Px(268);
+
+        // ---- Bao Discord ----
+        var dis = new DarkGroup
+        {
+            Title = "Báo Discord",
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(102))
+        };
+        host.Controls.Add(dis);
+
+        _discordEnabled.Text = "Nhắn về Discord khi phiên câu kết thúc";
+        _discordEnabled.BackColor = Theme.Surface;
+        _discordEnabled.SetBounds(Theme.Px(12), Theme.Px(22), w - Theme.Px(24), Theme.Px(22));
+        _discordEnabled.SetCheckedQuiet(_cfg.DiscordNotifyEnabled);
+        _discordEnabled.CheckedChanged += OnDiscordEnabledChanged;
+        dis.Controls.Add(_discordEnabled);
+
+        _discordStatus.SetBounds(Theme.Px(12), Theme.Px(48), w - Theme.Px(24), Theme.Px(18));
+        _discordStatus.Font = Theme.DataSm;
+        _discordStatus.BackColor = Theme.Surface;
+        dis.Controls.Add(_discordStatus);
+
+        Btn(dis, _btnDiscord, Theme.Px(12), Theme.Px(68), Theme.Px(184), "Cấu hình Discord…", OpenDiscord);
+        SyncDiscordUi();
     }
 
     private static void Lab(Control host, string text, int x, int y, int w)
@@ -549,6 +614,7 @@ internal sealed class FishingPanel : UserControl
         try
         {
             _dumpEnabled.SetCheckedQuiet(p?.TrunkDumpEnabled == true);
+            _splitEnabled.SetCheckedQuiet(_cfg.SplitEnabled);
             _everyN.SetValueQuiet(Math.Clamp(_cfg.WeightCheckEveryCatches, _everyN.Min, _everyN.Max));
             _dumpEvery.SetValueQuiet(Math.Clamp(_cfg.DumpEveryCatches, _dumpEvery.Min, _dumpEvery.Max));
             _turnMs.SetValueQuiet(Math.Clamp(_cfg.AfterDumpTurnMs, _turnMs.Min, _turnMs.Max));
@@ -594,6 +660,16 @@ internal sealed class FishingPanel : UserControl
         if (_syncingDumpUi) return;
         _cfg.WeightCheckEveryCatches = _everyN.Value;
         try { _cfg.Save(); } catch { }
+    }
+
+    private void OnSplitEnabledChanged()
+    {
+        if (_syncingDumpUi) return;
+        _cfg.SplitEnabled = _splitEnabled.Checked;
+        try { _cfg.Save(); } catch (Exception ex) { Append("lưu cấu hình lỗi: " + ex.Message); }
+        Append(_cfg.SplitEnabled
+            ? "bật tách cá: cốp gần đầy thì tách một chồng cho vừa chỗ trống rồi kéo nốt"
+            : "tắt tách cá: cốp không nhận trọn ô nào nữa là kết luận đầy");
     }
 
     private void OnDumpEveryChanged()
@@ -643,6 +719,65 @@ internal sealed class FishingPanel : UserControl
             : text.StartsWith("chưa chọn", StringComparison.Ordinal) ? Theme.Dim : Theme.Warn;
     }
 
+    /// <summary>
+    /// Vẽ lại dòng trạng thái Discord và kéo checkbox về đúng thực tế. Cần vì
+    /// <see cref="FishingConfig.Normalize"/> tự tắt cờ khi URL không đúng dạng webhook — bật
+    /// checkbox mà cấu hình rỗng thì nó phải bật lên rồi tự tắt xuống, chứ không được đứng
+    /// "bật" trong khi bot sẽ chẳng gửi gì.
+    /// </summary>
+    private void SyncDiscordUi()
+    {
+        _syncingDiscordUi = true;
+        try { _discordEnabled.SetCheckedQuiet(_cfg.DiscordNotifyEnabled); }
+        finally { _syncingDiscordUi = false; }
+
+        if (!DiscordNotifier.IsWebhookUrl(_cfg.DiscordWebhookUrl))
+        {
+            _discordStatus.Text = "chưa dán webhook — bấm Cấu hình Discord…";
+            _discordStatus.ForeColor = Theme.Dim;
+        }
+        else if (!_cfg.DiscordNotifyEnabled)
+        {
+            _discordStatus.Text = "đã có webhook, đang tắt báo";
+            _discordStatus.ForeColor = Theme.Dim;
+        }
+        else
+        {
+            _discordStatus.Text = string.IsNullOrEmpty(_cfg.DiscordUserId)
+                ? "sẽ nhắn khi dừng — không ping (chưa có User ID)"
+                : "sẽ nhắn và ping khi dừng ngoài ý muốn";
+            _discordStatus.ForeColor = Theme.Good;
+        }
+    }
+
+    private void OnDiscordEnabledChanged()
+    {
+        if (_syncingDiscordUi) return;
+
+        if (_discordEnabled.Checked && !DiscordNotifier.IsWebhookUrl(_cfg.DiscordWebhookUrl))
+        {
+            Append("chưa có webhook Discord — mở \"Cấu hình Discord…\" để dán URL trước");
+            SyncDiscordUi();      // keo checkbox ve tat
+            return;
+        }
+
+        _cfg.DiscordNotifyEnabled = _discordEnabled.Checked;
+        try { _cfg.Save(); } catch (Exception ex) { Append("lưu cấu hình lỗi: " + ex.Message); }
+        Append(_cfg.DiscordNotifyEnabled
+            ? "bật báo Discord: mỗi lần phiên câu kết thúc sẽ có một tin vào kênh"
+            : "tắt báo Discord");
+        SyncDiscordUi();
+    }
+
+    private void OpenDiscord()
+    {
+        using (var f = new DiscordForm(_cfg))
+            f.ShowDialog(FindForm());
+        // Hop thoai ghi thang vao _cfg roi Save, nen chi can ve lai — Normalize trong do co the
+        // da tu tat co vi URL sai dang.
+        SyncDiscordUi();
+    }
+
     private void OnReleaseEnabledChanged()
     {
         if (_syncingReleaseUi) return;
@@ -663,6 +798,22 @@ internal sealed class FishingPanel : UserControl
 
         _cfg = FishingConfig.Load();
         RefreshReleaseStatus();
+    }
+
+    private void OpenKgPerUnit()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi sửa bảng kg mỗi con"); return; }
+
+        var screen = SelectedScreen;
+        var p = screen is null ? null : _cfg.GetOrCreate(screen);
+
+        using (var f = new KgPerUnitForm(_cfg, p))
+            if (f.ShowDialog(FindForm()) != DialogResult.OK) return;
+
+        // Nap lai tu dia nhu cac hop thoai khac: hop thoai da Save, con doi tuong _cfg trong tay
+        // panel co the con giu nhung thay doi chua ghi cua rieng no.
+        _cfg = FishingConfig.Load();
+        Append($"bảng kg mỗi con: {_cfg.KgPerUnit.Count} loài đã biết");
     }
 
     private void OpenTrunkSetup()
@@ -845,6 +996,133 @@ internal sealed class FishingPanel : UserControl
                $"{_cfg.NoWaterNccMin:F2}, lúc không hiện phải thấp.");
     }
 
+    /// <summary>
+    /// Chụp mẫu "Không có cá nào phù hợp với cần và độ sâu câu của bạn".
+    ///
+    /// Cùng lối với <see cref="CaptureNoWater"/> và cùng lý do: thông báo thứ ba này cũng vẽ trên
+    /// đúng ô đã khoanh cho chê mồi, nên mẫu phải trùng khớp kích thước ô đó — cắt thẳng tại rect
+    /// chứ không cho kéo tay.
+    /// </summary>
+    private void CaptureNoFish()
+    {
+        if (IsRunning) { Append("đang chạy — dừng trước khi chụp mẫu"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var profile = _cfg.TryGet(screen);
+        if (profile is null || !profile.Reject.IsSet)
+        {
+            Append("chưa khoanh ô thông báo — bấm “Khoanh thông báo” trước, mẫu này dùng chung ô đó");
+            return;
+        }
+
+        var host = FindForm();
+        using var shot = StillPicker.CaptureWithCountdown(
+            host, screen,
+            "Thả câu ở chỗ hiện “Không có cá nào phù hợp với cần và độ sâu câu của bạn”. " +
+            "Bấm xong có " + _cfg.ShotCountdownSec + " giây.",
+            _cfg.ShotCountdownSec, _cfg.WindowMatch, out string problem);
+
+        if (shot is null)
+        {
+            Append("chụp mẫu không có cá phù hợp: " + (problem ?? "không chụp được"));
+            return;
+        }
+
+        var abs = FishingConfig.ToAbsolute(screen, profile.Reject);
+        // Anh chup theo man hinh dang chon, nen doi toa do tuyet doi ve toa do TRONG anh.
+        var inImage = new Rectangle(abs.X - screen.Bounds.X, abs.Y - screen.Bounds.Y, abs.Width, abs.Height);
+        inImage = Rectangle.Intersect(inImage, new Rectangle(0, 0, shot.Width, shot.Height));
+        if (inImage.Width < 1 || inImage.Height < 1)
+        {
+            Append("ô thông báo nằm ngoài ảnh chụp — khoanh lại ô thông báo");
+            return;
+        }
+
+        var crop = shot.Clone(inImage, shot.PixelFormat);
+        try
+        {
+            RegionPicker.SavePng(crop, FishingConfig.NoFishTemplatePath(profile.Key));
+        }
+        catch (Exception ex)
+        {
+            Append("lưu mẫu lỗi: " + ex.Message);
+            crop.Dispose();
+            return;
+        }
+
+        DisposeThumb(_thumbNoFish);
+        _thumbNoFish.Image = crop;
+        _reader?.Dispose();
+        _reader = null;
+        Append($"đã chụp mẫu không có cá phù hợp  {crop.Width}×{crop.Height} → {profile.Key}");
+        Append("kiểm bằng hàng “sai cần” ở Đọc HUD: lúc thông báo hiện phải lên ≥ " +
+               $"{_cfg.NoFishNccMin:F2}, lúc không hiện phải thấp. Soi luôn ba hàng “chê mồi”, " +
+               "“xa nước” và “hết cá” — chúng KHÔNG được cùng vọt lên.");
+    }
+
+    /// <summary>
+    /// Chụp mẫu "Khu vực này hiện không có cá để câu" — thông báo thứ tư trên cùng ô đã khoanh.
+    /// Cùng lối và cùng lý do với <see cref="CaptureNoWater"/> / <see cref="CaptureNoFish"/>.
+    /// </summary>
+    private void CaptureNoFishArea()
+    {
+        if (IsRunning) { Append("đang chạy — dừng trước khi chụp mẫu"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var profile = _cfg.TryGet(screen);
+        if (profile is null || !profile.Reject.IsSet)
+        {
+            Append("chưa khoanh ô thông báo — bấm “Khoanh thông báo” trước, mẫu này dùng chung ô đó");
+            return;
+        }
+
+        var host = FindForm();
+        using var shot = StillPicker.CaptureWithCountdown(
+            host, screen,
+            "Thả câu ở hồ đang hiện “Khu vực này hiện không có cá để câu”. " +
+            "Bấm xong có " + _cfg.ShotCountdownSec + " giây.",
+            _cfg.ShotCountdownSec, _cfg.WindowMatch, out string problem);
+
+        if (shot is null)
+        {
+            Append("chụp mẫu khu vực hết cá: " + (problem ?? "không chụp được"));
+            return;
+        }
+
+        var abs = FishingConfig.ToAbsolute(screen, profile.Reject);
+        // Anh chup theo man hinh dang chon, nen doi toa do tuyet doi ve toa do TRONG anh.
+        var inImage = new Rectangle(abs.X - screen.Bounds.X, abs.Y - screen.Bounds.Y, abs.Width, abs.Height);
+        inImage = Rectangle.Intersect(inImage, new Rectangle(0, 0, shot.Width, shot.Height));
+        if (inImage.Width < 1 || inImage.Height < 1)
+        {
+            Append("ô thông báo nằm ngoài ảnh chụp — khoanh lại ô thông báo");
+            return;
+        }
+
+        var crop = shot.Clone(inImage, shot.PixelFormat);
+        try
+        {
+            RegionPicker.SavePng(crop, FishingConfig.NoFishAreaTemplatePath(profile.Key));
+        }
+        catch (Exception ex)
+        {
+            Append("lưu mẫu lỗi: " + ex.Message);
+            crop.Dispose();
+            return;
+        }
+
+        DisposeThumb(_thumbNoFishArea);
+        _thumbNoFishArea.Image = crop;
+        _reader?.Dispose();
+        _reader = null;
+        Append($"đã chụp mẫu khu vực hết cá  {crop.Width}×{crop.Height} → {profile.Key}");
+        Append("kiểm bằng hàng “hết cá” ở Đọc HUD: lúc thông báo hiện phải lên ≥ " +
+               $"{_cfg.NoFishAreaNccMin:F2}, lúc không hiện phải thấp. Soi luôn ba hàng “chê mồi”, " +
+               "“xa nước” và “sai cần” — chúng KHÔNG được cùng vọt lên.");
+    }
+
     private void Pick(FishingSlot slot)
     {
         if (IsRunning) { Append("đang chạy — dừng trước khi khoanh lại"); return; }
@@ -966,6 +1244,8 @@ internal sealed class FishingPanel : UserControl
         LoadThumb(_thumbFish, FishingConfig.FishTemplatePath(key));
         LoadThumb(_thumbReject, FishingConfig.RejectTemplatePath(key));
         LoadThumb(_thumbNoWater, FishingConfig.NoWaterTemplatePath(key));
+        LoadThumb(_thumbNoFish, FishingConfig.NoFishTemplatePath(key));
+        LoadThumb(_thumbNoFishArea, FishingConfig.NoFishAreaTemplatePath(key));
         LoadThumb(_thumbKeep, FishingConfig.KeepTemplatePath(key));
         LoadThumb(_thumbKeepBand, FishingConfig.KeepBandPreviewPath(key));
 
@@ -1015,19 +1295,46 @@ internal sealed class FishingPanel : UserControl
     {
         if (IsRunning) return;
 
-        // Phien truoc da chay het muc (cop day + ba lo day) thi cu bam dau tien khong chay lai.
+        // Phien truoc tu ngat vi mot ly do ma chay lai ngay se dam vao dung buc tuong do — thi cu
+        // bam dau tien khong chay lai, chi nhac.
         //
         // Vi sao chan: bot tu ngat, nguoi dung thay ba lo day nen bam F4 de "tat" — nhung no
         // dung san roi, va cu bam do hoa ra BAT LEN. Log 17/08 co dung canh nay: 20:59:13 ngat
         // vi ba lo day, 20:59:14 chay lai, roi cau tiep vao cai ba lo khong con cho. Nhin tu
         // ngoai thi giong het "bot khong chiu tu ngat".
+        //
+        // NoFishMatch va NoWater can y het: dung vi sai can hay vi da roi mep nuoc, bam lai la
+        // vai giay sau lai dung dung cho do. Moi ly do mot cau nhac rieng — noi dung viec phai
+        // lam, khong thi nguoi dung chi biet "no lai dung nua" ma khong biet sua gi.
         if (_finished)
         {
             _finished = false;
-            _status.Text = "Phiên trước đã xong — bấm lần nữa để câu tiếp";
-            _status.ForeColor = Theme.Good;
-            Append("phiên trước đã xong: cốp đầy và ba lô đầy. Đi bán cá đi — " +
-                   "muốn câu tiếp ngay thì bấm lần nữa.");
+            (string status, Color color, string note) = _stopReason switch
+            {
+                FishingStopReason.NoFishMatch => (
+                    "Phiên trước dừng vì sai cần — bấm lần nữa nếu vẫn muốn chạy",
+                    Theme.Warn,
+                    "phiên trước dừng vì game báo không có cá hợp cần và độ sâu. Đổi cần hoặc đổi " +
+                    "chỗ câu đi — muốn thử lại ngay thì bấm lần nữa."),
+                FishingStopReason.NoFishArea => (
+                    "Phiên trước dừng vì khu vực hết cá — bấm lần nữa nếu vẫn muốn chạy",
+                    Theme.Warn,
+                    "phiên trước dừng vì game báo khu vực này hiện không có cá để câu. Đi chỗ " +
+                    "khác câu đi — muốn thử lại ngay thì bấm lần nữa."),
+                FishingStopReason.NoWater => (
+                    "Phiên trước dừng vì xa mặt nước — bấm lần nữa nếu vẫn muốn chạy",
+                    Theme.Warn,
+                    "phiên trước dừng vì game báo không đứng gần mặt nước. Lái xe / đi bộ lại sát " +
+                    "mép nước đi — muốn thử lại ngay thì bấm lần nữa."),
+                _ => (
+                    "Phiên trước đã xong — bấm lần nữa để câu tiếp",
+                    Theme.Good,
+                    "phiên trước đã xong: cốp đầy và ba lô đầy. Đi bán cá đi — " +
+                    "muốn câu tiếp ngay thì bấm lần nữa.")
+            };
+            _status.Text = status;
+            _status.ForeColor = color;
+            Append(note);
             return;
         }
 
@@ -1071,11 +1378,23 @@ internal sealed class FishingPanel : UserControl
             if (!string.IsNullOrEmpty(msg) && r != FishingStopReason.UserStopped)
                 Append(msg);
 
-            _finished = r == FishingStopReason.BagFull;
+            // Hai ly do nay deu la "bot tu ngat va chay lai ngay thi vo ich" — xem chot mot-lan-bam
+            // trong Toggle. Nho lai ly do de cho do in dung cau nhac.
+            _stopReason = r;
+            _finished = r is FishingStopReason.BagFull
+                             or FishingStopReason.NoFishMatch
+                             or FishingStopReason.NoFishArea
+                             or FishingStopReason.NoWater;
             // Keu mot tieng: luc nay nguoi dung gan nhu chac chan dang o cua so khac (log day
             // dong "cho cua so PlayXGTA — dang focus Chrome/Discord"), nen mot cai nhan xanh
             // trong panel nen sau la thu khong ai thay.
             if (_finished) { try { System.Media.SystemSounds.Exclamation.Play(); } catch { } }
+
+            // Cung y nghia voi tieng chuong tren, chi khac la den duoc dien thoai. Doc so lieu tu
+            // _state chu khong tu bot: FishingBot da SetPhase(Stopped) -> Publish TRUOC khi ban
+            // event nay va ca hai di chung hang doi Post, nen _state luc nay la anh cuoi cung.
+            // Notify tra ve ngay, phan POST chay tren ThreadPool — callback phai tu Post ve UI.
+            DiscordNotifier.Notify(_cfg, r, _state, m => Post(() => Append("Discord: " + m)));
         });
 
         _status.Text = "Đang câu";
@@ -1287,6 +1606,7 @@ internal sealed class FishingPanel : UserControl
         _idleEnabled.Enabled = !running;
         _btnAltProbe.Enabled = !running;
         _btnTrunkSetup.Enabled = !running;
+        _btnKgPerUnit.Enabled = !running;
         _btnReleaseCatalog.Enabled = !running;
         _releaseEnabled.Enabled = !running;
         _dumpEnabled.Enabled = !running;
@@ -1391,6 +1711,21 @@ internal sealed class FishingPanel : UserControl
                 $"{(s.NoWaterNotice ? "CÓ" : "không")} {s.NoWaterScore:F3}",
                 s.NoWaterNotice ? Theme.Bad : Theme.Dimmer, s.NoWaterNotice ? Theme.Bad : Theme.Text);
 
+        if (!s.NoFishConfigured)
+            Set(_mNoFish, -1, -1, "chưa có mẫu", Theme.Dimmer, Theme.Dimmer);
+        else
+            Set(_mNoFish, Ncc(s.NoFishScore), _cfg.NoFishNccMin,
+                $"{(s.NoFishNotice ? "CÓ" : "không")} {s.NoFishScore:F3}",
+                s.NoFishNotice ? Theme.Bad : Theme.Dimmer, s.NoFishNotice ? Theme.Bad : Theme.Text);
+
+        if (!s.NoFishAreaConfigured)
+            Set(_mNoFishArea, -1, -1, "chưa có mẫu", Theme.Dimmer, Theme.Dimmer);
+        else
+            Set(_mNoFishArea, Ncc(s.NoFishAreaScore), _cfg.NoFishAreaNccMin,
+                $"{(s.NoFishAreaNotice ? "CÓ" : "không")} {s.NoFishAreaScore:F3}",
+                s.NoFishAreaNotice ? Theme.Bad : Theme.Dimmer,
+                s.NoFishAreaNotice ? Theme.Bad : Theme.Text);
+
         if (!s.IdleConfigured)
             Set(_mIdle, -1, -1, "chưa có mẫu", Theme.Dimmer, Theme.Dimmer);
         else
@@ -1447,6 +1782,8 @@ internal sealed class FishingPanel : UserControl
         Set(_mFish, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
         Set(_mReject, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
         Set(_mNoWater, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        Set(_mNoFish, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
+        Set(_mNoFishArea, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
         Set(_mIdle, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
         Set(_mKeep, -1, -1, "--", Theme.Dimmer, Theme.Dimmer);
         _meters.Footer = "";
@@ -1495,6 +1832,7 @@ internal sealed class FishingPanel : UserControl
                 (_state.Bites / n, Theme.Good),
                 (_state.Rejects / n, Theme.Warn),
                 (_state.NoWater / n, Theme.AccentDim),
+                (_state.NoFish / n, Theme.Warn),
                 // Cung ly do nhu NoWater: moi cai o day la mot luot LE RA nam trong BiteTimeouts.
                 // Bo qua no la thanh tu hut mot khuc ngay sau khi bat cong tac.
                 (_state.IdleRecasts / n, Theme.Accent),
