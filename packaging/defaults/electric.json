@@ -146,7 +146,7 @@
     "MaxAttempts": 3,
     "LogEveryMs": 1000
   },
-  "AutoWalk": false,
+  "AutoWalk": true,
   "AutoLoop": true,
   "Mode": "Both",
   "WindowMatch": "PlayXGTA",
@@ -175,10 +175,10 @@
         "H": 0
       },
       "Minimap": {
-        "X": 0,
-        "Y": 0,
-        "W": 0,
-        "H": 0
+        "X": 40,
+        "Y": 1135,
+        "W": 358,
+        "H": 226
       },
       "PromptBand": {
         "X": 0,

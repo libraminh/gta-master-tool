@@ -50,10 +50,15 @@ $ExcludedDirPrefix = 'debug-'
 $PortableFiles = @('fishing.json', 'config.json', 'hotkeys.json', 'miner.json', 'wood.json', 'electric.json')
 $PortableDirs = @('fishing', 'items', 'wood', 'electric')
 
-# Loc thu chi dung tren MAY NAY ra khoi snapshot dem di share.
+# Loc thu chi dung tren MAY NAY - hoac tuyet doi khong duoc roi ra ngoai - khoi snapshot.
 #
 #  - ItemCachePath la duong dan cache game cua rieng may goc; may khac tro sai cho.
+#  - Discord* la SECRET. Snapshot nay di THANG vao git, ma secret lot vao lich su git thi rat
+#    kho go. Nguoi nhan tu dan lai qua hop thoai "Cau hinh Discord..." trong app.
 #  - FishSlots GIU NGUYEN: DescribeTrunkGaps can o chua ca de bat do cop.
+#
+# Regex chi la lop thu nhat. Lop that su la buoc grep sau khi chay -SyncDefaults: con thay
+# chuoi "discord.com/api/webhooks" trong packaging/defaults la DUNG, khong commit.
 function Remove-MachineSpecific {
     param([string] $JsonPath)
 
@@ -62,8 +67,16 @@ function Remove-MachineSpecific {
     $text = [System.IO.File]::ReadAllText($JsonPath)
     $gone = @()
 
-    $next = [regex]::Replace($text, '[ \t]*"ItemCachePath"\s*:\s*"[^"]*"\s*,\s*\r?\n', '')
-    if ($next -ne $text) { $gone += 'ItemCachePath'; $text = $next }
+    foreach ($key in 'ItemCachePath', 'DiscordWebhookUrl', 'DiscordUserId') {
+        $next = [regex]::Replace($text, "[ \t]*""$key""\s*:\s*""[^""]*""\s*,\s*\r?\n", '')
+        if ($next -ne $text) { $gone += $key; $text = $next }
+    }
+
+    # Bool nen khong co nhay kep quanh gia tri - phai co nhanh rieng. Bo luon de ban ship khong
+    # roi vao trang thai "bat bao nhung khong co URL"; Normalize() cung tu tat, nhung file ship
+    # doc bang mat cung phai sach.
+    $next = [regex]::Replace($text, '[ \t]*"DiscordNotifyEnabled"\s*:\s*(true|false)\s*,\s*\r?\n', '')
+    if ($next -ne $text) { $gone += 'DiscordNotifyEnabled'; $text = $next }
 
     if ($gone.Count -gt 0) {
         [System.IO.File]::WriteAllText($JsonPath, $text, (New-Object System.Text.UTF8Encoding($false)))
