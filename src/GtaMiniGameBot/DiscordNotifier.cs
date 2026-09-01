@@ -65,6 +65,11 @@ internal static class DiscordNotifier
         bool ping = reason != FishingStopReason.UserStopped &&
                     !string.IsNullOrEmpty(cfg?.DiscordUserId);
 
+        // Nhieu nguoi dung chung mot kenh webhook, nen tin nao cung phai noi ro cua ai.
+        // Khong ping thi van gan mention CAM: allowed_mentions ben duoi khong cap user
+        // => Discord chi ve chip "@Ten", khong rung chuong ai.
+        string tag = string.IsNullOrEmpty(cfg?.DiscordUserId) ? "" : $"<@{cfg.DiscordUserId}> ";
+
         string head = reason switch
         {
             FishingStopReason.BagFull => "🎣 Đầy hàng rồi — đi bán cá thôi",
@@ -73,7 +78,7 @@ internal static class DiscordNotifier
             FishingStopReason.NoWater => "⚠️ Bot dừng — nhân vật không đứng gần mặt nước",
             _ => "🎣 Phiên câu đã kết thúc"
         };
-        string content = ping ? $"<@{cfg.DiscordUserId}> {head}" : head;
+        string content = tag + head;
         if (content.Length > ContentMax) content = content[..ContentMax];
 
         var fields = new List<object>
@@ -179,7 +184,7 @@ internal static class DiscordNotifier
         string json;
         try
         {
-            json = BuildAlertJson(title, detail, DateTime.Now);
+            json = BuildAlertJson(title, detail, DateTime.Now, cfg.DiscordUserId);
         }
         catch (Exception ex)
         {
@@ -194,8 +199,70 @@ internal static class DiscordNotifier
         });
     }
 
+    /// <summary>
+    /// Tin đưa tin: chuyện BÌNH THƯỜNG đáng biết vừa xảy ra, bot vẫn chạy — mở phiên, con cá
+    /// đầu tiên. Khác <see cref="NotifyAlert"/> đúng ở giọng: không "⚠️", màu xám/xanh thay vì
+    /// vàng. Cũng cố tình KHÔNG ping, cùng lý do bên đó.
+    /// </summary>
+    public static void NotifyInfo(FishingConfig cfg, string title, string detail, Action<string> log,
+        bool good = false)
+    {
+        if (cfg == null || !cfg.DiscordNotifyEnabled) return;
+        if (!IsWebhookUrl(cfg.DiscordWebhookUrl)) { Report(log, "chưa dán webhook URL hợp lệ"); return; }
+
+        string url = cfg.DiscordWebhookUrl;
+        string json;
+        try
+        {
+            json = BuildInfoJson(title, detail, DateTime.Now, good, cfg.DiscordUserId);
+        }
+        catch (Exception ex)
+        {
+            Report(log, "dựng tin lỗi: " + ex.Message);
+            return;
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string problem = Post(url, json);
+            Report(log, problem ?? "đã gửi thông báo");
+        });
+    }
+
+    /// <summary>
+    /// Tách khỏi <see cref="NotifyInfo"/> để tự kiểm được nội dung mà không cần mạng.
+    /// Title dùng nguyên văn — bên gọi tự kèm emoji cho hợp chuyện.
+    /// </summary>
+    public static string BuildInfoJson(string title, string detail, DateTime now, bool good,
+        string userId = null)
+    {
+        var embed = new Dictionary<string, object>
+        {
+            ["title"] = title ?? "",
+            ["color"] = good ? ColorGood : ColorMuted,
+            ["footer"] = new Dictionary<string, object> { ["text"] = now.ToString("dd/MM/yyyy HH:mm") }
+        };
+        if (!string.IsNullOrWhiteSpace(detail)) embed["description"] = detail;
+
+        var payload = new Dictionary<string, object>
+        {
+            // Mention CAM cho biet tin cua ai — nhieu nguoi ban chung mot kenh. allowed_mentions
+            // duoi day khong cap user nao nen Discord chi ve chip "@Ten", khong ping, ke ca khi
+            // title/detail lo co chuoi "@everyone".
+            ["content"] = string.IsNullOrEmpty(userId) ? "" : $"<@{userId}>",
+            ["embeds"] = new[] { embed },
+            ["allowed_mentions"] = new Dictionary<string, object>
+            {
+                ["parse"] = Array.Empty<string>(),
+                ["users"] = Array.Empty<string>()
+            }
+        };
+
+        return JsonSerializer.Serialize(payload, Opts);
+    }
+
     /// <summary>Tách khỏi <see cref="NotifyAlert"/> để tự kiểm được nội dung mà không cần mạng.</summary>
-    public static string BuildAlertJson(string title, string detail, DateTime now)
+    public static string BuildAlertJson(string title, string detail, DateTime now, string userId = null)
     {
         var embed = new Dictionary<string, object>
         {
@@ -207,9 +274,9 @@ internal static class DiscordNotifier
 
         var payload = new Dictionary<string, object>
         {
-            // content rong = khong ping ai, ke ca khi title/detail lo co chuoi "@everyone":
-            // allowed_mentions duoi day chan tuyet doi.
-            ["content"] = "",
+            // Mention CAM nhu ben BuildInfoJson: cho biet tin cua ai ma khong ping —
+            // allowed_mentions duoi day chan tuyet doi, ke ca "@everyone" lot trong title/detail.
+            ["content"] = string.IsNullOrEmpty(userId) ? "" : $"<@{userId}>",
             ["embeds"] = new[] { embed },
             ["allowed_mentions"] = new Dictionary<string, object>
             {

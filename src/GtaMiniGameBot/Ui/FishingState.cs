@@ -56,10 +56,10 @@ internal sealed class FishingState
     public int NoFish { get; init; }
     public int CastMissed { get; init; }
     /// <summary>
-    /// Cú thả bị cắt sớm vì thấy nhân vật đứng yên, không cầm cần. Ăn thẳng vào
+    /// Cú thả bị cắt sớm vì thanh câu đã hiện rồi tắt giữa chừng. Ăn thẳng vào
     /// <see cref="BiteTimeouts"/>: mỗi cái ở đây là một lượt lẽ ra phải chờ trọn WaitBiteMs.
     /// </summary>
-    public int IdleRecasts { get; init; }
+    public int BarGoneRecasts { get; init; }
     public int BiteTimeouts { get; init; }
     public int FightTimeouts { get; init; }
 
