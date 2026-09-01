@@ -14,22 +14,35 @@
     packaging/defaults de commit. Chay cai nay moi khi canh lai vung trong app,
     khong thi ban share se troi lech dan so voi ban dang dung.
 
+    Che do -Personal: dong goi cho MAY KHAC CUA CHINH MINH. Lay config truc tiep
+    tu %APPDATA%\GtaMiniGameBot (khong qua snapshot packaging/defaults nen luon
+    moi nhat) va GIU NGUYEN thu may-rieng: Discord webhook/UserId, ItemCachePath.
+    Zip nay chua secret - dung share cong khai; ban share nguoi khac dung che do
+    mac dinh.
+
 .PARAMETER OutDir
     Noi dat file zip. Mac dinh la dist/ o goc repo.
 
 .PARAMETER SyncDefaults
     Khong build. Chep ROI tu %APPDATA%\GtaMiniGameBot ve packaging/defaults.
 
+.PARAMETER Personal
+    Build ban ca nhan: config lay thang tu %APPDATA%, giu nguyen secrets.
+
 .EXAMPLE
     .\tools\build-portable.ps1
 
 .EXAMPLE
     .\tools\build-portable.ps1 -SyncDefaults
+
+.EXAMPLE
+    .\tools\build-portable.ps1 -Personal
 #>
 [CmdletBinding()]
 param(
     [string] $OutDir,
-    [switch] $SyncDefaults
+    [switch] $SyncDefaults,
+    [switch] $Personal
 )
 
 $ErrorActionPreference = 'Stop'
@@ -207,14 +220,25 @@ if (-not (Test-Path $carTemplate)) {
 
 Copy-Item -Path (Join-Path $Packaging 'HUONG-DAN.txt') -Destination $Staging -Force
 
-$defaultsJson = Join-Path $DefaultsDir 'fishing.json'
-if (-not (Test-Path $defaultsJson)) {
-    throw "Thieu $defaultsJson. Chay '.\tools\build-portable.ps1 -SyncDefaults' truoc."
+# -Personal lay thang tu %APPDATA% (luon la ban dang dung, giu nguyen secret);
+# mac dinh lay tu snapshot packaging/defaults (da luoc secret, de share).
+$SourceDir = if ($Personal) { $UserDataDir } else { $DefaultsDir }
+$SourceFiles = $PortableFiles
+if ($Personal) {
+    # app.json nam trong AppPaths.MigrateFiles nhung khong nam trong snapshot share -
+    # ban ca nhan thi mang theo not.
+    $SourceFiles = $PortableFiles + 'app.json'
 }
 
-foreach ($name in $PortableFiles) {
-    $src = Join-Path $DefaultsDir $name
-    if (-not (Test-Path $src) -and $name -eq 'config.json') {
+$sourceJson = Join-Path $SourceDir 'fishing.json'
+if (-not (Test-Path $sourceJson)) {
+    if ($Personal) { throw "Khong thay $sourceJson. May nay chua co config job cau ca." }
+    throw "Thieu $sourceJson. Chay '.\tools\build-portable.ps1 -SyncDefaults' truoc."
+}
+
+foreach ($name in $SourceFiles) {
+    $src = Join-Path $SourceDir $name
+    if (-not (Test-Path $src) -and $name -eq 'config.json' -and -not $Personal) {
         $src = Join-Path $RepoRoot 'app\config.json'   # ban cu giu config.json trong app/
     }
     if (Test-Path $src) { Copy-Item -Path $src -Destination $Staging -Force }
@@ -225,7 +249,7 @@ Test-TrunkDumpReady (Join-Path $Staging 'fishing.json')
 
 $roiCount = 0
 foreach ($dir in $PortableDirs) {
-    $src = Join-Path $DefaultsDir $dir
+    $src = Join-Path $SourceDir $dir
     if (Test-Path $src) { $roiCount += Copy-TreeFiltered -From $src -To (Join-Path $Staging $dir) }
 }
 Write-Host "Da gom $roiCount file du lieu (ROI + bo icon vat pham)."
@@ -244,7 +268,8 @@ Write-Host "Bo icon vat pham: $iconCount file."
 # ban share van chay, chi la nguoi nhan phai tu khoanh - job tu ha xuong go E mu.
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$zip = Join-Path $OutDir "GtaMiniGameBot-portable-$stamp-$sha.zip"
+$flavor = if ($Personal) { 'personal' } else { 'portable' }
+$zip = Join-Path $OutDir "GtaMiniGameBot-$flavor-$stamp-$sha.zip"
 if (Test-Path $zip) { Remove-Item -Path $zip -Force }
 
 Write-Host "Nen ra zip..."
@@ -255,3 +280,6 @@ Remove-Item -Path $Staging -Recurse -Force
 $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 Write-Host ""
 Write-Host "Xong: $zip ($sizeMb MB)"
+if ($Personal) {
+    Write-Host "LUU Y: ban ca nhan mang theo Discord webhook + ItemCachePath - dung share cong khai."
+}
