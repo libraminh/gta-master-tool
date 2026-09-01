@@ -38,6 +38,7 @@ internal static class VerifyDiscord
         CheckNoFishAreaStop();
         CheckNoWaterStop();
         CheckAlert();
+        CheckInfo();
 
         Console.WriteLine();
         Console.WriteLine(_fail == 0 ? "TAT CA DAT" : $"HONG {_fail} ca");
@@ -164,8 +165,10 @@ internal static class VerifyDiscord
 
     private static void CheckUserStopped()
     {
-        // Tu bam Dung = dang ngoi truoc may. Van gui tin, nhung khong duoc rung dien thoai.
-        Console.WriteLine("-- tu bam Dung: gui tin nhung KHONG ping --");
+        // Tu bam Dung = dang ngoi truoc may. Van gui tin, khong duoc rung dien thoai — nhung
+        // van phai HIEN TEN: nhieu nguoi ban chung mot kenh, tin vo danh khong biet cua ai.
+        // Mention nam trong content ma allowed_mentions khong cap user = ve chip, khong keu.
+        Console.WriteLine("-- tu bam Dung: gui tin co ten nhung KHONG ping --");
         var doc = Build(Cfg("123456789012345678"), FishingStopReason.UserStopped, new FishingState
         {
             SessionMs = 300_000,
@@ -173,8 +176,8 @@ internal static class VerifyDiscord
         });
         if (doc == null) return;
 
-        Ok("content không có mention", !doc.RootElement.GetProperty("content").GetString().Contains("<@"));
-        Ok("allowed_mentions.users rỗng",
+        Ok("content có tag tên", doc.RootElement.GetProperty("content").GetString().Contains("<@123456789012345678>"));
+        Ok("allowed_mentions.users rỗng (tag câm)",
             doc.RootElement.GetProperty("allowed_mentions").GetProperty("users").GetArrayLength() == 0);
         Ok("viền xám", doc.RootElement.GetProperty("embeds")[0].GetProperty("color").GetInt32() == 0x747F8D);
         Console.WriteLine();
@@ -342,6 +345,57 @@ internal static class VerifyDiscord
         // Bo trong phan mo ta thi bo han truong, khong de "description": "" tro tren Discord.
         string bare = DiscordNotifier.BuildAlertJson("Chỉ có tiêu đề", "  ", new DateTime(2026, 8, 27));
         using var bareDoc = JsonDocument.Parse(bare);
+        Ok("mô tả trắng thì bỏ hẳn trường",
+            !bareDoc.RootElement.GetProperty("embeds")[0].TryGetProperty("description", out _));
+
+        // Co User ID thi gan tag cam: content mang mention de biet tin cua ai, nhung
+        // allowed_mentions van rong nen khong ai bi ping.
+        string tagged = DiscordNotifier.BuildAlertJson("Có chủ", "chi tiết", new DateTime(2026, 8, 27), "123");
+        using var taggedDoc = JsonDocument.Parse(tagged);
+        Eq("có ID thì content là tag câm", "<@123>",
+            taggedDoc.RootElement.GetProperty("content").GetString());
+        Ok("tag câm không được phép ping",
+            taggedDoc.RootElement.GetProperty("allowed_mentions").GetProperty("users").GetArrayLength() == 0);
+        Console.WriteLine();
+    }
+
+    private static void CheckInfo()
+    {
+        // Tin dua tin (mo phien, con ca dau tien): giong alert o cho khong ping, khac o giong —
+        // title nguyen van (khong "⚠️"), mau xam/xanh thay vi vang.
+        Console.WriteLine("-- tin đưa tin --");
+        string json;
+        try
+        {
+            json = DiscordNotifier.BuildInfoJson(
+                "🎣 Bắt đầu phiên câu", "đổ cốp: bật", new DateTime(2026, 9, 1, 9, 27, 0),
+                good: false, userId: "123");
+        }
+        catch (Exception ex) { Bad("dựng tin", "ném " + ex.Message); return; }
+
+        Console.WriteLine("   " + json);
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(json); }
+        catch (Exception ex) { Bad("JSON hợp lệ", ex.Message); return; }
+
+        Eq("content là tag câm", "<@123>", doc.RootElement.GetProperty("content").GetString());
+        var am = doc.RootElement.GetProperty("allowed_mentions");
+        Ok("parse rỗng (chặn @everyone/@here/role)", am.GetProperty("parse").GetArrayLength() == 0);
+        Ok("users rỗng — tag không ping", am.GetProperty("users").GetArrayLength() == 0);
+
+        var embed = doc.RootElement.GetProperty("embeds")[0];
+        Ok("title nguyên văn, không gắn ⚠️",
+            embed.GetProperty("title").GetString() == "🎣 Bắt đầu phiên câu");
+        Ok("viền xám (good: false)", embed.GetProperty("color").GetInt32() == 0x747F8D);
+        Ok("có mô tả", embed.GetProperty("description").GetString() == "đổ cốp: bật");
+
+        // good: true = mau xanh (con ca dau tien); khong ID + detail trang = content rong,
+        // bo han description — cung luat voi alert.
+        string bare = DiscordNotifier.BuildInfoJson("🐟 Con đầu", " ", new DateTime(2026, 9, 1), good: true);
+        using var bareDoc = JsonDocument.Parse(bare);
+        Eq("không ID thì content rỗng", "", bareDoc.RootElement.GetProperty("content").GetString());
+        Ok("viền xanh (good: true)",
+            bareDoc.RootElement.GetProperty("embeds")[0].GetProperty("color").GetInt32() == 0x3BA55D);
         Ok("mô tả trắng thì bỏ hẳn trường",
             !bareDoc.RootElement.GetProperty("embeds")[0].TryGetProperty("description", out _));
         Console.WriteLine();

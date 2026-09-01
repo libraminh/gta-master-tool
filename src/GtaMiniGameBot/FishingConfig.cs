@@ -125,13 +125,6 @@ internal sealed class FishingProfile
     public FishingRect Reject { get; set; } = new();
     public FishingRect Keep { get; set; } = new();
 
-    /// <summary>
-    /// Ô ngay chỗ hai tay đang cầm cần câu, khoanh lúc ĐANG câu. Mẫu chấm trên ô này lại là
-    /// ảnh chụp lúc ĐỨNG YÊN (idle.png) — xem <see cref="FishingConfig.IdleTemplatePath"/>.
-    /// Tuỳ chọn: thiếu thì vòng câu chạy y như cũ.
-    /// </summary>
-    public FishingRect Rod { get; set; } = new();
-
     // ---------------- đổ cá vào cốp xe ----------------
 
     public bool TrunkDumpEnabled { get; set; }
@@ -350,40 +343,30 @@ internal sealed class FishingConfig
     /// </summary>
     public double NoWaterNccMin { get; set; } = 0.75;
 
-    // ---------------- mất cần câu ----------------
+    // ---------------- thanh câu tắt giữa chừng ----------------
     //
-    // Lượt "chết": cá không cắn, không chê mồi, không hiện gì, và HUD có khi VẪN vẽ thanh
-    // (log thật: "thanh=đã mở fill=73.6%" sau trọn 25 s). Pixel HUD không tách được ca đó
-    // khỏi một cú thả đang sống. Thứ tách được nằm trên người: lúc chết nhân vật đứng idle,
-    // tay buông, không cầm cần.
+    // Lượt "chết": cá không cắn, không chê mồi, không hiện gì — trước đây bot đứng chờ trọn
+    // WaitBiteMs (25 s). Bắt bằng pixel HUD chứ không bằng pose nhân vật (tính năng "mất cần
+    // câu" cũ, đã gỡ): pose chấm trên thế giới game (ánh sáng ngày/đêm, camera, NPC che) nên
+    // log thật cho điểm lẹt đẹt 0.217 / -0.074 suốt 171 khung — không bao giờ chạm ngưỡng.
+    // HUD thì game vẽ y hệt mỗi lần, và ô thanh đã khoanh sẵn cho việc khác rồi.
     //
-    // Vì sao mẫu là ảnh lúc ĐỨNG YÊN chứ không phải lúc cầm cần — bắn khi NCC CAO chứ không
-    // phải khi thấp:
-    //   Hỏng an toàn. Có chuyện lạ (nhân vật xoay, NPC che, pose khác) thì NCC tụt, tức là
-    //   KHÔNG bắn, vòng câu chạy như cũ. Làm ngược lại thì mọi chuyện lạ đều thành "thả lại",
-    //   và thả lại nhầm là cắt ngang một cú thả đang sống.
-    //   Thêm nữa pose đứng lặp lại y hệt nên ngưỡng dễ chọn, còn pose cầm cần xoay theo
-    //   animation nên điểm dập dềnh.
-
-    /// <summary>Ngưỡng nhận pose đứng yên (không cầm cần), chấm trên ô <see cref="FishingProfile.Rod"/>.</summary>
-    public double IdleNccMin { get; set; } = 0.75;
-
-    /// <summary>Bao nhiêu khung liên tiếp trên ngưỡng thì mới tin. Như <see cref="BiteDebounceFrames"/>.</summary>
-    public int IdleFrames { get; set; } = 3;
+    // Dấu hiệu: thanh câu ĐÃ HIỆN (dây đã xuống nước) rồi TẮT mà không có thông báo nào —
+    // dòng timeout cũ in "thanh=đã mở fill=0.0%". Ca "thanh vẫn mở fill=77.9%" KHÔNG thuộc
+    // nhánh này: dây vẫn dưới nước, cá đơn giản là không cắn, chờ trọn WaitBiteMs là đúng.
+    //
+    // Luôn bật, không có công tắc — đã đo và chạy thật ngoài phiên; chỉ còn ngưỡng dưới đây
+    // là chỉnh được.
 
     /// <summary>
-    /// Bỏ qua bấy nhiêu ms đầu mỗi lượt chờ. Bấm 4 + Space xong nhân vật CÒN ĐANG giơ cần lên,
-    /// lúc đó vẫn còn là pose đứng — không chừa khoảng này thì lượt nào cũng bị kết luận chết
-    /// ngay sau khi thả. Mốc riêng chứ không dùng <see cref="CastCooldownMs"/> (1.5 s): cái đó
-    /// canh cho thông báo chê mồi, ngắn hơn hẳn animation giơ cần.
+    /// Thanh câu đã hiện rồi tắt liên tiếp bấy nhiêu khung thì coi cú thả đã chết.
+    ///
+    /// Debounce này đồng thời là cửa sổ ưu tiên cho bốn mẫu thông báo (chê mồi / xa nước /
+    /// sai cần / hết cá): chúng cũng làm thanh tắt nhưng biết rõ NGUYÊN NHÂN, và được xét
+    /// trước trong vòng lặp — ~0.5 s là đủ để mẫu khớp trước khi nhánh này nổ. Mẫu trượt thì
+    /// nhánh này thành lưới an toàn: vẫn thả lại, chỉ khác counter và câu chữ trong log.
     /// </summary>
-    public int IdleGraceMs { get; set; } = 3_000;
-
-    /// <summary>
-    /// Bật thì thấy pose đứng là thả lại luôn. Tắt (mặc định) thì vẫn ĐO và ghi log đầy đủ,
-    /// chỉ không hành động — để chạy thử một phiên rồi chọn ngưỡng theo số thật.
-    /// </summary>
-    public bool? IdleRecastEnabled { get; set; }
+    public int BarGoneFrames { get; set; } = 5;
 
     /// <summary>
     /// Ngưỡng nhận thông báo "Không có cá nào phù hợp với cần và độ sâu câu của bạn" — thông báo
@@ -946,9 +929,7 @@ internal sealed class FishingConfig
         // 0 hop le (dung ngay lan dau), chi chan so am.
         if (NoFishRetries < 0) NoFishRetries = 2;
         if (NoWaterRetries < 0) NoWaterRetries = 2;
-        if (IdleNccMin is <= 0 or > 1) IdleNccMin = 0.75;
-        if (IdleFrames <= 0) IdleFrames = 3;
-        if (IdleGraceMs < 0) IdleGraceMs = 3_000;
+        if (BarGoneFrames <= 0) BarGoneFrames = 5;
         if (KeepColorTol <= 0) KeepColorTol = 20;
         if (KeepDensityMin <= 0 || KeepDensityMin > 1) KeepDensityMin = 0.55;
         if (KeepNccMin == 0 || KeepNccMin > 1) KeepNccMin = 0.30;   // <0 = cố ý tắt, giữ nguyên
@@ -1150,16 +1131,6 @@ internal sealed class FishingConfig
     /// <summary>Mẫu thông báo "khu vực này hiện không có cá để câu". Cũng cùng ô với reject.png.</summary>
     public static string NoFishAreaTemplatePath(string key) =>
         Path.Combine(ProfileDir(key), "no-fish-area.png");
-
-    /// <summary>
-    /// Ảnh xem lại của ô tay cầm cần — chụp lúc ĐANG câu, chỉ để nhìn cho biết đã khoanh trúng
-    /// chỗ nào. KHÔNG phải mẫu để chấm: mẫu là <see cref="IdleTemplatePath"/>.
-    /// </summary>
-    public static string RodPreviewPath(string key) => Path.Combine(ProfileDir(key), "rod.png");
-
-    /// <summary>Mẫu pose đứng yên. Cùng ô với rod.png, khác ảnh — chụp lúc đã buông tay.</summary>
-    public static string IdleTemplatePath(string key) => Path.Combine(ProfileDir(key), "idle.png");
-
 
     public static string KeepTemplatePath(string key) => Path.Combine(ProfileDir(key), "keep.png");
     public static string KeepBandPreviewPath(string key) => Path.Combine(ProfileDir(key), "keep-band.png");

@@ -121,8 +121,8 @@ internal sealed class FishingBot
     /// </summary>
     private int _noWaterStreak;
     private int _castMissed;
-    /// <summary>Số lần thả lại vì thấy nhân vật đứng yên, không cầm cần. Đếm riêng khỏi _biteTimeouts.</summary>
-    private int _idleRecasts;
+    /// <summary>Số lần thả lại vì thanh câu đã hiện rồi tắt giữa chừng. Đếm riêng khỏi _biteTimeouts.</summary>
+    private int _barGoneRecasts;
     private int _biteTimeouts;
     private int _fightTimeouts;
     private int _castRetries;
@@ -240,19 +240,11 @@ internal sealed class FishingBot
                     : $"“khu vực hết cá”: nhận ở ncc ≥ {_cfg.NoFishAreaNccMin:F2}, dùng chung " +
                       "ngân sách thử lại với “không có cá phù hợp”");
 
-            // Cung la tuy chon, va so do LUON chay ke ca khi cong tac tat: dong log timeout se
-            // kem "[dung ...]" de biet neu bat len thi tiet kiem duoc bao nhieu, va dong "ca can"
-            // kem so khung dung de biet no co ban nham vao luot cau khoe khong.
-            if (!_profile.Rod.IsSet)
-                Emit("“mất cần câu”: chưa khoanh ô tay cầm cần — bỏ qua, chờ cắn theo timeout như cũ");
-            else if (reader.IdleTemplateProblem is { } idp)
-                Emit($"“mất cần câu”: chưa dùng được ({idp}) — chờ cắn theo timeout như cũ");
-            else
-                Emit($"“mất cần câu”: nhận ở ncc ≥ {_cfg.IdleNccMin:F2} × {_cfg.IdleFrames} khung, " +
-                     $"bỏ qua {_cfg.IdleGraceMs} ms đầu mỗi lượt — " +
-                     (_cfg.IdleRecastEnabled == true
-                         ? $"thấy là thả lại sau {_cfg.RejectRecastMs} ms"
-                         : "CHỈ ĐO, không thả lại (công tắc đang tắt)"));
+            // Luot chet bat bang pixel HUD — xem chu thich o FishingConfig.BarGoneFrames.
+            // Luon bat, khong co cong tac: da do thuc te va thay the han tinh nang
+            // "mat can cau" (pose dung yen) cu.
+            Emit($"“thanh tắt sớm”: thanh đã hiện rồi tắt {_cfg.BarGoneFrames} khung liên tiếp " +
+                 $"là thả lại sau {_cfg.RejectRecastMs} ms");
 
             if (!_profile.Keep.IsSet)
                 Emit("cảnh báo: chưa khoanh CẤT VÀO — sau khi câu được sẽ chỉ bấm 4, không nhận cá");
@@ -276,6 +268,11 @@ internal sealed class FishingBot
 
             SetUpDumper();
 
+            // Bao mo phien de nguoi di vang biet bot da vao ca. Khong ping — tin dung phien
+            // moi dang rung dien thoai, va no co the den chi vai phut sau.
+            DiscordNotifier.NotifyInfo(_cfg, "🎣 Bắt đầu phiên câu",
+                "đổ cốp: " + (_dumper is null ? "tắt" : "bật"), Emit);
+
             _sessionSw.Restart();
             Cast(ct, "thả câu");
 
@@ -292,28 +289,22 @@ internal sealed class FishingBot
             var fightSw = new Stopwatch();
             var ignoreFailUntil = DateTime.UtcNow.AddMilliseconds(_cfg.CastCooldownMs);
 
-            // So do pose dung yen, dem lai tung luot cho. LUON chay, ke ca khi
-            // IdleRecastEnabled tat — day la cach chon nguong bang so that thay vi doan.
+            // So do "thanh tat giua chung", dem lai tung luot cho — de doi chieu bang so that
+            // khi can chinh BarGoneFrames.
             //
-            //   idleFrames  : so khung dung LIEN TIEP ngay luc nay (debounce cua nhanh that)
-            //   idleFirstMs : lan dau vuot nguong tinh tu luc tha. -1 = chua bao gio.
-            //                 Luot cau KHOE cung se co so nay: bam 4 + Space xong nhan vat con
-            //                 dang gio can len, luc do van la pose dung. Chinh no do do dai cua
-            //                 animation gio can => day la so de chon IdleGraceMs.
-            //   idleAfter / ticksAfter : chi dem SAU khi het IdleGraceMs — tuc chi dem nhung
-            //                 khung that su du suc kich hoat nhanh thoat. Luot cau khoe ma
-            //                 idleAfter khac 0 nghia la tin hieu ban nham, DUNG bat cong tac.
-            int idleFrames = 0, idleAfter = 0, ticksAfter = 0;
-            long idleFirstMs = -1;
-            bool idleOn = false;
+            //   barGoneFrames  : so khung LIEN TIEP thanh tat SAU khi da tung hien (debounce)
+            //   barGoneMax     : chuoi dai nhat trong luot cho — luot cau KHOE ma so nay cham
+            //                    nguong BarGoneFrames nghia la nguong dang qua thap
+            //   barGoneFirstMs : lan dau thanh tat tinh tu luc tha. -1 = chua tat lan nao.
+            int barGoneFrames = 0, barGoneMax = 0;
+            long barGoneFirstMs = -1;
 
-            // Doc ra cho hai dong log ben duoi. Rong khi chua khoanh o / chua co mau, de hai
-            // dong log do giu nguyen hinh dang cu khi tinh nang khong bat.
-            string IdleNote() =>
-                !idleOn
+            // Rong khi thanh chua tat lan nao — dong "ca can" cua luot khoe binh thuong
+            // giu nguyen hinh dang cu, chu nay chi moc len khi co gi dang xem.
+            string BarNote() =>
+                barGoneFirstMs < 0
                     ? ""
-                    : $"  [đứng đầu {(idleFirstMs < 0 ? "—" : idleFirstMs + " ms")}" +
-                      $" · sau chờ {idleAfter}/{ticksAfter} khung]";
+                    : $"  [thanh tắt đầu {barGoneFirstMs} ms · dài nhất {barGoneMax} khung]";
 
             // Khoi reset nay truoc day duoc lap y nguyen bon lan — bon cho phai giu
             // dong bo bang tay. Local function sua thang bien ben ngoai duoc, nen gop
@@ -325,10 +316,9 @@ internal sealed class FishingBot
             void EnterWaiting(bool keepRetries = false)
             {
                 biteFrames = 0;
-                idleFrames = 0;
-                idleAfter = 0;
-                ticksAfter = 0;
-                idleFirstMs = -1;
+                barGoneFrames = 0;
+                barGoneMax = 0;
+                barGoneFirstMs = -1;
                 sawCastHud = false;
                 if (!keepRetries) castRetries = 0;
                 _castRetries = castRetries;
@@ -351,31 +341,23 @@ internal sealed class FishingBot
 
                 if (!fighting)
                 {
-                    if (snap.UiOpen) sawCastHud = true;
+                    // Thanh da hien roi tat = day da roi khoi nuoc. Chi dem SAU khi thanh tung
+                    // hien, nen khong can grace rieng: animation gio can truoc do thanh chua
+                    // hien, va luc do sawCastHud con false.
+                    if (snap.UiOpen)
+                    {
+                        sawCastHud = true;
+                        barGoneFrames = 0;
+                    }
+                    else if (sawCastHud)
+                    {
+                        barGoneFrames++;
+                        if (barGoneFirstMs < 0) barGoneFirstMs = waitSw.ElapsedMilliseconds;
+                        if (barGoneFrames > barGoneMax) barGoneMax = barGoneFrames;
+                    }
 
                     if (snap.FishBite) biteFrames++;
                     else biteFrames = 0;
-
-                    // Dem TRUOC moi nhanh thoat, va dem ke ca khi cong tac tat: dong log "ca can"
-                    // ben duoi phai bao duoc "luot cau khoe nay co bao nhieu khung bi cham la
-                    // dung yen". Khac 0 o do = tin hieu ban nham, dung bat cong tac.
-                    idleOn = snap.IdleConfigured;
-                    if (idleOn)
-                    {
-                        // idleFrames chi dem SAU khi het grace, khong cong don xuyen qua moc do.
-                        // Cong don thi luc het grace no da san >= IdleFrames roi, va bot ban ngay
-                        // giay phut het cho — tuc grace hoi ngan mot chut la mat sach bien an
-                        // toan. Dem lai tu dau thi luon con them IdleFrames x PollMs (~300 ms)
-                        // de xac nhan, doi lay 0.3 s trong 25 s tiet kiem duoc.
-                        bool pastGrace = waitSw.ElapsedMilliseconds >= _cfg.IdleGraceMs;
-                        if (snap.IdlePose && idleFirstMs < 0) idleFirstMs = waitSw.ElapsedMilliseconds;
-                        if (pastGrace)
-                        {
-                            ticksAfter++;
-                            if (snap.IdlePose) { idleFrames++; idleAfter++; }
-                            else idleFrames = 0;
-                        }
-                    }
 
                     if (biteFrames >= _cfg.BiteDebounceFrames)
                     {
@@ -384,7 +366,7 @@ internal sealed class FishingBot
                         // chuoi hong da dut, khong duoc mang so cu sang tinh tiep.
                         _noFishStreak = 0;
                         _noWaterStreak = 0;
-                        Emit($"cá cắn (ncc={snap.FishScore:F3}) — giữ S" + IdleNote());
+                        Emit($"cá cắn (ncc={snap.FishScore:F3}) — giữ S" + BarNote());
                         HoldS();
                         fighting = true;
                         sawHud = snap.UiOpen;
@@ -502,29 +484,23 @@ internal sealed class FishingBot
                         continue;
                     }
 
-                    // Nhân vật đứng yên, tay buông, không cầm cần => cú thả đã chết. Đây là ca mà
-                    // pixel HUD chịu thua: log thật có lượt treo trọn 25 s mà thanh vẫn vẽ 73.6%,
-                    // không phân biệt được với một cú thả đang sống.
-                    //
-                    // Đặt SAU chê mồi và không-gần-nước: hai cái đó cũng làm nhân vật buông cần,
-                    // nhưng chúng biết rõ NGUYÊN NHÂN. Để chúng đi trước thì counter và dòng log
-                    // của chúng còn nguyên — cùng lý do đã ghi ở nhánh không-gần-nước bên trên.
-                    //
-                    // IdleGraceMs chứ không phải ignoreFailUntil: bấm 4 + Space xong nhân vật còn
-                    // đang giơ cần lên, lúc đó vẫn là pose đứng. 1.5 s của CastCooldownMs không đủ.
-                    // idleFrames tự nó đã chỉ đếm sau mốc grace — xem chỗ đếm bên trên.
-                    bool rodGone = _cfg.IdleRecastEnabled == true
-                                   && snap.IdleConfigured
-                                   && idleFrames >= _cfg.IdleFrames;
-                    if (rodGone)
+                    // Thanh câu đã hiện rồi tắt, không thông báo nào khớp => cú thả đã chết.
+                    // Đặt SAU bốn nhánh thông báo bên trên: chúng cũng làm thanh tắt nhưng biết
+                    // rõ NGUYÊN NHÂN — debounce BarGoneFrames chính là cửa sổ để mẫu của chúng
+                    // khớp trước. Mẫu trượt thì nhánh này thành lưới an toàn: vẫn thả lại, chỉ
+                    // khác counter và câu chữ. Không cần xét ignoreFailUntil: chỉ đếm sau khi
+                    // thanh đã từng hiện, tức cú thả đã ăn thật rồi.
+                    bool barGone = sawCastHud && barGoneFrames >= _cfg.BarGoneFrames;
+                    if (barGone)
                     {
-                        _idleRecasts++;
-                        Emit($"đứng yên, không cầm cần (ncc={snap.IdleScore:F3}, {idleFrames} khung, " +
-                             $"{waitSw.ElapsedMilliseconds} ms) — cú thả đã chết, câu lại");
+                        _barGoneRecasts++;
+                        Emit($"thanh câu tắt {barGoneFrames} khung liên tiếp " +
+                             $"({waitSw.ElapsedMilliseconds} ms, không thông báo nào khớp) — " +
+                             "cú thả đã chết, câu lại");
                         Sleep(ct, _cfg.RejectRecastMs);
-                        // waitRelease: false — luc nay khong he giu S, cho AfterReleaseMs la thoi
-                        // gian chet vo ich. Giong nhanh che moi.
-                        Cast(ct, "câu lại (mất cần)", waitRelease: false);
+                        // waitRelease: false — không hề giữ S, chờ AfterReleaseMs là thời gian
+                        // chết vô ích. Giống nhánh chê mồi.
+                        Cast(ct, "câu lại (thanh tắt)", waitRelease: false);
                         EnterWaiting();
                         continue;
                     }
@@ -556,8 +532,8 @@ internal sealed class FishingBot
                              $" (thanh={(sawCastHud ? "đã mở" : "chưa mở lần nào")}" +
                              $" fill={snap.BlueFill01 * 100:0.0}% cá={snap.FishScore:F3}" +
                              $" chê={snap.RejectScore:F3} nước={snap.NoWaterScore:F3}" +
-                             $" saicần={snap.NoFishScore:F3} hếtcá={snap.NoFishAreaScore:F3}" +
-                             $" đứng={snap.IdleScore:F3})" + IdleNote());
+                             $" saicần={snap.NoFishScore:F3} hếtcá={snap.NoFishAreaScore:F3})" +
+                             BarNote());
                         _biteTimeouts++;
                         Cast(ct, "câu lại (timeout)");
                         EnterWaiting();
@@ -736,25 +712,16 @@ internal sealed class FishingBot
         _catches++;
         _catchesSinceDump++;
 
+        // Con dau tien cua phien: bao mot tieng cho biet moi thu da vao guong — thoi gian cho
+        // toi con dau cung la thuoc do suc khoe cua cho cau. Khong ping, cung ly do NotifyAlert.
+        if (_catches == 1)
+            DiscordNotifier.NotifyInfo(_cfg, "🐟 Bắt được con cá đầu tiên",
+                "sau " + DiscordNotifier.FormatDuration(_sessionSw.ElapsedMilliseconds) +
+                " từ lúc bắt đầu", Emit, good: true);
+
         try { SnapshotReady?.Invoke(reader.Read()); } catch { }
 
-        // Do cop = di ra xe roi quay lai. Khong ai dam bao nhan vat dung lai dung pixel cu, ma
-        // mau "dung yen" cham tai O CO DINH. Diem tut sau moi lan do cop = o da troi khoi nguoi,
-        // va luc do tinh nang tu tat (ncc thap => khong ban) chu khong bao loi — nen phai ghi ra
-        // day, khong thi khong bao gio biet.
-        int dumpMark = _catchesSinceDump;
         MaybeDump(ct);
-        if (_catchesSinceDump != dumpMark)
-        {
-            try
-            {
-                var after = reader.Read();
-                if (after.IdleConfigured)
-                    Emit($"sau đổ cốp: đứng={after.IdleScore:F3} " +
-                         $"({(after.IdlePose ? "còn khớp" : "KHÔNG khớp — ô có thể đã trôi")})");
-            }
-            catch { }
-        }
 
         // Mặc định 0 — xem chú thích AfterKeepCastMs. Chờ ở đây là cách phòng hờ cho việc
         // animation cất cá nuốt mất phím 4; cách bắt sau khi đã trượt nằm ở vòng lặp chính.
@@ -1218,7 +1185,7 @@ internal sealed class FishingBot
             NoWater = _noWater,
             NoFish = _noFish,
             CastMissed = _castMissed,
-            IdleRecasts = _idleRecasts,
+            BarGoneRecasts = _barGoneRecasts,
             BiteTimeouts = _biteTimeouts,
             FightTimeouts = _fightTimeouts,
             Catches = _catches,

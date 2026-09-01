@@ -49,16 +49,6 @@ internal sealed class FishingSnapshot
     public bool NoFishAreaNotice { get; init; }
     public double NoFishAreaScore { get; init; } = -1;
 
-    /// <summary>Đã có ô tay cầm cần + mẫu pose đứng. Tuỳ chọn — thiếu thì mọi thứ chạy như cũ.</summary>
-    public bool IdleConfigured { get; init; }
-
-    /// <summary>
-    /// Nhân vật đang đứng yên, tay buông, KHÔNG cầm cần. Lúc chờ cá mà thấy cái này nghĩa là
-    /// cú thả đã chết — kể cả khi HUD vẫn còn vẽ thanh.
-    /// </summary>
-    public bool IdlePose { get; init; }
-    public double IdleScore { get; init; } = -1;
-
     public bool KeepVisible { get; init; }
 
     /// <summary>
@@ -90,14 +80,12 @@ internal sealed class FishingReader : IDisposable
     private readonly RegionReader _fish;
     private readonly RegionReader _reject;
     private readonly RegionReader _keepBand;
-    private readonly RegionReader _rod;
     private readonly GrayTemplate _fishTpl;
     private readonly GrayTemplate _rejectTpl;
     private readonly GrayTemplate _noWaterTpl;
     private readonly GrayTemplate _noFishTpl;
     private readonly GrayTemplate _noFishAreaTpl;
     private readonly GrayTemplate _keepTpl;
-    private readonly GrayTemplate _idleTpl;
     private readonly KeepLocator _keepLocator;
     private readonly string _fishProblem;
     private readonly string _rejectProblem;
@@ -105,7 +93,6 @@ internal sealed class FishingReader : IDisposable
     private readonly string _noFishProblem;
     private readonly string _noFishAreaProblem;
     private readonly string _keepProblem;
-    private readonly string _idleProblem;
 
     public string FishTemplateProblem => _fishProblem;
     public string RejectTemplateProblem => _rejectProblem;
@@ -113,7 +100,6 @@ internal sealed class FishingReader : IDisposable
     public string NoFishTemplateProblem => _noFishProblem;
     public string NoFishAreaTemplateProblem => _noFishAreaProblem;
     public string KeepTemplateProblem => _keepProblem;
-    public string IdleTemplateProblem => _idleProblem;
 
     /// <summary>Vùng đang quét để dò nút — hiện ra để đối chiếu bằng mắt.</summary>
     public Rectangle KeepBandRegion => _keepBand?.Region ?? Rectangle.Empty;
@@ -158,17 +144,6 @@ internal sealed class FishingReader : IDisposable
             _noFishProblem = "chưa khoanh ô thông báo";
             _noFishAreaProblem = "chưa khoanh ô thông báo";
         }
-
-        if (profile?.Rod.IsSet == true)
-        {
-            var abs = FishingConfig.ToAbsolute(screen, profile.Rod);
-            _rod = new RegionReader(abs);
-            // Mau la anh chup luc DUNG YEN tren dung o nay — xem chu thich o FishingConfig.
-            (_idleTpl, _idleProblem) = LoadTemplate(
-                FishingConfig.IdleTemplatePath(profile.Key), abs.Size, "đứng yên");
-        }
-        else
-            _idleProblem = "chưa khoanh ô tay cầm cần";
 
         if (profile?.Keep.IsSet == true)
         {
@@ -280,15 +255,6 @@ internal sealed class FishingReader : IDisposable
             }
         }
 
-        double idleScore = -1;
-        bool idlePose = false;
-        if (_rod is not null && _idleTpl is not null)
-        {
-            _rod.Refresh();
-            idleScore = _idleTpl.Score(_rod.GrayBuffer(_rod.Region));
-            idlePose = idleScore >= _cfg.IdleNccMin;
-        }
-
         double keepScore = -1;
         double keepDensity = -1;
         var keepRect = Rectangle.Empty;
@@ -335,9 +301,6 @@ internal sealed class FishingReader : IDisposable
             NoFishScore = noFishScore,
             NoFishAreaNotice = noFishArea,
             NoFishAreaScore = noFishAreaScore,
-            IdleConfigured = _idleTpl is not null,
-            IdlePose = idlePose,
-            IdleScore = idleScore,
             KeepVisible = !keepRect.IsEmpty,
             KeepScore = keepScore,
             KeepDensity = keepDensity,
@@ -377,6 +340,5 @@ internal sealed class FishingReader : IDisposable
         _fish?.Dispose();
         _reject?.Dispose();
         _keepBand?.Dispose();
-        _rod?.Dispose();
     }
 }
