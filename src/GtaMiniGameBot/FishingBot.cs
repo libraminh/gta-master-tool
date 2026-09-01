@@ -87,6 +87,8 @@ internal sealed class FishingBot
     private TrunkDumper _dumper;
     private int _catches;
     private int _catchesSinceDump;
+    /// <summary>Số lượt đổ cốp THÀNH CÔNG của phiên — chỉ đếm DumpResult.Ok, cho tin Discord.</summary>
+    private int _dumpsDone;
     private int _released;
 
     /// <summary>KG ba lô lần cân trước, chỉ dùng ở chặng cuối phiên. -1 = chưa cân lần nào.</summary>
@@ -906,7 +908,13 @@ internal sealed class FishingBot
 
         if (r == DumpResult.Ok)
         {
+            _dumpsDone++;
             Emit("--- đổ xong, câu tiếp ---");
+            // Nguoi di vang biet chu trinh do cop van song. Khong ping, nhu moi tin Info.
+            DiscordNotifier.NotifyInfo(_cfg, $"📦 Đã đổ cốp thành công — {_dumpsDone} lần",
+                _dumper.TrunkFreeKg >= 0
+                    ? $"cốp còn trống {_dumper.TrunkFreeKg:F1}/{_cfg.TrunkCapKg:F0} kg"
+                    : null, Emit, good: true);
             return;
         }
 
