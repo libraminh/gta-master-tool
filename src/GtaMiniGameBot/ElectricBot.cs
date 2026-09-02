@@ -123,6 +123,11 @@ internal sealed class ElectricBot
                 (wantWire && !wireProbe.FindPanel().IsEmpty) ||
                 (wantBoard && boardProbe.TryRead(out _) is not null);
 
+            // Bo dieu huong can biet no vua duoc goi lai SAU mot minigame (de reset camera, lay lai W)
+            // va bang da bien mat bao lau: WireBot bao Solved sau PanelGoneMs, BoardBot sau 3 s.
+            bool justSolved = false;
+            int panelGoneMs = 0;
+
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
@@ -131,22 +136,26 @@ internal sealed class ElectricBot
                 if (wantWire && !wireProbe.FindPanel().IsEmpty)
                 {
                     Emit("thấy panel đi dây — giao cho bộ giải dây.");
-                    if (!RunWire(ct, out message)) return;
+                    if (!RunWire(ct, out message, out bool solved)) return;
                     if (StopAfterOneRound(ref message)) return;
+                    if (solved) { justSolved = true; panelGoneMs = _cfg.Wire.PanelGoneMs; }
                     continue;
                 }
 
                 if (wantBoard && boardProbe.TryRead(out _) is not null)
                 {
                     Emit("thấy bảng nước/điện — giao cho bộ giải bảng.");
-                    if (!RunBoard(ct, out message)) return;
+                    if (!RunBoard(ct, out message, out bool solved)) return;
                     if (StopAfterOneRound(ref message)) return;
+                    if (solved) { justSolved = true; panelGoneMs = BoardGoneMsAfterSolved; }
                     continue;
                 }
 
                 if (wantNav)
                 {
-                    if (!RunNav(ct, PanelVisible, out message)) return;
+                    if (!RunNav(ct, PanelVisible, justSolved, panelGoneMs, out message)) return;
+                    justSolved = false;
+                    WaitPanelAfterArrival(ct, PanelVisible);
                     continue;
                 }
 
@@ -186,18 +195,27 @@ internal sealed class ElectricBot
         return true;
     }
 
+    /// <summary>BoardBot chỉ báo Solved sau khi bảng đã mất liên tục 3 s (BoardBot.cs, nhánh <c>sinceSeen</c>).</summary>
+    private const int BoardGoneMsAfterSolved = 3_000;
+
     /// <summary>
-    /// Cho bộ điều hướng đi tới điểm làm việc rồi bấm E. Trả false nếu nó dừng vì một lý do mà
-    /// chạy tiếp cũng vô ích — chưa hiệu chuẩn, không gửi được input, hoặc thử hết lượt vẫn không
-    /// tới. Tới nơi rồi thì quay lại vòng điều phối: chính hai bộ thăm dò ở trên sẽ thấy minigame.
+    /// Cho bộ điều hướng đi tới điểm làm việc rồi bấm E. Nó không bao giờ tự bỏ cuộc (mất điểm thì
+    /// quét, lâu quá thì reset nghề, không tiến thì khởi động lại mềm — đúng bản Python), nên chỉ
+    /// trả false khi không gửi được input hoặc lỗi. Tới nơi rồi thì quay lại vòng điều phối: chính
+    /// hai bộ thăm dò ở trên sẽ thấy minigame.
     /// </summary>
-    private bool RunNav(CancellationToken ct, Func<bool> panelVisible, out string message)
+    private bool RunNav(CancellationToken ct, Func<bool> panelVisible, bool afterMinigame, int panelGoneMs, out string message)
     {
         var done = new ManualResetEventSlim(false);
         NavStopReason reason = NavStopReason.UserStopped;
         string detail = "";
 
-        _navBot = new NavBot(_cfg, _screen, _profile) { PanelVisible = panelVisible };
+        _navBot = new NavBot(_cfg, _screen, _profile)
+        {
+            PanelVisible = panelVisible,
+            AfterMinigame = afterMinigame,
+            PanelGoneAgoMs = panelGoneMs
+        };
         _navBot.Log += Emit;
         _navBot.Stopped += (r, m) => { reason = r; detail = m; done.Set(); };
         _navBot.Start();
@@ -206,10 +224,25 @@ internal sealed class ElectricBot
         _navBot = null;
 
         if (reason == NavStopReason.Arrived) { message = ""; return true; }
+        if (reason == NavStopReason.UserStopped) throw new OperationCanceledException();
 
         message = $"bộ điều hướng dừng — {NavBot.TenLyDo(reason)}: {detail}";
         Emit("dừng: " + message);
         return false;
+    }
+
+    /// <summary>
+    /// Sau khi bộ điều hướng báo tới nơi, panel vừa hiện lên; một khung thăm dò lỡ (hiệu ứng mở
+    /// bảng) mà quay ngay về nav là NavBot mới thấy prompt còn đó và bấm E lần hai. Chờ tới 1 s.
+    /// </summary>
+    private void WaitPanelAfterArrival(CancellationToken ct, Func<bool> panelVisible)
+    {
+        for (int i = 0; i < 8; i++)
+        {
+            if (panelVisible()) return;
+            Sleep(ct, 125);
+        }
+        Emit("bộ điều hướng báo có minigame nhưng thăm dò không thấy — quay lại điều hướng.");
     }
 
     private void WaitNav(CancellationToken ct, ManualResetEventSlim done)
@@ -231,7 +264,7 @@ internal sealed class ElectricBot
     /// chạy tiếp — kéo mãi không dính, đọc phản hồi không chắc, hay mâu thuẫn dữ liệu. Những lý do
     /// đó là dấu hiệu có gì sai thật, và thử lại chỉ là giật điện người chơi thêm lần nữa.
     /// </summary>
-    private bool RunWire(CancellationToken ct, out string message)
+    private bool RunWire(CancellationToken ct, out string message, out bool solved)
     {
         var done = new ManualResetEventSlim(false);
         WireStopReason reason = WireStopReason.UserStopped;
@@ -246,13 +279,14 @@ internal sealed class ElectricBot
         Wait(ct, done);
         _wire = null;
 
+        solved = reason == WireStopReason.Solved;
         bool keepGoing = reason is WireStopReason.Solved or WireStopReason.NoPanel;
         message = keepGoing ? "" : $"bộ giải dây dừng — {WireBot.TenLyDo(reason)}: {detail}";
         if (!keepGoing) Emit("dừng: " + message);
         return keepGoing;
     }
 
-    private bool RunBoard(CancellationToken ct, out string message)
+    private bool RunBoard(CancellationToken ct, out string message, out bool solved)
     {
         var done = new ManualResetEventSlim(false);
         BoardStopReason reason = BoardStopReason.UserStopped;
@@ -267,6 +301,7 @@ internal sealed class ElectricBot
         Wait(ct, done);
         _board = null;
 
+        solved = reason == BoardStopReason.Solved;
         bool keepGoing = reason is BoardStopReason.Solved or BoardStopReason.NoBoard;
         message = keepGoing ? "" : $"bộ giải bảng dừng — {BoardBot.TenLyDo(reason)}: {detail}";
         if (!keepGoing) Emit("dừng: " + message);

@@ -71,12 +71,17 @@ internal sealed class BitmapRegion : IPixelSource
         Copy(src);
     }
 
+    /// <summary>Đệm BGRA thô — cùng nghĩa với <see cref="RegionReader.Raw"/>, để <c>--verify-nav</c> dựng <c>NavFrame</c> từ ảnh tĩnh.</summary>
+    public byte[] Raw => _buf;
+
+    public int Stride => _stride;
+
     /// <summary>
     /// Nạp ẢNH KHÁC vào cùng vùng đọc, giữ nguyên đối tượng.
     ///
-    /// Có mặt vì <see cref="MarkerReader"/> mang trạng thái LIÊN KHUNG (phép kiểm thị sai so vị
-    /// trí khung này với khung trước). Muốn kiểm nó ngoài game thì phải đưa được nhiều khung liên
-    /// tiếp qua CÙNG một bộ dò — dựng bộ dò mới cho mỗi ảnh là xoá sạch cái đang cần kiểm.
+    /// Có mặt vì các bộ dò của bộ điều hướng (<see cref="WorldMarkerDetector"/>, <see cref="DotTracker"/>)
+    /// mang trạng thái LIÊN KHUNG. Muốn kiểm ngoài game thì phải đưa được nhiều khung liên tiếp qua
+    /// CÙNG một bộ dò — dựng bộ dò mới cho mỗi ảnh là xoá sạch cái đang cần kiểm.
     /// </summary>
     public void Retarget(Bitmap src)
     {

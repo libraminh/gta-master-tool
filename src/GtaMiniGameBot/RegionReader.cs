@@ -19,6 +19,16 @@ internal sealed class RegionReader : IPixelSource
 
     public RegionReader(Rectangle region) => Resize(region);
 
+    /// <summary>
+    /// Đệm BGRA thô của lần <see cref="Refresh"/> gần nhất, row-major với <see cref="Stride"/> byte
+    /// mỗi hàng. Bộ điều hướng thợ điện đọc thẳng đệm này (qua <c>NavFrame</c>) thay vì xin
+    /// <see cref="BgrBuffer()"/>: ở 2K vùng world là 3 triệu pixel mỗi khung, mà bước chép BGRA→BGR
+    /// đo được ~4 ms và cấp một mảng 9 MB — cả hai đều vô ích khi detector chỉ cần đọc.
+    /// </summary>
+    public byte[] Raw => _buf;
+
+    public int Stride => _stride;
+
     public void Resize(Rectangle region)
     {
         if (region.Width < 1 || region.Height < 1)

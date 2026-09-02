@@ -1,5 +1,3 @@
-using System.Drawing.Imaging;
-
 namespace GtaMiniGameBot;
 
 /// <summary>
@@ -28,8 +26,6 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkButton _btnToggle = new();
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
-    private readonly DarkButton _btnPrompt = new();
-    private readonly Label _navState = new();
     private readonly LogView _log = new();
 
     private string _jobKey = HotkeyText.Job();
@@ -175,16 +171,12 @@ internal sealed class ElectricPanel : UserControl
         _autoLoop.CheckedChanged += OnAutoLoopChanged;
         navBox.Controls.Add(_autoLoop);
 
-        _btnPrompt.Text = "Khoanh mẫu TƯƠNG TÁC…";
-        _btnPrompt.SetBounds(Theme.Px(330), Theme.Px(23), Theme.Px(212), Theme.Px(26));
-        _btnPrompt.Click += (_, _) => CropPromptTemplate();
-        navBox.Controls.Add(_btnPrompt);
-
-        _navState.AutoSize = false;
-        _navState.Font = Theme.DataSm;
-        _navState.BackColor = Theme.Surface;
-        _navState.SetBounds(Theme.Px(330), Theme.Px(54), w - Theme.Px(342), Theme.Px(18));
-        navBox.Controls.Add(_navState);
+        // Khong con nut "Khoanh mau TUONG TAC": prompt [E] duoc do bang hinh hoc (o phim trang + chu
+        // ben phai) nhu ban Python, khong can mau anh. Minimap va vung world cung suy tu do phan giai.
+        Lab(navBox, "Không cần khoanh gì: minimap, mốc vàng, prompt [E] đều suy từ độ phân giải.",
+            Theme.Px(330), Theme.Px(26), w - Theme.Px(342));
+        Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log; bật lại để thử reset camera sau minigame.",
+            Theme.Px(330), Theme.Px(50), w - Theme.Px(342));
 
         var help = new DarkGroup
         {
@@ -252,9 +244,7 @@ internal sealed class ElectricPanel : UserControl
             new("board", "Bảng nước/điện"),
             new("nav-far", "Đi đường — xa, chỉ thấy chấm minimap"),
             new("nav-marker", "Đi đường — thấy mốc vàng dưới đất"),
-            new("nav-prompt", "Đi đường — đang hiện nút E TƯƠNG TÁC"),
-            new("nav-pair-a", "Đi đường — cặp xoay camera, ảnh A"),
-            new("nav-pair-b", "Đi đường — cặp xoay camera, ảnh B")
+            new("nav-prompt", "Đi đường — đang hiện nút E TƯƠNG TÁC")
         };
 
         public string Name { get; }
@@ -305,32 +295,11 @@ internal sealed class ElectricPanel : UserControl
     {
         _calib.Text = _profile.Describe();
         _calib.ForeColor = Theme.GoodText;
-        RefreshNavState();
     }
 
-    private void RefreshNavState()
-    {
-        bool ready = _profile.PromptReady && File.Exists(ElectricConfig.PromptTemplatePath(_profile.Key));
-        _navState.Text = ready
-            ? $"mẫu TƯƠNG TÁC: chữ cao {_profile.PromptTextH}px, khe {_profile.PromptGapSplit}px"
-            : "chưa có mẫu TƯƠNG TÁC — chụp “nav-prompt” rồi khoanh";
-        _navState.ForeColor = ready ? Theme.GoodText : Theme.Dim;
-    }
-
-    /// <summary>
-    /// Bật tự đi mà chưa có mẫu chữ thì gỡ tick ngay: bot không có cách nào biết lúc nào tới nơi,
-    /// và để nó chạy là để nó đi lạc rồi mới báo.
-    /// </summary>
+    /// <summary>Tự đi không cần hiệu chuẩn gì: mọi vùng đọc và bộ dò prompt đều suy từ độ phân giải.</summary>
     private void OnAutoWalkChanged()
     {
-        if (_autoWalk.Checked &&
-            !(_profile.PromptReady && File.Exists(ElectricConfig.PromptTemplatePath(_profile.Key))))
-        {
-            _autoWalk.SetCheckedQuiet(false);
-            Append("chưa có mẫu chữ TƯƠNG TÁC — chụp ảnh “nav-prompt” rồi bấm “Khoanh mẫu TƯƠNG TÁC…”");
-            return;
-        }
-
         _cfg.AutoWalk = _autoWalk.Checked;
         _cfg.Save();
         Append(_cfg.AutoWalk
@@ -346,69 +315,6 @@ internal sealed class ElectricPanel : UserControl
         Append(_cfg.AutoLoop
             ? "chạy liên tục: BẬT"
             : "chạy liên tục: TẮT — giải xong một lượt là dừng để đọc log");
-    }
-
-    /// <summary>
-    /// Khoanh mẫu chữ "TƯƠNG TÁC" trên ảnh "nav-prompt", đi đúng đường
-    /// <see cref="WoodSetupForm"/> đi cho job thợ mộc.
-    /// </summary>
-    private void CropPromptTemplate()
-    {
-        if (IsRunning) { Append("đang chạy — tắt trước khi khoanh mẫu"); return; }
-
-        string shotPath = ElectricConfig.ShotPath(_profile.Key, "nav-prompt");
-        using var still = StillPicker.Load(shotPath);
-        if (still is null)
-        {
-            Append("chưa có ảnh “nav-prompt” — chọn nó ở ô trên rồi bấm “Chụp ảnh tĩnh…”");
-            return;
-        }
-        if (still.Width != _profile.Width || still.Height != _profile.Height)
-        {
-            Append($"ảnh {still.Width}×{still.Height} lệch màn hình {_profile.Width}×{_profile.Height} — chụp lại");
-            return;
-        }
-
-        var res = StillCropForm.Run(this, still, "Mẫu chữ TƯƠNG TÁC",
-            "Khoanh trùm CẢ ô phím [E] LẪN chữ TƯƠNG TÁC. Khoanh rộng tay một chút cũng được — " +
-            "phần chữ được tách ra tự động, ô phím không vào mẫu.",
-            Rectangle.Empty);
-        if (res is null) { Append("đã huỷ khoanh mẫu"); return; }
-
-        try
-        {
-            ApplyPromptCrop(still, res.Rect);
-            _cfg.Save();
-        }
-        catch (Exception ex) { Append("khoanh mẫu lỗi: " + ex.Message); }
-
-        RefreshNavState();
-    }
-
-    private void ApplyPromptCrop(Bitmap still, Rectangle rect)
-    {
-        var src = Rectangle.Intersect(rect, new Rectangle(0, 0, still.Width, still.Height));
-        if (src.Width < 20 || src.Height < 10)
-            throw new InvalidOperationException("vùng quá nhỏ — khoanh trùm cả ô phím lẫn chữ");
-
-        using var crop = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(crop))
-            g.DrawImage(still, new Rectangle(0, 0, src.Width, src.Height), src, GraphicsUnit.Pixel);
-
-        var parts = PromptLocator.ExtractText(crop, _cfg.Nav.PromptTuning(_profile), out string problem);
-        if (parts is null) throw new InvalidOperationException(problem);
-
-        // Chi phan CHU vao mau: trong o phim la chu E hay so dem nguoc, quanh no la vong tien trinh
-        // — de thu dang dong vao mau la tu dim diem khop cua chinh minh.
-        var tpl = GrayTemplate.FromBitmapCrop(crop, parts.Text);
-        if (tpl.IsFlat)
-            throw new InvalidOperationException("ô chữ phẳng tuyệt đối — khoanh trúng chỗ trống");
-
-        tpl.Save(ElectricConfig.PromptTemplatePath(_profile.Key));
-
-        _profile.PromptTextH = parts.Text.Height;
-        _profile.PromptGapSplit = parts.GapSplit;
-        Append($"mẫu TƯƠNG TÁC: {parts.Note} → tuong-tac.png");
     }
 
     private void RefreshNote() =>
@@ -431,15 +337,7 @@ internal sealed class ElectricPanel : UserControl
             "nav-far" => "GÓC 1. Đứng XA điểm làm việc: minimap có chấm vàng, nhưng KHÔNG thấy mốc " +
                          "vàng dưới đất trong khung hình.",
             "nav-marker" => "GÓC 1. Đứng chỗ NHÌN THẤY mốc vàng dưới đất, nhưng CHƯA hiện nút E.",
-            "nav-prompt" => "GÓC 1. Đứng vào mốc cho HIỆN nút [E] TƯƠNG TÁC. Ảnh này vừa để kiểm, " +
-                            "vừa để cắt mẫu chữ.",
-            // Cap nay la ca kiem DUY NHAT soi duoc phep kiem thi sai tren khung that, va o goc 1
-            // thi thi sai la hang rao duy nhat con lai (khong con hop bong nhan vat). Phai co moc
-            // vang trong khung, khong thi ca kiem bi bo qua — dung loi cua bo anh cu.
-            "nav-pair-a" => "GÓC 1. ĐỨNG YÊN, đừng đi. Phải NHÌN THẤY mốc vàng trong khung. " +
-                            "Chụp ảnh A, xong xoay camera sang phải một chút rồi chụp ảnh B.",
-            "nav-pair-b" => "GÓC 1. Vẫn ĐỨNG YÊN đúng chỗ cũ, camera đã xoay so với ảnh A, mốc vàng " +
-                            "vẫn trong khung.",
+            "nav-prompt" => "GÓC 1. Đứng vào mốc cho HIỆN nút [E] TƯƠNG TÁC — để kiểm bộ dò prompt.",
             _ => "Mở panel đi dây trong game, để nguyên màn đó."
         };
 
@@ -461,7 +359,6 @@ internal sealed class ElectricPanel : UserControl
             Append(shot.Name switch
             {
                 "board" => "chạy “--verify-board” để kiểm tuyến đi trên ảnh này.",
-                "nav-prompt" => "bấm “Khoanh mẫu TƯƠNG TÁC…”, rồi chạy “--verify-nav”.",
                 _ when shot.Name.StartsWith("nav-") => "chạy “--verify-nav” để kiểm trên ảnh này.",
                 _ => "chạy “--verify-wire” để kiểm nhận dạng slot trên ảnh này."
             });
@@ -546,7 +443,6 @@ internal sealed class ElectricPanel : UserControl
     {
         _btnToggle.Text = running ? $"Tắt  ({_jobKey})" : $"Bật  ({_jobKey})";
         _btnShot.Enabled = !running;
-        _btnPrompt.Enabled = !running;
         _screens.Enabled = !running;
         _modes.Enabled = !running;
         _autoWalk.Enabled = !running;
