@@ -187,6 +187,14 @@ internal static class Native
 
     public static bool IsKeyDown(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
 
+    // ================= timer he thong =================
+    // Bo dieu huong tho dien chay mot luong chuot 240 Hz (chu ky 4.17 ms) va vong lap chinh
+    // 25 ms; Thread.Sleep(1) o do phan giai mac dinh 15.6 ms thi ca hai deu hong. Ban Python goi
+    // timeBeginPeriod(1) suot phien (WinAPI.begin_timer); o day chi xin trong vong doi cua NavBot va
+    // tra lai o finally. Tu Windows 10 2004 no la per-process nen khong doi timer cua tien trinh khac.
+    [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint uPeriod);
+    [DllImport("winmm.dll")] public static extern uint timeEndPeriod(uint uPeriod);
+
     // ================= console (cho che do --verify) =================
     // App la WinExe nen khong co console san; gan vao console cua tien trinh cha
     // de `--verify` in duoc ket qua ra terminal.

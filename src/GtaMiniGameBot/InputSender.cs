@@ -26,8 +26,9 @@ internal static class InputSender
     /// do khong dung SetCursorPos duoc - dat lai vi tri con tro KHONG sinh ra delta (xem ghi chu
     /// o <see cref="MoveCursorOnly"/>), ma xoay camera thi can dung cai delta do.
     ///
-    /// Bao nhieu count ra bao nhieu do thi phu thuoc do nhay chuot trong game, nen NavBot tu do
-    /// lay ti so chu khong go cung.
+    /// Bao nhieu count ra bao nhieu do thi phu thuoc do nhay chuot trong game: do duoc 16.89 count/do
+    /// ngay 25/08. Bo dieu huong thay vi tu do lay ti so thi dat TOC DO (count/giay) qua luong 240 Hz
+    /// cua NavInput, voi he so nhan 4.0 lay tu ban Python (cung co do nhay).
     /// </summary>
     public static void MoveRelative(int dx, int dy)
     {
@@ -272,8 +273,9 @@ internal static class InputSender
     /// <see cref="Thread.Sleep(int)"/> chỉ chính xác tới độ phân giải timer của hệ thống — mặc
     /// định ~15.6 ms, nên <c>Sleep(1)</c> có thể ngủ 15 ms thật. Bản Python xin
     /// <c>timeBeginPeriod(1)</c> để tránh chuyện đó; ở đây quay bận cho các khoảng dưới một khung
-    /// hình thay vì đổi timer TOÀN HỆ THỐNG cho cả máy — cái giá là vài ms CPU mỗi cú kéo, đổi
-    /// lấy việc không làm thay đổi hành vi hẹn giờ của mọi tiến trình khác.
+    /// hình thay vì đổi timer cho cả tiến trình — cái giá là vài ms CPU mỗi cú kéo. Riêng bộ điều
+    /// hướng thợ điện (luồng chuột 240 Hz chạy liên tục) thì KHÔNG dùng hàm này — quay bận suốt là
+    /// chiếm một lõi — mà xin <c>timeBeginPeriod(1)</c> trong vòng đời của nó (xem NavBot).
     ///
     /// Bảng Water &amp; Power cũng dùng: vòng closed-loop của nó chạy nhịp 2 ms, mà
     /// <c>Sleep(2)</c> ngủ 15 ms thì bộ theo dõi đầu dây bỏ mất phần lớn quãng đường.

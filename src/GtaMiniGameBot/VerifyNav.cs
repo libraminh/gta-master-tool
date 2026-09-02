@@ -1,21 +1,17 @@
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
-using System.Drawing.Text;
 
 namespace GtaMiniGameBot;
 
 /// <summary>
-/// Kiểm bộ điều hướng của job Thợ điện NGOÀI GAME, hai phần:
-///   1. Tự vẽ ảnh rồi dò lại — chạy được ngay, không cần ảnh chụp nào.
-///   2. Dò trên ảnh tĩnh người dùng chụp bằng nút "Chụp ảnh tĩnh…" của tab Thợ điện.
+/// Kiểm bộ điều hướng thợ điện NGOÀI GAME, hai phần:
+///   1. Tự vẽ ảnh rồi dò lại, cộng kiểm các hàm thuần (servo, KET1, tích phân chuột, watchdog).
+///   2. Dò trên ảnh tĩnh người dùng chụp bằng nút "Chụp ảnh tĩnh…" của tab Thợ điện
+///      (<c>%AppData%\GtaMiniGameBot\electric\&lt;WxH&gt;\shots\nav-*.png</c>).
 ///
-/// Vì sao đáng viết trước khi viết bộ lái: phần THỊ GIÁC kiểm được offline và lặp lại bao nhiêu
-/// lần cũng ra một kết quả, còn bộ lái là vòng điều khiển kín — mỗi lần chỉnh là một lượt thử
-/// trong game. Mang một đống ngưỡng chưa đo vào lượt thử là phí lượt thử.
-///
-/// Ca quan trọng nhất ở đây là LOGO VÀNG TRÊN ÁO nhân vật: đo trên ảnh thật của người dùng, nó lọt
-/// hết mọi cửa hình học của bản Python. Bài kiểm "vật vàng đứng im không bao giờ được khoá" chính
-/// là hàng rào cho chuyện đó.
+/// Phần 1 chứng minh các con số port từ bản Python (config.json CAROT2 V6.7.34) được chép đúng và
+/// hình học viết tay (contour, bao lồi, moment) cho ra cùng thang đo với OpenCV. Phần 2 chứng minh
+/// chúng bắt được HUD thật ở 2K — đặc biệt gốc mũi tên cố định (163, 980.4)·sx, con số phụ thuộc
+/// máy nhất sau độ nhạy chuột.
 ///
 /// Chạy: GtaMiniGameBot.exe --verify-nav
 /// </summary>
@@ -23,7 +19,7 @@ internal static class VerifyNav
 {
     public static int Run(string[] args)
     {
-        Console.WriteLine("== kiểm tra bộ điều hướng thợ điện ==");
+        Console.WriteLine("== kiểm tra bộ điều hướng thợ điện (port CAROT2 V6.7.34) ==");
 
         int fail = SelfTest();
 
@@ -39,17 +35,18 @@ internal static class VerifyNav
         {
             Console.WriteLine();
             Console.WriteLine($"-- {key} --");
-
-            var mini = profile.ScanMinimap();
-            var band = profile.ScanPromptBand();
-            var sil = profile.SilhouetteBox(cfg.Nav);
-            Console.WriteLine($"  minimap {mini.W}×{mini.H} @ {mini.X},{mini.Y}" +
-                              (profile.Minimap.IsSet ? "" : "  (suy từ mốc 1080p, CHƯA đo lại)"));
-            Console.WriteLine($"  băng prompt {band.W}×{band.H} @ {band.X},{band.Y}" +
-                              (profile.PromptBand.IsSet ? "" : "  (mặc định giữa màn)"));
-            Console.WriteLine($"  hộp bóng nhân vật {sil.Width}×{sil.Height} @ {sil.X},{sil.Y}");
-
-            fail += RealShots(cfg, profile);
+            var s = new NavScale(profile.Width, profile.Height, cfg.Nav.ScreenPxScale);
+            var t = NavTuning.TargetRoiRef;
+            var mini = s.RoiRef(t[0], t[1], t[2], t[3]);
+            var w = NavTuning.WorldRoiRef;
+            var world = s.RoiRef(w[0], w[1], w[2], w[3]);
+            double ox = (cfg.Nav.PlayerOriginXRef > 0 ? cfg.Nav.PlayerOriginXRef : NavTuning.PlayerOriginXRef) * s.Sx;
+            double oy = (cfg.Nav.PlayerOriginYRef > 0 ? cfg.Nav.PlayerOriginYRef : NavTuning.PlayerOriginYRef) * s.Sy;
+            Console.WriteLine($"  sx={s.Sx:F4} sy={s.Sy:F4} px×{s.Px:F3} chuột×{cfg.Nav.MouseSpeedMultiplier:F1}");
+            Console.WriteLine($"  minimap {mini.Width}×{mini.Height} @ {mini.X},{mini.Y}  (target_roi_ref quy đổi)");
+            Console.WriteLine($"  world   {world.Width}×{world.Height} @ {world.X},{world.Y}");
+            Console.WriteLine($"  gốc mũi tên ({ox:F1},{oy:F1}){(cfg.Nav.PlayerOriginXRef > 0 ? "  (ghi đè)" : "  (mặc định Python)")}");
+            fail += RealShots(cfg, profile, s, ox, oy);
         }
 
         Console.WriteLine();
@@ -57,656 +54,400 @@ internal static class VerifyNav
         return fail == 0 ? 0 : 1;
     }
 
+    private static void Check(ref int fail, bool ok, string name, string detail = "")
+    {
+        Console.WriteLine($"  [{(ok ? "ĐẠT" : "HỎNG")}] {name}{(string.IsNullOrEmpty(detail) ? "" : " — " + detail)}");
+        if (!ok) fail++;
+    }
+
     // ================================================================ tu kiem tra
 
-    /// <summary>Độ phân giải giả, cố tình lẻ để không đụng profile thật nào của người dùng.</summary>
-    private const int SelfW = 1291;
-    private const int SelfH = 727;
+    private const int W = 1920, H = 1080;
+    private static readonly NavScale S1 = new(W, H, 0);
+    private static readonly Color Yellow = Color.FromArgb(255, 220, 40);   // H≈25 (OpenCV), S≈215, V=255
+    private static readonly Color Cyan = Color.FromArgb(40, 200, 220);     // H≈93
+    private static readonly Color Dark = Color.FromArgb(30, 30, 30);
 
     private static int SelfTest()
     {
         Console.WriteLine();
-        Console.WriteLine("-- tự kiểm tra (ảnh tự vẽ) --");
-
-        string dir = ElectricConfig.ProfileDir($"{SelfW}x{SelfH}");
-        try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch { }
-
-        var cfg = new ElectricConfig();
-        cfg.Normalize();
-
-        var profile = new ElectricProfile { Device = "selftest", Width = SelfW, Height = SelfH };
-        profile.Normalize();
-
+        Console.WriteLine("-- tự kiểm tra --");
         int fail = 0;
-        try
-        {
-            fail += MinimapCases(cfg, profile);
-            fail += MarkerCases(cfg, profile);
-            fail += PromptCases(cfg, profile);
-            fail += EscapeCases(cfg);
-            fail += SprintCases(cfg);
-        }
-        finally
-        {
-            try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); } catch { }
-        }
-
+        fail += GeometryCases();
+        fail += DetectorCases();
+        fail += TrackerCases();
+        fail += ServoCases();
+        fail += Ket1Cases();
+        fail += MouseCases();
+        fail += WatchdogCases();
+        fail += PromptCases();
+        fail += WorldCases();
+        fail += BoardCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
         return fail;
     }
 
-    // ---------------------------------------------------------------- cham minimap
-
-    private static int MinimapCases(ElectricConfig cfg, ElectricProfile p)
+    private static Bitmap NewFrame()
     {
-        Console.WriteLine("  [chấm minimap]");
-        int fail = 0;
-
-        var mini = p.ScanMinimap().ToRectangle();
-        int ox = mini.X + (int)(mini.Width * cfg.Nav.MinimapOriginXFrac);
-        int oy = mini.Y + (int)(mini.Height * cfg.Nav.MinimapOriginYFrac);
-
-        // Cham dat BEN PHAI va PHIA TREN goc nguoi choi -> goc phai duong va nho hon 90 do.
-        using (var shot = MapShot(p, dot: new Point(ox + 34, oy - 58), bolt: false))
-            fail += ExpectDot(cfg, p, shot, "chấm bên phải-trước", want: true,
-                              check: f => f.BearingDeg is > 5 and < 85, "góc phải trong (5°,85°)");
-
-        using (var shot = MapShot(p, dot: new Point(ox - 40, oy - 20), bolt: false))
-            fail += ExpectDot(cfg, p, shot, "chấm bên trái", want: true,
-                              check: f => f.BearingDeg < -5, "góc phải âm");
-
-        // CHI co icon set: cung mau vang, nhung rang cua -> phai bi loai boi cua do tron.
-        using (var shot = MapShot(p, dot: null, bolt: true))
-            fail += ExpectDot(cfg, p, shot, "chỉ có icon sét", want: false, check: null, null);
-
-        // Ca that: co ca hai, phai bat dung cai cham.
-        using (var shot = MapShot(p, dot: new Point(ox + 30, oy - 44), bolt: true))
-            fail += ExpectDot(cfg, p, shot, "chấm + icon sét", want: true,
-                              check: f => f.BearingDeg is > 5 and < 85, "bắt đúng chấm, không bắt sét");
-
-        return fail;
-    }
-
-    private static int ExpectDot(ElectricConfig cfg, ElectricProfile p, Bitmap shot, string label,
-                                 bool want, Func<DotFix, bool> check, string checkName)
-    {
-        using var reader = MinimapReader.ForBitmap(cfg, p, shot, out string problem);
-        if (reader is null) { Console.WriteLine($"    [{label}] KHÔNG DÒ ĐƯỢC: {problem}"); return 1; }
-
-        var fix = reader.Read(1000);
-        foreach (var c in reader.LastCandidates) Console.WriteLine($"      {c}");
-
-        bool ok = fix.Found == want;
-        if (ok && want && check is not null && !check(fix)) ok = false;
-
-        Console.WriteLine($"    [{label}] {fix} — {(ok ? "ĐẠT" : "HỎNG")}" +
-                          (checkName is null ? "" : $"  (đòi: {checkName})"));
-        return ok ? 0 : 1;
-    }
-
-    // ---------------------------------------------------------------- moc vang 3D
-
-    /// <summary>
-    /// Ba khung liên tiếp cho mỗi ca, vì phép kiểm thị sai so khung này với khung trước.
-    /// Camera xoay PHẢI (+counts) nên vật trong thế giới phải trôi sang TRÁI.
-    /// </summary>
-    private static int MarkerCases(ElectricConfig cfg, ElectricProfile p)
-    {
-        Console.WriteLine("  [mốc vàng 3D]");
-        int fail = 0;
-
-        // Vat vang dung im o DAY GIUA man: o goc 3 day la logo sau lung ao, o goc 1 la tay/vu khi.
-        // Truoc day toa do suy tu hop bong nhan vat; hop do gio TAT (goc 1) nen phai tu dat, khong
-        // thi khoi ve ra ngoai khung va ca kiem mat nghia.
-        var logo = new Rectangle(p.Width / 2 - 40, (int)(p.Height * 0.86), 80, 50);
-
-        // 1. Moc that troi sang trai khi xoay phai -> PHAI khoa duoc.
-        fail += ExpectMarker(cfg, p, "mốc thật, camera xoay phải", wantLock: true, yaw: +40,
-            frames: new[]
-            {
-                WorldShot(p, marker: new Rectangle(880, 470, 190, 120), logo: logo, staticBlob: Rectangle.Empty),
-                WorldShot(p, marker: new Rectangle(800, 470, 190, 120), logo: logo, staticBlob: Rectangle.Empty),
-                WorldShot(p, marker: new Rectangle(720, 470, 190, 120), logo: logo, staticBlob: Rectangle.Empty)
-            });
-
-        // 2. CHI co vat vang dung im o day giua man (tay/vu khi o goc 1). Hop bong nhan vat da tat
-        //    nen khong con cua hinh hoc nao chan no — chi con KIEM THI SAI. Day chinh la ca cho
-        //    thay hang rao duy nhat con lai co lam viec hay khong.
-        fail += ExpectMarker(cfg, p, "vật vàng đứng im ở đáy giữa màn (tay/vũ khí góc 1)",
-            wantLock: false, yaw: +40,
-            frames: new[]
-            {
-                WorldShot(p, marker: Rectangle.Empty, logo: logo, staticBlob: Rectangle.Empty),
-                WorldShot(p, marker: Rectangle.Empty, logo: logo, staticBlob: Rectangle.Empty),
-                WorldShot(p, marker: Rectangle.Empty, logo: logo, staticBlob: Rectangle.Empty)
-            });
-
-        // 3. Vat vang DUNG IM ngoai hop bong (biển báo, đèn HUD lạ): qua duoc cua hinh hoc nhung
-        //    khong troi khi camera xoay -> kiem thi sai phai chan. Day la hang rao that su.
-        var stat = new Rectangle(1050, 260, 150, 110);
-        fail += ExpectMarker(cfg, p, "vật vàng đứng im (phải KHÔNG khoá)", wantLock: false, yaw: +40,
-            frames: new[]
-            {
-                WorldShot(p, marker: Rectangle.Empty, logo: Rectangle.Empty, staticBlob: stat),
-                WorldShot(p, marker: Rectangle.Empty, logo: Rectangle.Empty, staticBlob: stat),
-                WorldShot(p, marker: Rectangle.Empty, logo: Rectangle.Empty, staticBlob: stat)
-            });
-
-        // 4. Khong xoay camera thi khong duoc cap khoa moi, du moc co that.
-        fail += ExpectMarker(cfg, p, "mốc thật nhưng camera đứng yên", wantLock: false, yaw: 0,
-            frames: new[]
-            {
-                WorldShot(p, marker: new Rectangle(880, 470, 190, 120), logo: Rectangle.Empty, staticBlob: Rectangle.Empty),
-                WorldShot(p, marker: new Rectangle(880, 470, 190, 120), logo: Rectangle.Empty, staticBlob: Rectangle.Empty),
-                WorldShot(p, marker: new Rectangle(880, 470, 190, 120), logo: Rectangle.Empty, staticBlob: Rectangle.Empty)
-            });
-
-        return fail;
-    }
-
-    private static int ExpectMarker(ElectricConfig cfg, ElectricProfile p, string label,
-                                    bool wantLock, int yaw, Bitmap[] frames)
-    {
-        MarkerReader reader = null;
-        try
-        {
-            reader = MarkerReader.ForBitmap(cfg, p, frames[0], out string problem);
-            if (reader is null) { Console.WriteLine($"    [{label}] KHÔNG DÒ ĐƯỢC: {problem}"); return 1; }
-
-            MarkerFix fix = null;
-            for (int i = 0; i < frames.Length; i++)
-            {
-                if (i > 0) reader.UseStill(frames[i]);
-                fix = reader.Update(1000 + i * 125, yaw);
-            }
-
-            foreach (var c in reader.LastCandidates) Console.WriteLine($"      {c}");
-
-            bool ok = fix.Locked == wantLock;
-            Console.WriteLine($"    [{label}] {fix} — {(ok ? "ĐẠT" : "HỎNG")}");
-            return ok ? 0 : 1;
-        }
-        finally
-        {
-            reader?.Dispose();
-            foreach (var f in frames) f.Dispose();
-        }
-    }
-
-    // ---------------------------------------------------------------- prompt E
-
-    private static int PromptCases(ElectricConfig cfg, ElectricProfile p)
-    {
-        Console.WriteLine("  [prompt E TƯƠNG TÁC]");
-
-        var at = new Point(430, 300);
-        if (!CalibratePrompt(cfg, p, at))
-        {
-            Console.WriteLine("    KHÔNG hiệu chuẩn được từ ảnh tự vẽ");
-            return 1;
-        }
-        Console.WriteLine($"    chữ cao {p.PromptTextH}px, ngưỡng khe {p.PromptGapSplit}px");
-
-        int fail = 0;
-
-        // Prompt TROI sang cho khac — no gan vao tu dien trong khong gian 3D.
-        fail += ExpectPrompt(cfg, p, "prompt ở chỗ khác", Prompt(p, new Point(660, 380), "E", "TƯƠNG TÁC"), true);
-
-        // Prompt tuong tac KHAC cua server.
-        fail += ExpectPrompt(cfg, p, "prompt khác (mở cốp)", Prompt(p, new Point(600, 330), "E", "MỞ CỐP XE"), false);
-
-        // Tram dien GIUA TRUA: be tong trang nang cung lot cua "muc trang", cac cua KICH CO phai
-        // chan. Day la ca sat voi canh that cua job nay nhat.
-        fail += ExpectPrompt(cfg, p, "bê tông nắng, không prompt", Yard(p, prompt: false), false);
-        fail += ExpectPrompt(cfg, p, "bê tông nắng, có prompt", Yard(p, prompt: true), true);
-
-        return fail;
-    }
-
-    /// <summary>Đi đúng đường form hiệu chuẩn sẽ đi: cắt ô → tách chữ → lưu mẫu.</summary>
-    private static bool CalibratePrompt(ElectricConfig cfg, ElectricProfile p, Point at)
-    {
-        using var shot = Prompt(p, at, "E", "TƯƠNG TÁC");
-
-        var box = new Rectangle(at.X - 10, at.Y - 12, 360, 76);
-        using var crop = new Bitmap(box.Width, box.Height, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(crop))
-            g.DrawImage(shot, new Rectangle(0, 0, box.Width, box.Height), box, GraphicsUnit.Pixel);
-
-        var parts = PromptLocator.ExtractText(crop, cfg.Nav.PromptTuning(p), out string problem);
-        if (parts is null) { Console.WriteLine($"    tách chữ HỎNG: {problem}"); return false; }
-
-        var tpl = GrayTemplate.FromBitmapCrop(crop, parts.Text);
-        if (tpl.IsFlat) { Console.WriteLine("    mẫu chữ phẳng"); return false; }
-        tpl.Save(ElectricConfig.PromptTemplatePath(p.Key));
-
-        p.PromptTextH = parts.Text.Height;
-        p.PromptGapSplit = parts.GapSplit;
-        return true;
-    }
-
-    private static int ExpectPrompt(ElectricConfig cfg, ElectricProfile p, string label, Bitmap shot, bool want)
-    {
-        using (shot)
-        {
-            using var reader = PromptReader.ForBitmap(cfg, p, shot, out string problem);
-            if (reader is null) { Console.WriteLine($"    [{label}] KHÔNG DÒ ĐƯỢC: {problem}"); return 1; }
-
-            var hit = reader.Read();
-            foreach (string r in hit.Rows) Console.WriteLine($"      {r}");
-            if (hit.Rows.Count == 0) Console.WriteLine("      không thấy dòng chữ nào trong băng quét");
-
-            bool ok = hit.Visible == want;
-            Console.WriteLine($"    [{label}] mong {(want ? "khớp" : "không khớp")}, " +
-                              $"ra {(hit.Visible ? "khớp" : "không khớp")} — {(ok ? "ĐẠT" : "HỎNG")}");
-            return ok ? 0 : 1;
-        }
-    }
-
-    // ================================================================ thoat ket
-
-    /// <summary>
-    /// Kiểm phần QUYẾT ĐỊNH của cơ chế thoát kẹt, bằng số liệu lấy thẳng từ log trong game 23/08.
-    ///
-    /// Vì sao phải có: bản đầu tiên sai ở chỗ nhìn từng bước thì bước nào cũng hợp lý, chỉ nhìn
-    /// CHUỖI mới thấy nó lặp "kẹt → thoát được → kẹt" 8 lần trong 25 giây mà cự ly đứng nguyên
-    /// 12↔13. Đây đúng là loại lỗi mà một ca kiểm ngoài game bắt được còn mắt thường thì không.
-    /// </summary>
-    private static int EscapeCases(ElectricConfig cfg)
-    {
-        Console.WriteLine("  [thoát kẹt]");
-        int fail = 0;
-        var nav = cfg.Nav;
-
-        // --- 1. Cu ly dung yen 3 s -> PHAI bao ket, du sai phan khung dang cao (9.4 do duoc that)
-        {
-            var pt = new ProgressTracker(nav);
-            for (long t = 0; t <= 3200; t += 100) pt.Push(t, 31.0);
-            fail += Check("cự ly đứng yên 3 s → kẹt",
-                          pt.Ready(3200) && pt.Stalled(3200),
-                          $"ready={pt.Ready(3200)} Δ={pt.Delta(3200):F2}");
-        }
-
-        // --- 2. Cu ly giam deu -> KHONG duoc bao ket, du flow thap (2.5 do duoc that)
-        {
-            var pt = new ProgressTracker(nav);
-            double d = 42;
-            for (long t = 0; t <= 3200; t += 100) { pt.Push(t, d); d -= 0.12; }
-            fail += Check("cự ly giảm đều → không kẹt",
-                          pt.Ready(3200) && !pt.Stalled(3200),
-                          $"Δ={pt.Delta(3200):F2} (đòi ≤ −{nav.MinProgressRef})");
-        }
-
-        // --- 3. Chua du lich su thi khong duoc ket luan gi
-        {
-            var pt = new ProgressTracker(nav);
-            for (long t = 0; t <= 900; t += 100) pt.Push(t, 31.0);
-            fail += Check("chưa đủ cửa sổ → chưa kết luận", !pt.Ready(900), $"ready={pt.Ready(900)}");
-        }
-
-        // --- 4. Ket lien tuc: bac phai LEO va ben KHONG duoc lat
-        {
-            var lad = new EscapeLadder(nav);
-            lad.Open(12.0, preferRight: true);
-
-            var seq = new List<EscapeStep>();
-            for (int i = 0; i < 3; i++)
-            {
-                // Moi vong: van ket (cu ly khong doi) -> Open tra false, giu nguyen ben va bac.
-                lad.Open(12.0, preferRight: false);   // dau sai so lat, KHONG duoc doi ben
-                seq.Add(lad.Next());
-            }
-
-            bool sameSide = seq.All(s => s.Right);
-            bool rising = seq[0].DurationMs < seq[1].DurationMs && seq[1].DurationMs < seq[2].DurationMs;
-            bool rungs = seq[0].Rung == 1 && seq[1].Rung == 2 && seq[2].Rung == 3;
-
-            fail += Check("3 lần kẹt liên tiếp → cùng bên, bậc dài dần",
-                          sameSide && rising && rungs,
-                          string.Join(" | ", seq));
-        }
-
-        // --- 5. Het bac mot ben -> lui roi DOI BEN, bac dat lai
-        {
-            var lad = new EscapeLadder(nav);
-            lad.Open(12.0, preferRight: true);
-            for (int i = 0; i < nav.StrafeRungsMs.Length; i++) lad.Next();
-
-            var flip = lad.Next();
-            var after = lad.Next();
-
-            fail += Check("hết bậc → lùi, đổi bên, bậc về 1",
-                          flip.Action == EscapeAction.BackupAndFlip && !flip.Right &&
-                          after.Action == EscapeAction.Strafe && !after.Right && after.Rung == 1,
-                          $"{flip} → {after}");
-        }
-
-        // --- 6. Ca hai ben het -> nhay -> het thang
-        {
-            var lad = new EscapeLadder(nav);
-            lad.Open(12.0, preferRight: true);
-            int n = nav.StrafeRungsMs.Length;
-            for (int i = 0; i < n; i++) lad.Next();
-            lad.Next();                                   // doi ben
-            for (int i = 0; i < n; i++) lad.Next();
-
-            var jump = lad.Next();
-            var done = lad.Next();
-
-            fail += Check("cả hai bên hết → nhảy → hết thang",
-                          jump.Action == EscapeAction.Jump && done.Action == EscapeAction.Exhausted,
-                          $"{jump} → {done}");
-        }
-
-        // --- 7. Thoat that -> dong dot -> lan ket sau bat dau lai tu bac 1, ben chon lai duoc
-        {
-            var lad = new EscapeLadder(nav);
-            lad.Open(12.0, preferRight: true);
-            lad.Next();
-            lad.Next();
-            lad.Close();
-
-            bool opened = lad.Open(9.0, preferRight: false);
-            var first = lad.Next();
-
-            fail += Check("thoát được → đợt sau bắt đầu lại từ bậc 1",
-                          opened && !first.Right && first.Rung == 1 &&
-                          first.DurationMs == nav.StrafeRungsMs[0],
-                          $"mở lại={opened} {first}");
-        }
-
-        // --- 8. Mat dau cham -> KHONG duoc bao ket, phai tu nhan la khong ket luan duoc.
-        //
-        // Ca nay dung so lieu log 25/08 01:00:10–01:00:13: bot dang khoa moc 3D, di that (dat troi
-        // 3.3, tren nguong), nhung chấm minimap mat dau nen khong con mau moi. Ban cu van tra
-        // Ready=true va Δ tinh ra 0 — ma 0 > −MinProgressRef nen bao KET, cat ngang mot pha tiep
-        // can dang chay ngon. Do chinh la loi giet ca phien chay hom do.
-        {
-            var pt = new ProgressTracker(nav);
-            for (long t = 0; t <= 3200; t += 100) pt.Push(t, 7.0);
-
-            long stale = 3200 + nav.ProgressStaleMs + 500;
-            fail += Check("mất dấu chấm → không kết luận (không được báo kẹt)",
-                          !pt.Ready(stale) && !pt.Stalled(stale),
-                          $"sau {stale - 3200}ms không có mẫu mới: ready={pt.Ready(stale)} " +
-                          $"stalled={pt.Stalled(stale)}");
-        }
-
-        // --- 9. Cham chop tat vai khung thi VAN phai ket luan duoc — khong duoc nhay cam qua.
-        {
-            var pt = new ProgressTracker(nav);
-            for (long t = 0; t <= 3200; t += 100) pt.Push(t, 31.0);
-
-            long blink = 3200 + Math.Max(0, nav.ProgressStaleMs - 200);
-            fail += Check("chấm chớp tắt trong hạn tươi → vẫn kết luận được",
-                          pt.Ready(blink) && pt.Stalled(blink),
-                          $"sau {blink - 3200}ms: ready={pt.Ready(blink)} Δ={pt.Delta(blink):F2}");
-        }
-
-        // --- 10. Thang day nhan vat RA XA dan -> khong duoc tuyen "thoat" o cho xa hon luc mo.
-        //
-        // Chuoi cu ly lay thang tu log 25/08 00:59:31–00:59:48: dot mo o 7, cac bac day ra
-        // 8 → 7 → 10, roi cu lui keo ve 9 va duoc tuyen "thoat". Ban cu sai vi MarkDistance dat
-        // lai chinh moc dung de phan xu, nen bac nao cung chi phai hon bac TRUOC.
-        {
-            var lad = new EscapeLadder(nav);
-            lad.Open(7.0, preferRight: true);
-
-            foreach (double d in new[] { 8.0, 7.0, 10.0 })
-            {
-                lad.Next();
-                lad.MarkDistance(d);
-            }
-            lad.Next();                                   // lui + doi ben
-            lad.MarkDistance(10.0);
-
-            bool wouldClose = 9.0 <= lad.StartDist - nav.MinProgressRef;
-
-            fail += Check("thang đẩy ra xa → 9 không được tính là thoát khỏi đợt mở ở 7",
-                          !wouldClose && Math.Abs(lad.StartDist - 7.0) < 0.001 &&
-                          Math.Abs(lad.LastDist - 10.0) < 0.001,
-                          $"đầu đợt={lad.StartDist:F0} trước bậc={lad.LastDist:F0} " +
-                          $"→ xa=9 {(wouldClose ? "ĐÓNG ĐỢT (sai)" : "leo tiếp (đúng)")}");
-        }
-
-        // --- 11. Han quet phai du mot vong 360 do o toc do quay THAT.
-        //
-        // Log 25/08: hieu chuan ra 16.89 count/do, quet 18 count moi 50 ms → 21.3 °/s → mot vong
-        // can 16.9 s, ma han cu la 12 s. Ca ba luot deu chet vi bo cuoc o khoang 256°.
-        {
-            double cpd = 16.89;
-            double degPerTick = nav.ScanYawCounts / cpd;
-            double fullTurnMs = 360.0 / degPerTick * nav.TickMs;
-            double budget = Math.Max(nav.ScanTimeoutMs,
-                                     Math.Min(fullTurnMs * nav.ScanTurnMargin, nav.ScanMaxMs));
-
-            fail += Check("hạn quét phủ đủ 360° ở tốc độ quay đo được",
-                          budget >= fullTurnMs,
-                          $"một vòng cần {fullTurnMs / 1000:F1}s, hạn {budget / 1000:F1}s " +
-                          $"(sàn {nav.ScanTimeoutMs / 1000.0:F0}s)");
-        }
-
-        return fail;
-    }
-
-    /// <summary>
-    /// Bảng quyết định CHẠY / ĐI BỘ.
-    ///
-    /// Vì sao đáng kiểm ngoài game: đây đúng là chỗ bản cũ sai, và cái sai đó không lộ ra ở bất kỳ
-    /// khung hình nào — nó chỉ lộ khi nhìn cả quãng đường. Log 25/08 cho thấy bot chỉ chạy được
-    /// xa=32→29 rồi đi bộ suốt 26→7, tức gần hết đoạn đường, chỉ vì <c>SprintMinDistRef = 26</c>.
-    ///
-    /// Hai hàng neo vào ảnh thật để bảng này không phải số bịa: <c>nav-far</c> quét ra 0 ứng viên
-    /// mốc hợp lệ, <c>nav-marker</c> ra ứng viên lớn nhất dt=5443 — hai ảnh kẹp đúng hai bên
-    /// ngưỡng <see cref="NavSettings.WalkMarkerAreaRef"/>.
-    /// </summary>
-    private static int SprintCases(ElectricConfig cfg)
-    {
-        Console.WriteLine("  [chạy / đi bộ]");
-        int fail = 0;
-        var nav = cfg.Nav;
-
-        (string Ten, double Steer, double Seen, bool DotFound, double Dist, bool Mong)[] cases =
-        {
-            ("xa, chưa thấy mốc → chạy",                    2.0,     0, true, 35, true),
-            ("lệch 40° chưa thấy mốc → vẫn chạy",          40.0,     0, true, 35, true),
-            ("lệch 60° → thôi chạy",                       60.0,     0, true, 35, false),
-            ("thấy mốc còn nhỏ → vẫn chạy",                 2.0,  1400, true, 20, true),
-            ("mốc to lên (nav-marker) → ĐI BỘ",             2.0,  5443, true, 12, false),
-            ("mốc trượt nhưng đã sát đích → ĐI BỘ",         2.0,     0, true,  6, false),
-            ("không thấy chấm, chưa thấy mốc → chạy",       2.0,     0, false, 0, true)
-        };
-
-        foreach (var c in cases)
-        {
-            bool got = NavBot.ShouldSprint(nav, c.Steer, bias: 0, c.Seen, c.DotFound, c.Dist);
-            fail += Check(c.Ten, got == c.Mong,
-                          $"lệch={c.Steer:F0}° dt={c.Seen:F0} xa={(c.DotFound ? c.Dist.ToString("F0") : "?")} " +
-                          $"→ {(got ? "chạy" : "đi bộ")}");
-        }
-
-        // Quang duong that: ban cu tat chay o xa=26, ban nay phai giu chay toi tan khi thay moc.
-        int oldStop = 0, newStop = 0;
-        for (int xa = 35; xa >= 1; xa--)
-        {
-            // Moc chi hien ra khi da kha gan — dung mo hinh don gian: dt lon dan khi xa nho dan.
-            double seen = xa <= 14 ? 5443 : 0;
-            if (oldStop == 0 && xa < 26) oldStop = xa;                       // luat cu: SprintMinDistRef
-            if (newStop == 0 && !NavBot.ShouldSprint(nav, 2.0, 0, seen, true, xa)) newStop = xa;
-        }
-
-        fail += Check("giữ chạy lâu hơn hẳn luật cũ", newStop < oldStop,
-                      $"luật cũ thôi chạy ở xa={oldStop}, luật mới ở xa={newStop}");
-
-        return fail;
-    }
-
-    private static int Check(string label, bool ok, string detail)
-    {
-        Console.WriteLine($"    [{label}] {detail} — {(ok ? "ĐẠT" : "HỎNG")}");
-        return ok ? 0 : 1;
-    }
-
-    // ================================================================ ve anh gia
-
-    /// <summary>Nền sân trạm điện: bê tông sáng có vân, gieo cố định để chạy lại luôn giống nhau.</summary>
-    private static Bitmap Yard(ElectricProfile p, bool prompt)
-    {
-        var bmp = new Bitmap(p.Width, p.Height, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            using (var brush = new LinearGradientBrush(new Rectangle(0, 0, p.Width, p.Height),
-                       Color.FromArgb(118, 122, 124), Color.FromArgb(206, 208, 205), 70f))
-                g.FillRectangle(brush, 0, 0, p.Width, p.Height);
-
-            var rnd = new Random(20260823);
-
-            // Cot be tong TRANG NANG: dung thu ma cua "muc trang" bat oan, va cua kich co phai loai.
-            using (var lit = new SolidBrush(Color.FromArgb(233, 234, 230)))
-                for (int i = 0; i < 6; i++)
-                    g.FillRectangle(lit, 90 + i * 190, 40, 62, (int)(p.Height * 0.62));
-
-            using (var shade = new SolidBrush(Color.FromArgb(64, 22, 24, 26)))
-                for (int i = 0; i < 140; i++)
-                    g.FillRectangle(shade, rnd.Next(p.Width), rnd.Next(p.Height),
-                                    rnd.Next(20, 140), rnd.Next(4, 22));
-        }
-
-        if (prompt) DrawPrompt(bmp, new Point(520, 340), "E", "TƯƠNG TÁC");
+        var bmp = new Bitmap(W, H, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bmp);
+        g.Clear(Dark);
         return bmp;
     }
 
-    private static Bitmap Prompt(ElectricProfile p, Point at, string key, string text)
-    {
-        var bmp = Yard(p, prompt: false);
-        DrawPrompt(bmp, at, key, text);
-        return bmp;
-    }
+    private static NavFrame Frame(Bitmap bmp) => NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
 
-    /// <summary>
-    /// Ô phím TỐI bo góc với chữ trắng bên trong, rồi chữ trắng bên phải — đúng hình dạng đo được
-    /// trên ảnh chụp game của người dùng.
-    /// </summary>
-    private static void DrawPrompt(Bitmap bmp, Point at, string key, string text)
+    private static void Disc(Bitmap bmp, double cx, double cy, double r, Color c)
     {
         using var g = Graphics.FromImage(bmp);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-
-        const int badge = 40;
-        var box = new Rectangle(at.X, at.Y, badge, badge);
-
-        using (var dark = new SolidBrush(Color.FromArgb(58, 60, 64)))
-        using (var path = Rounded(box, 8))
-            g.FillPath(dark, path);
-
-        using (var keyFont = new Font("Segoe UI", 14F, FontStyle.Bold))
-        using (var white = new SolidBrush(Color.White))
-        {
-            var size = g.MeasureString(key, keyFont);
-            g.DrawString(key, keyFont, white,
-                at.X + (badge - size.Width) / 2, at.Y + (badge - size.Height) / 2);
-        }
-
-        using (var textFont = new Font("Segoe UI", 15F, FontStyle.Bold))
-        using (var white = new SolidBrush(Color.White))
-        {
-            var size = g.MeasureString(text, textFont);
-            g.DrawString(text, textFont, white, at.X + badge + 24, at.Y + (badge - size.Height) / 2);
-        }
+        using var br = new SolidBrush(c);
+        g.FillEllipse(br, (float)(cx - r), (float)(cy - r), (float)(2 * r), (float)(2 * r));
     }
 
-    /// <summary>Khung 3D: mốc vàng dưới đất, logo vàng trên áo, và/hoặc một vật vàng đứng im.</summary>
-    private static Bitmap WorldShot(ElectricProfile p, Rectangle marker, Rectangle logo, Rectangle staticBlob)
+    private static void Box(Bitmap bmp, int x, int y, int w, int h, Color c)
     {
-        var bmp = Yard(p, prompt: false);
         using var g = Graphics.FromImage(bmp);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        // Mau lay xap xi theo anh that: moc la vang chanh bao hoa, hoi trong suot tren nen be tong.
-        if (!marker.IsEmpty)
-            using (var yellow = new SolidBrush(Color.FromArgb(228, 226, 44)))
-                g.FillEllipse(yellow, marker);
-
-        if (!logo.IsEmpty)
-            using (var yellow = new SolidBrush(Color.FromArgb(240, 214, 38)))
-                g.FillRectangle(yellow, logo);
-
-        if (!staticBlob.IsEmpty)
-            using (var yellow = new SolidBrush(Color.FromArgb(236, 220, 40)))
-                g.FillRectangle(yellow, staticBlob);
-
-        return bmp;
+        using var br = new SolidBrush(c);
+        g.FillRectangle(br, x, y, w, h);
     }
 
-    /// <summary>Khung có minimap ở góc dưới-trái: nền bản đồ xám, chấm vàng tròn, icon sét răng cưa.</summary>
-    private static Bitmap MapShot(ElectricProfile p, Point? dot, bool bolt)
+    private static int GeometryCases()
     {
-        var bmp = Yard(p, prompt: false);
-        var mini = p.ScanMinimap().ToRectangle();
-
-        using var g = Graphics.FromImage(bmp);
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        using (var map = new SolidBrush(Color.FromArgb(228, 230, 226)))
-            g.FillRectangle(map, mini);
-        using (var road = new SolidBrush(Color.FromArgb(198, 200, 196)))
+        int fail = 0;
+        var m = new Mask(40, 40);
+        ImageOps.FillCircle(m, 20, 20, 6, 1);
+        var cs = NavGeometry.FindContours(m);
+        Check(ref fail, cs.Count == 1, "contour đĩa r=6: một đường biên", $"{cs.Count}");
+        if (cs.Count == 1)
         {
-            g.FillRectangle(road, mini.X + 30, mini.Y, 26, mini.Height);
-            g.FillRectangle(road, mini.X, mini.Y + 70, mini.Width, 22);
+            var c = cs[0];
+            Check(ref fail, c.Area > 80 && c.Area < 115 && c.Area < c.PixelCount,
+                  "diện tích shoelace < số pixel (như cv2.contourArea)", $"area={c.Area:F1} pixel={c.PixelCount}");
+            Check(ref fail, c.Circularity >= 0.80 && c.Circularity <= 1.05, "độ tròn đĩa ≥ 0.80", $"{c.Circularity:F3}");
+            Check(ref fail, c.Solidity >= 0.90, "solidity đĩa ≥ 0.90", $"{c.Solidity:F3}");
+            // Dia so 13 px: dien tich da giac 96 / bbox 169 = 0.57 — cung so ma cv2 cho ra, va DUOI nguong
+            // dot_fill_min 0.58. Cham that trong game co vien khu rang cua nen fill ~0.68 (xem nav-far).
+            Check(ref fail, c.Fill > 0.50 && c.Fill < 0.60, "fill đĩa số 13 px ≈ 0.57 (cùng thang cv2)", $"{c.Fill:F3}");
+            Check(ref fail, c.HasCentroid && Math.Abs(c.Cx - 20) < 0.6 && Math.Abs(c.Cy - 20) < 0.6, "trọng tâm đa giác", $"({c.Cx:F2},{c.Cy:F2})");
+            Check(ref fail, c.RadialCv(c.Cx, c.Cy) <= 0.30, "radial_cv đĩa ≤ 0.30", $"{c.RadialCv(c.Cx, c.Cy):F3}");
         }
-        using (var green = new SolidBrush(Color.FromArgb(198, 224, 176)))
-            g.FillRectangle(green, mini.X + 70, mini.Y + 8, 90, 54);
 
-        int side = (int)Math.Round(13 * p.Sx);
-        if (dot is { } d)
-            using (var yellow = new SolidBrush(Color.FromArgb(246, 208, 26)))
-                g.FillEllipse(yellow, d.X - side / 2, d.Y - side / 2, side, side);
+        // Tia set: chu Z mong -> khong tron.
+        var z = new Mask(40, 40);
+        ImageOps.DrawThickLine(z, new Point(12, 8), new Point(26, 8), 2, 1);
+        ImageOps.DrawThickLine(z, new Point(26, 8), new Point(14, 22), 2, 1);
+        ImageOps.DrawThickLine(z, new Point(14, 22), new Point(28, 22), 2, 1);
+        ImageOps.DrawThickLine(z, new Point(28, 22), new Point(16, 34), 2, 1);
+        var zc = NavGeometry.FindContours(z);
+        Check(ref fail, zc.Count >= 1 && (zc[0].Circularity < NavTuning.DotCircularityMin || zc[0].Fill < NavTuning.DotFillMin || zc[0].Solidity < NavTuning.DotSolidityMin),
+              "hình tia sét bị bộ lọc tròn loại", zc.Count >= 1 ? zc[0].ToString() : "không có contour");
 
-        if (bolt)
+        var p = new[] { 1.0, 2.0, 3.0, 4.0, 5.0 };
+        Check(ref fail, Math.Abs(NavGeometry.Percentile(p, 50) - 3) < 1e-9 && Math.Abs(NavGeometry.Percentile(p, 10) - 1.4) < 1e-9
+                        && Math.Abs(NavGeometry.Percentile(p, 90) - 4.6) < 1e-9, "percentile kiểu numpy", "");
+        Check(ref fail, Math.Abs(NavController.Wrap(190) + 170) < 1e-9 && Math.Abs(NavController.Wrap(-190) - 170) < 1e-9, "wrap_deg", "");
+        return fail;
+    }
+
+    private static int DetectorCases()
+    {
+        int fail = 0;
+        double ox = NavTuning.PlayerOriginXRef, oy = NavTuning.PlayerOriginYRef;
+
+        using (var bmp = NewFrame())
         {
-            // Tia set: cung mau vang, cung co, nhung rang cua nen do tron thap.
-            int bx = mini.X + 40, by = mini.Y + mini.Height - 70;
-            var pts = new[]
+            Disc(bmp, 100, 850, 6, Yellow);
+            var f = Frame(bmp);
+            var cands = YellowDotDetector.Detect(f, S1, ox, oy);
+            Check(ref fail, cands.Count == 1, "chấm vàng r=6 trong minimap → 1 ứng viên", string.Join(" | ", cands));
+            if (cands.Count == 1)
             {
-                new Point(bx + 9, by), new Point(bx + 2, by + 9), new Point(bx + 7, by + 9),
-                new Point(bx, by + 19), new Point(bx + 13, by + 8), new Point(bx + 7, by + 8),
-                new Point(bx + 14, by)
-            };
-            using var yellow = new SolidBrush(Color.FromArgb(246, 208, 26));
-            g.FillPolygon(yellow, pts);
+                Check(ref fail, cands[0].Score >= NavTuning.BootstrapGeometryMin, "điểm hình học ≥ 0.72 (bootstrap)", $"{cands[0].Score:F3}");
+                Check(ref fail, Math.Abs(cands[0].X - 100) < 1.5 && Math.Abs(cands[0].Y - 850) < 1.5, "vị trí đúng", $"({cands[0].X:F1},{cands[0].Y:F1})");
+            }
         }
 
-        return bmp;
+        using (var bmp = NewFrame())
+        {
+            // Tia set tai moc lightning_anchor_ref (174, 967): zigzag mong.
+            using (var g = Graphics.FromImage(bmp))
+            using (var pen = new Pen(Yellow, 3))
+            {
+                g.DrawLines(pen, new[] { new PointF(172, 958), new PointF(178, 958), new PointF(173, 966), new PointF(179, 966), new PointF(171, 976) });
+            }
+            var f = Frame(bmp);
+            var cands = YellowDotDetector.Detect(f, S1, ox, oy);
+            Check(ref fail, cands.Count == 0, "icon tia sét ở mốc anchor bị loại", string.Join(" | ", cands));
+        }
+
+        using (var bmp = NewFrame())
+        {
+            // Manh: dia vang lech 8 px bi dia trang (mui ten) che mot phan -> hinh khuyen.
+            Disc(bmp, ox + 8, oy, 6, Yellow);
+            Disc(bmp, ox, oy, 6, Color.White);
+            var f = Frame(bmp);
+            var full = YellowDotDetector.Detect(f, S1, ox, oy);
+            var frags = YellowDotDetector.DetectNearFragments(f, S1, ox, oy);
+            Check(ref fail, full.Count == 0, "khuyên không qua bộ lọc chấm đầy", string.Join(" | ", full));
+            Check(ref fail, frags.Count >= 1, "khuyên qua bộ lọc mảnh", string.Join(" | ", frags));
+            var tr = new DotTracker(S1);
+            var t = tr.Update(full, ox, oy, 10.0, frags);
+            Check(ref fail, t.Quality == "NEAR_FRAGMENT" && Math.Abs(t.Confidence - NavTuning.OverlapBootConf) < 1e-9,
+                  "tracker bootstrap bằng mảnh → NEAR_FRAGMENT conf 0.86", $"{t.Quality} {t.Confidence:F2}");
+        }
+        return fail;
     }
 
-    private static GraphicsPath Rounded(Rectangle r, int radius)
+    private static int TrackerCases()
     {
-        int d = radius * 2;
-        var path = new GraphicsPath();
-        path.AddArc(r.X, r.Y, d, d, 180, 90);
-        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
+        int fail = 0;
+        var tr = new DotTracker(S1);
+        double ox = NavTuning.PlayerOriginXRef, oy = NavTuning.PlayerOriginYRef;
+        var far = new List<NavCandidate> { new() { X = 100, Y = 850, Area = 108, Width = 12, Height = 12, Circularity = 0.9, Fill = 0.7, Solidity = 0.95, Score = 0.9 } };
+        var none = new List<NavCandidate>();
+
+        var t1 = tr.Update(far, ox, oy, 0.000, none);
+        var t2 = tr.Update(far, ox, oy, 0.025, none);
+        Check(ref fail, t1.Quality == "ACQUIRE" && t2.Quality == "FULL_LOCK", "khung 1 ACQUIRE, khung 2 FULL_LOCK", $"{t1.Quality} {t2.Quality}");
+        Check(ref fail, t2.Confidence > 0.6 && t2.Confidence <= 1.0, "conf FULL_LOCK", $"{t2.Confidence:F3}");
+
+        string q = "";
+        int predicts = 0;
+        double now = 0.050;
+        TargetOutput last = null;
+        for (int i = 0; i < 25; i++)
+        {
+            last = tr.Update(none, ox, oy, now, none);
+            now += 0.025;
+            if (last.Quality == "PREDICT_ONLY") predicts++;
+            q = last.Quality;
+        }
+        Check(ref fail, predicts == NavTuning.TrackRebootstrapAfterMisses && q == "NONE",
+              "mất xa: 9 khung PREDICT_ONLY rồi NONE", $"predict={predicts} cuối={q}");
+
+        var tr2 = new DotTracker(S1);
+        var near = new List<NavCandidate> { new() { X = ox + 6, Y = oy - 6, Area = 108, Width = 12, Height = 12, Circularity = 0.9, Fill = 0.7, Solidity = 0.95, Score = 0.9 } };
+        tr2.Update(near, ox, oy, 0.0, none);
+        tr2.Update(near, ox, oy, 0.025, none);
+        var h1 = tr2.Update(none, ox, oy, 0.100, none);
+        var h2 = tr2.Update(none, ox, oy, 0.600, none);
+        Check(ref fail, h1.Quality == "HOLD_LAST_ID" && h2.Quality == "PREDICT_ONLY",
+              "mất gần (≤15 px): HOLD_LAST_ID trong 0.42 s rồi PREDICT_ONLY", $"{h1.Quality} {h2.Quality}");
+        return fail;
+    }
+
+    private static int ServoCases()
+    {
+        int fail = 0;
+        double c3 = NavController.ServoCurve(3.0, 2.4), c10 = NavController.ServoCurve(10.0, 2.4);
+        double c20 = NavController.ServoCurve(20.0, 2.4), c60 = NavController.ServoCurve(60.0, 2.4);
+        Check(ref fail, Math.Abs(c3 - 34.8) < 1e-9 && Math.Abs(c10 - 230) < 1e-9 && Math.Abs(c20 - 594) < 1e-9 && Math.Abs(c60 - 1802) < 1e-9,
+              "đường cong servo 3°/10°/20°/60°", $"{c3:F1} {c10:F0} {c20:F0} {c60:F0}");
+        Check(ref fail, Math.Abs(c3 * NavTuning.RamPrecisionRateScaleUnder8 - 25.056) < 1e-6, "3° sau precision ×0.72 ≈ 25 cps", $"{c3 * 0.72:F2}");
+        Check(ref fail, Math.Min(c60, NavTuning.RamTargetLockNearMouseMaxRateCps) == 520.0, "60° gần: cap 520", "");
+
+        using var input = new NavInput(4.0);
+        var ctl = new NavController(S1, input);
+        int s1 = ctl.AntiShakeSide(12, 2.4, 0.0);
+        int s2 = ctl.AntiShakeSide(-12, 2.4, 0.1);
+        int s3 = ctl.AntiShakeSide(-12, 2.4, 0.35);
+        int s4 = ctl.AntiShakeSide(30, 2.4, 0.4);
+        int s5 = ctl.AntiShakeSide(2, 2.4, 0.5);
+        int s6 = ctl.AntiShakeSide(-5, 2.4, 0.6);
+        Check(ref fail, s1 == 1 && s2 == 0 && s3 == -1 && s4 == 1 && s5 == 0 && s6 == 0,
+              "anti-shake: +12→+1, −12 chờ 220 ms→−1, +30 đảo ngay, ≤3.8° dừng, 5° ngược không đánh", $"{s1} {s2} {s3} {s4} {s5} {s6}");
+        return fail;
+    }
+
+    private static int Ket1Cases()
+    {
+        int fail = 0;
+        using var input = new NavInput(4.0);
+        var ctl = new NavController(S1, input);
+
+        bool started = ctl.StartKet1Recovery(10.0, 30.0, "MINIMAP");
+        Check(ref fail, started && ctl.Active is not null && ctl.Active.Side == 1 && ctl.Active.UturnSide == -1,
+              "KET1 bắt đầu: rel +30° → bên thoát PHẢI, quay đầu sang TRÁI", ctl.Active is null ? "null" : $"side={ctl.Active.Side}");
+
+        // Mo phong: bearing doi 200°/s theo huong yaw.
+        double t = 10.0, rel = 30.0, refRel = 30.0, t1 = -1, t2 = -1, t3 = -1;
+        var seen = new List<string>();
+        for (int i = 0; i < 200; i++)
+        {
+            var r = ctl.RecoveryStep(t, 20.0, rel);
+            if (r is null) { t3 = t; break; }
+            if (seen.Count == 0 || seen[^1] != r.Value.state) seen.Add(r.Value.state);
+            t += 0.025;
+            if (r.Value.state == "KET1_TURN_AROUND") rel = NavController.Wrap(rel - 200 * 0.025);
+            else if (r.Value.state == "KET1_SIDE_TURN") { if (t1 < 0) { t1 = t - 0.025; refRel = rel; } rel = NavController.Wrap(rel + 200 * 0.025); }
+            else if (r.Value.state == "KET1_CLEAR_FORWARD" && t2 < 0) t2 = t - 0.025;
+        }
+        Check(ref fail, string.Join(">", seen) == "KET1_TURN_AROUND>KET1_SIDE_TURN>KET1_CLEAR_FORWARD", "thứ tự pha", string.Join(">", seen));
+        Check(ref fail, t1 > 0 && t1 - 10.0 >= 0.80 && t1 - 10.0 <= 0.90, "quay đầu 168° ở 200°/s xong ~0.84 s (< cap 950 ms)", $"{t1 - 10.0:F3}s");
+        Check(ref fail, t2 > 0 && t2 - t1 >= 0.18 && t2 - t1 <= 0.26, "bẻ 42° xong ~0.21 s", $"{t2 - t1:F3}s");
+        Check(ref fail, t3 > 0 && Math.Abs(t3 - t2 - NavTuning.Ket1ClearForwardS) < 0.03, "W thẳng 650 ms rồi trả quyền", $"{t3 - t2:F3}s");
+
+        // Khong co bearing (nguon WORLD): chi con cap thoi gian.
+        ctl.ResetTransient();
+        ctl.StartKet1Recovery(30.0, 25.0, "WORLD", force: true);
+        t = 30.0; double u = -1, sd = -1;
+        for (int i = 0; i < 200; i++)
+        {
+            var r = ctl.RecoveryStep(t, 20.0, null);
+            if (r is null) break;
+            if (r.Value.state == "KET1_SIDE_TURN" && u < 0) u = t - 30.0;
+            if (r.Value.state == "KET1_CLEAR_FORWARD" && sd < 0) sd = t - 30.0;
+            t += 0.025;
+        }
+        // Dung sai hai tick 25 ms: mo phong cong dan 0.025 nen moc 0.950 co the roi sang tick sau.
+        Check(ref fail, Math.Abs(u - 0.950) <= 0.051 && Math.Abs(sd - u - 0.480) <= 0.051, "không bearing: cap 950 ms + 480 ms", $"uturn={u:F3} side={sd - u:F3}");
+        return fail;
+    }
+
+    private static int MouseCases()
+    {
+        int fail = 0;
+        double rate = 0, frac = 0, dt = 1.0 / 240;
+        int total = 0;
+        double maxStep = 0, tReach = -1;
+        for (int i = 0; i < 240; i++)
+        {
+            double prev = rate;
+            (rate, frac, int outp) = NavInput.AxisStep(6600, rate, frac, dt, 0.050, 36000);
+            total += outp;
+            maxStep = Math.Max(maxStep, rate - prev);
+            if (tReach < 0 && rate >= 6000) tReach = (i + 1) * dt;
+        }
+        Check(ref fail, maxStep <= 150.0 + 1e-6, "gia tốc X ≤ 150 cps mỗi tick (36000 cps²)", $"{maxStep:F1}");
+        Check(ref fail, tReach > 0 && tReach < 0.30, "đạt ~6600 cps trong < 0.3 s", $"{tReach:F3}s");
+        Check(ref fail, total > 5000 && total < 6600, "tổng counts 1 s < 6600 do ramp", $"{total}");
+        var (r0, _, _) = NavInput.AxisStep(0, 4.0, 0, dt, 0.050, 36000);
+        Check(ref fail, r0 == 0.0, "snap về 0 khi |rate| < 5 và target 0", $"{r0}");
+        return fail;
+    }
+
+    private static int WatchdogCases()
+    {
+        int fail = 0;
+        var wd = new NavWatchdog(S1);
+        double now = 0; bool stuck = false; double tStuck = -1;
+        for (int i = 0; i < 60; i++)
+        {
+            wd.Add(now, 0, -50);
+            if (wd.ImpactStuck(now, true, true, 50, 0)) { stuck = true; tStuck = now; break; }
+            now += 0.025;
+        }
+        Check(ref fail, stuck && tStuck >= 0.85 && tStuck <= 1.25, "bán kính phẳng 50 px → kẹt sau ~0.9 s + 180 ms", $"{tStuck:F3}s");
+
+        var wd2 = new NavWatchdog(S1);
+        now = 0; bool any = false;
+        for (int i = 0; i < 60; i++)
+        {
+            wd2.Add(now, 0, -(50 - i * 0.5));
+            if (wd2.ImpactStuck(now, true, true, 50 - i * 0.5, 0)) any = true;
+            now += 0.025;
+        }
+        Check(ref fail, !any, "đang tiến 0.5 px/khung → không kẹt", "");
+
+        var wd3 = new NavWatchdog(S1);
+        now = 0; any = false;
+        for (int i = 0; i < 60; i++)
+        {
+            wd3.Add(now, 0, -50);
+            if (wd3.ImpactStuck(now, true, true, 50, 60)) any = true;
+            now += 0.025;
+        }
+        Check(ref fail, !any, "góc 60° > 55° → không tính kẹt", "");
+        return fail;
+    }
+
+    private static int PromptCases()
+    {
+        int fail = 0;
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 900, 560, 30, 30, Color.White);
+            for (int i = 0; i < 5; i++) Box(bmp, 900 + 30 + 12 + i * 12, 568, 8, 14, Color.White);
+            Check(ref fail, PromptHeuristic.Visible(Frame(bmp), W, H), "ô [E] + 5 chữ bên phải → prompt", "");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 900, 560, 30, 30, Color.White);
+            Check(ref fail, !PromptHeuristic.Visible(Frame(bmp), W, H), "ô [E] không chữ → không prompt", "");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 300, 560, 30, 30, Color.White);
+            for (int i = 0; i < 5; i++) Box(bmp, 300 + 30 + 12 + i * 12, 568, 8, 14, Color.White);
+            Check(ref fail, !PromptHeuristic.Visible(Frame(bmp), W, H), "prompt ngoài vùng 0.45–0.73 → bỏ qua", "");
+        }
+        return fail;
+    }
+
+    private static int WorldCases()
+    {
+        int fail = 0;
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 900, 500, 60, 200, Yellow);
+            var det = new WorldMarkerDetector(S1);
+            var f = Frame(bmp);
+            var c = det.Candidate(f);
+            Check(ref fail, c is not null && c.Value.score >= NavTuning.WorldAcceptScore, "cột vàng 60×200 → ứng viên ≥ 0.46", det.LastCandidateNote ?? "null");
+            if (c is not null)
+                Check(ref fail, Math.Abs(c.Value.tx - 930) < 3 && c.Value.ty >= 620 && c.Value.ty <= 700, "điểm tham chiếu ở 40 % dưới (chân cột)", $"({c.Value.tx:F0},{c.Value.ty:F0})");
+            var m1 = det.Update(f, 0.0);
+            var m2 = det.Update(f, 0.025);
+            Check(ref fail, m1.Quality == "WORLD_ACQUIRE" && m2.Quality == "WORLD_LOCK" && m2.Locked && m2.Present, "khung 1 ACQUIRE, khung 2 LOCK", $"{m1.Quality} {m2.Quality}");
+            var m3 = det.Update(Frame(NewFrame()), 0.3);
+            var m4 = det.Update(Frame(NewFrame()), 1.2);
+            Check(ref fail, m3.Quality == "WORLD_HOLD" && m3.Locked && !m3.Present && m4.Quality == "WORLD_NONE", "mất: HOLD 700 ms rồi NONE", $"{m3.Quality} {m4.Quality}");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 100, 900, 60, 150, Yellow);          // trong vung HUD goc duoi-trai
+            var det = new WorldMarkerDetector(S1);
+            Check(ref fail, det.Candidate(Frame(bmp)) is null, "vàng trong vùng HUD dưới-trái bị loại", "");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 900, 100, 60, 200, Yellow);          // day bbox 300 < 430 ref
+            var det = new WorldMarkerDetector(S1);
+            Check(ref fail, det.Candidate(Frame(bmp)) is null, "khối vàng trên cao (đáy < 430) bị loại", "");
+        }
+        return fail;
+    }
+
+    private static int BoardCases()
+    {
+        int fail = 0;
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Box(bmp, 1100, 650, 190, 50, Cyan);
+            var b = JobBoardReader.Read(Frame(bmp), S1);
+            Check(ref fail, b is not null && b.State == "EMPLOYED" && Math.Abs(b.Cx - 1195) <= 2 && Math.Abs(b.Cy - 675) <= 2,
+                  "ba nút cyan, nút 3 rộng 0.95 → EMPLOYED, tâm nút 3", b is null ? "null" : $"{b.State} ratio={b.Ratio:F3} ({b.Cx},{b.Cy})");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Box(bmp, 1100, 650, 160, 50, Cyan);
+            var b = JobBoardReader.Read(Frame(bmp), S1);
+            Check(ref fail, b is not null && b.State == "UNEMPLOYED", "nút 3 rộng 0.80 → UNEMPLOYED", b is null ? "null" : $"{b.State} ratio={b.Ratio:F3}");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Check(ref fail, JobBoardReader.Read(Frame(bmp), S1) is null, "hai nút → chưa phải bảng", "");
+        }
+        return fail;
     }
 
     // ================================================================ anh that
-
-    /// <summary>
-    /// Chạy trên ảnh người dùng chụp. Thiếu ảnh nào thì BỎ QUA ảnh đó chứ không tính hỏng — chưa
-    /// chụp không phải là lỗi, và bắt buộc đủ 5 tấm thì lần chạy đầu tiên nào cũng đỏ.
-    /// </summary>
-    private static int RealShots(ElectricConfig cfg, ElectricProfile p)
-    {
-        int fail = 0;
-        fail += ShotFar(cfg, p);
-        fail += ShotMarker(cfg, p);
-        fail += ShotPrompt(cfg, p);
-        fail += ShotPair(cfg, p);
-        return fail;
-    }
 
     private static Bitmap Load(ElectricProfile p, string name, out string why)
     {
@@ -714,7 +455,6 @@ internal static class VerifyNav
         string path = ElectricConfig.ShotPath(p.Key, name);
         var bmp = StillPicker.Load(path);
         if (bmp is null) { why = $"chưa chụp ({Path.GetFileName(path)})"; return null; }
-
         if (bmp.Width != p.Width || bmp.Height != p.Height)
         {
             why = $"ảnh {bmp.Width}×{bmp.Height} lệch profile {p.Width}×{p.Height} — chụp lại";
@@ -724,137 +464,122 @@ internal static class VerifyNav
         return bmp;
     }
 
-    /// <summary>Xa: phải thấy chấm minimap, và KHÔNG được khoá mốc 3D nào.</summary>
-    private static int ShotFar(ElectricConfig cfg, ElectricProfile p)
+    /// <summary>Thiếu ảnh nào thì bỏ qua ảnh đó — chưa chụp không phải là lỗi.</summary>
+    private static int RealShots(ElectricConfig cfg, ElectricProfile p, NavScale s, double ox, double oy)
     {
-        using var shot = Load(p, "nav-far", out string why);
-        if (shot is null) { Console.WriteLine($"  [nav-far] bỏ qua: {why}"); return 0; }
-
         int fail = 0;
-        using (var reader = MinimapReader.ForBitmap(cfg, p, shot, out string problem))
+        fail += ShotFar(p, s, ox, oy);
+        fail += ShotMarker(p, s, ox, oy);
+        fail += ShotPrompt(p, s);
+        foreach (var name in new[] { "board", "wire3", "wire5" })
         {
-            if (reader is null) { Console.WriteLine($"  [nav-far] minimap KHÔNG DÒ ĐƯỢC: {problem}"); fail++; }
-            else
-            {
-                var fix = reader.Read(1000);
-                foreach (var c in reader.LastCandidates) Console.WriteLine($"      {c}");
-                Console.WriteLine($"  [nav-far] {fix} — {(fix.Found ? "ĐẠT" : "HỎNG (phải thấy chấm)")}");
-                if (!fix.Found) fail++;
-            }
+            using var shot = Load(p, name, out string why);
+            if (shot is null) { Console.WriteLine($"  [{name}] bỏ qua: {why}"); continue; }
+            Check(ref fail, !PromptHeuristic.Visible(Frame(shot), s.ScreenW, s.ScreenH), $"[{name}] không có prompt E", "");
         }
-
-        using (var marker = MarkerReader.ForBitmap(cfg, p, shot, out string problem))
-        {
-            if (marker is null) { Console.WriteLine($"  [nav-far] mốc KHÔNG DÒ ĐƯỢC: {problem}"); return fail + 1; }
-
-            var cands = marker.Scan().Where(c => c.Ok).ToList();
-            foreach (var c in marker.LastCandidates) Console.WriteLine($"      {c}");
-            Console.WriteLine($"  [nav-far] ứng viên mốc còn lại: {cands.Count} " +
-                              (cands.Count == 0 ? "— ĐẠT" : "— xem kỹ, ảnh này lẽ ra không có mốc"));
-        }
-
         return fail;
     }
 
-    /// <summary>Gần: phải có ứng viên mốc, và không ứng viên nào trùng bóng nhân vật.</summary>
-    private static int ShotMarker(ElectricConfig cfg, ElectricProfile p)
+    private static int ShotFar(ElectricProfile p, NavScale s, double ox, double oy)
+    {
+        using var shot = Load(p, "nav-far", out string why);
+        if (shot is null) { Console.WriteLine($"  [nav-far] bỏ qua: {why}"); return 0; }
+        int fail = 0;
+        var f = Frame(shot);
+        var cands = YellowDotDetector.Detect(f, s, ox, oy);
+        foreach (var c in cands) Console.WriteLine($"      chấm: {c}");
+        Check(ref fail, cands.Count >= 1, "[nav-far] có chấm vàng trên minimap", $"{cands.Count} ứng viên");
+        if (cands.Count >= 1)
+        {
+            var tr = new DotTracker(s);
+            var frags = YellowDotDetector.DetectNearFragments(f, s, ox, oy);
+            tr.Update(cands, ox, oy, 0.0, frags);
+            var t = tr.Update(cands, ox, oy, 0.025, frags);
+            double dx = t.X.GetValueOrDefault() - ox, dy = t.Y.GetValueOrDefault() - oy;
+            Check(ref fail, t.Quality == "FULL_LOCK", "[nav-far] tracker khoá",
+                  $"{t.Quality} conf={t.Confidence:F2} dist={Math.Sqrt(dx * dx + dy * dy):F1}px rel={NavController.Wrap(Math.Atan2(dx, -dy) * 180 / Math.PI):+0.0;-0.0}°");
+        }
+        var det = new WorldMarkerDetector(s);
+        var wc = det.Candidate(f);
+        Check(ref fail, wc is null || wc.Value.score < NavTuning.WorldAcceptScore, "[nav-far] chưa có đầu nối 3D nhận được", det.LastCandidateNote ?? "không có khối vàng");
+        Check(ref fail, !PromptHeuristic.Visible(f, s.ScreenW, s.ScreenH), "[nav-far] không có prompt E", "");
+        fail += ArrowCheck("nav-far", f, s, ox, oy);
+        return fail;
+    }
+
+    private static int ShotMarker(ElectricProfile p, NavScale s, double ox, double oy)
     {
         using var shot = Load(p, "nav-marker", out string why);
         if (shot is null) { Console.WriteLine($"  [nav-marker] bỏ qua: {why}"); return 0; }
-
-        using var reader = MarkerReader.ForBitmap(cfg, p, shot, out string problem);
-        if (reader is null) { Console.WriteLine($"  [nav-marker] KHÔNG DÒ ĐƯỢC: {problem}"); return 1; }
-
-        var all = reader.Scan();
-        foreach (var c in all) Console.WriteLine($"      {c}");
-
-        int ok = all.Count(c => c.Ok);
-        int inSil = all.Count(c => c.InSilhouette);
-        Console.WriteLine($"  [nav-marker] {ok} ứng viên hợp lệ, {inSil} khối trùng bóng nhân vật " +
-                          "(logo áo — đã bị hộp loại trừ chặn)");
-        Console.WriteLine($"  [nav-marker] {(ok > 0 ? "ĐẠT" : "HỎNG (không thấy mốc nào)")}");
-        return ok > 0 ? 0 : 1;
+        int fail = 0;
+        var f = Frame(shot);
+        var det = new WorldMarkerDetector(s);
+        var wc = det.Candidate(f);
+        Check(ref fail, wc is not null && wc.Value.score >= NavTuning.WorldAcceptScore, "[nav-marker] thấy đầu nối vàng 3D", det.LastCandidateNote ?? "không có khối vàng");
+        if (wc is not null)
+        {
+            double err = wc.Value.tx - s.ScreenW / 2.0;
+            Console.WriteLine($"      lệch ngang so tâm màn {err:+0;-0} px (deadzone 72·{s.Px:F2} = {72 * s.Px:F0})");
+        }
+        det.Update(f, 0.0);
+        var m = det.Update(f, 0.025);
+        Check(ref fail, m.Locked && m.Present, "[nav-marker] khoá sau 2 khung", $"{m.Quality} conf={m.Confidence:F2}");
+        Check(ref fail, !PromptHeuristic.Visible(f, s.ScreenW, s.ScreenH), "[nav-marker] không có prompt E", "");
+        var cands = YellowDotDetector.Detect(f, s, ox, oy);
+        Console.WriteLine($"      minimap: {cands.Count} chấm" + (cands.Count > 0 ? $" — {cands[0]}" : ""));
+        fail += ArrowCheck("nav-marker", f, s, ox, oy);
+        return fail;
     }
 
-    private static int ShotPrompt(ElectricConfig cfg, ElectricProfile p)
+    private static int ShotPrompt(ElectricProfile p, NavScale s)
     {
         using var shot = Load(p, "nav-prompt", out string why);
         if (shot is null) { Console.WriteLine($"  [nav-prompt] bỏ qua: {why}"); return 0; }
-
-        using var reader = PromptReader.ForBitmap(cfg, p, shot, out string problem);
-        if (reader is null) { Console.WriteLine($"  [nav-prompt] KHÔNG DÒ ĐƯỢC: {problem}"); return 1; }
-
-        var hit = reader.Read();
-        foreach (string r in hit.Rows) Console.WriteLine($"      {r}");
-        Console.WriteLine($"  [nav-prompt] {hit} — {(hit.Visible ? "ĐẠT" : "HỎNG (phải thấy prompt)")}");
-        return hit.Visible ? 0 : 1;
+        int fail = 0;
+        Check(ref fail, PromptHeuristic.Visible(Frame(shot), s.ScreenW, s.ScreenH), "[nav-prompt] heuristic thấy prompt [E]", "");
+        return fail;
     }
 
     /// <summary>
-    /// Cặp ảnh chụp trước/sau khi xoay camera lúc ĐỨNG YÊN. Chốt hai thứ mà không ảnh đơn nào nói
-    /// được: minimap có xoay theo camera không, và mốc 3D có trôi ngang không.
+    /// Mũi tên trắng trên minimap phải nằm sát gốc cố định (163, 980.4)·sx. Bot không dò mũi tên khi
+    /// chạy (vị trí luôn là gốc cố định, đúng bản Python), nên đây là chỗ DUY NHẤT kiểm con số này.
     /// </summary>
-    private static int ShotPair(ElectricConfig cfg, ElectricProfile p)
+    private static int ArrowCheck(string tag, NavFrame f, NavScale s, double ox, double oy)
     {
-        using var a = Load(p, "nav-pair-a", out string whyA);
-        using var b = Load(p, "nav-pair-b", out string whyB);
-        if (a is null || b is null)
+        int fail = 0;
+        var t = NavTuning.TargetRoiRef;
+        var local = f.ToLocal(s.RoiRef(t[0], t[1], t[2], t[3]));
+        if (local.IsEmpty) return 0;
+        var m = new Mask(local.Width, local.Height);
+        for (int y = 0; y < local.Height; y++)
         {
-            Console.WriteLine($"  [nav-pair] bỏ qua: {whyA ?? whyB}");
-            return 0;
-        }
-
-        double? bearingA = null, bearingB = null;
-        using (var ra = MinimapReader.ForBitmap(cfg, p, a, out _))
-        using (var rb = MinimapReader.ForBitmap(cfg, p, b, out _))
-        {
-            if (ra is not null && rb is not null)
+            int row = (local.Y + y) * f.Stride;
+            for (int x = 0; x < local.Width; x++)
             {
-                var fa = ra.Read(1000);
-                var fb = rb.Read(1000);
-                if (fa.Found) bearingA = fa.BearingDeg;
-                if (fb.Found) bearingB = fb.BearingDeg;
+                int i = row + (local.X + x) * 4;
+                var (_, sv, vv) = ImageOps.HsvOf(f.Bgra[i], f.Bgra[i + 1], f.Bgra[i + 2]);
+                if (vv >= 168 && sv <= 92) m.Data[y * local.Width + x] = 1;
             }
         }
-
-        if (bearingA is null || bearingB is null)
+        Blob? best = null; double bestD = double.MaxValue;
+        foreach (var b in ImageOps.Blobs(m))
         {
-            Console.WriteLine("  [nav-pair] không thấy chấm ở cả hai ảnh — không kết luận được");
+            double an = b.Area / s.Area;
+            if (an < 22 || an > 145) continue;
+            if (b.Box.Width / s.Sx < 6 || b.Box.Width / s.Sx > 24 || b.Box.Height / s.Sy < 6 || b.Box.Height / s.Sy > 24) continue;
+            double cx = f.OriginX + local.X + b.Cx, cy = f.OriginY + local.Y + b.Cy;
+            double d = Math.Sqrt((cx - ox) * (cx - ox) + (cy - oy) * (cy - oy));
+            if (d < bestD) { bestD = d; best = b; }
         }
-        else
+        if (best is null)
         {
-            double d = Wrap(bearingB.Value - bearingA.Value);
-            Console.WriteLine($"  [nav-pair] góc chấm: {bearingA:F1}° → {bearingB:F1}°  (Δ={d:F1}°)");
-            Console.WriteLine(Math.Abs(d) >= cfg.Nav.CalibrateMinDeltaDeg
-                ? "  [nav-pair] minimap XOAY THEO CAMERA → lái thẳng theo góc chấm"
-                : "  [nav-pair] góc gần như không đổi → minimap KHÔNG theo camera, NavBot sẽ dùng chế độ dò dốc");
+            Console.WriteLine($"  [{tag}] không thấy khối trắng cỡ mũi tên trong minimap — bỏ qua kiểm gốc");
+            return 0;
         }
-
-        double? xa = null, xb = null;
-        using (var ma = MarkerReader.ForBitmap(cfg, p, a, out _))
-        using (var mb = MarkerReader.ForBitmap(cfg, p, b, out _))
-        {
-            var ca = ma?.Scan().Where(c => c.Ok).OrderByDescending(c => c.AreaRef).FirstOrDefault();
-            var cb = mb?.Scan().Where(c => c.Ok).OrderByDescending(c => c.AreaRef).FirstOrDefault();
-            if (ca is not null) xa = ca.Cx;
-            if (cb is not null) xb = cb.Cx;
-        }
-
-        if (xa is not null && xb is not null)
-            Console.WriteLine($"  [nav-pair] mốc trôi ngang {xb - xa:F0}px — " +
-                              (Math.Abs(xb.Value - xa.Value) >= cfg.Nav.ParallaxMinPxRef * p.Sx
-                                  ? "đủ để kiểm thị sai"
-                                  : "KHÔNG đủ, hạ ParallaxMinPxRef hoặc xoay nhiều hơn khi chụp"));
-        else
-            Console.WriteLine("  [nav-pair] không có mốc ở cả hai ảnh — phần thị sai bỏ qua");
-
-        return 0;
-    }
-
-    private static double Wrap(double deg)
-    {
-        while (deg > 180) deg -= 360;
-        while (deg < -180) deg += 360;
-        return deg;
+        double bx = f.OriginX + local.X + best.Value.Cx, by = f.OriginY + local.Y + best.Value.Cy;
+        Check(ref fail, bestD <= 6 * s.Sx, $"[{tag}] mũi tên trắng sát gốc cố định",
+              $"mũi tên ({bx:F1},{by:F1}) cách gốc ({ox:F1},{oy:F1}) {bestD:F1}px" +
+              (bestD > 6 * s.Sx ? $" → đặt PlayerOriginXRef={bx / s.Sx:F1} PlayerOriginYRef={by / s.Sy:F1} trong electric.json" : ""));
+        return fail;
     }
 }

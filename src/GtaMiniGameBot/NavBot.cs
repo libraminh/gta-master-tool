@@ -1,116 +1,59 @@
+using System.Diagnostics;
+
 namespace GtaMiniGameBot;
 
 internal enum NavStopReason
 {
-    /// <summary>Đã tới nơi và bấm E, minigame mở ra.</summary>
+    /// <summary>Đã bấm E và minigame đã hiện — điều phối giao cho bộ giải.</summary>
     Arrived,
 
     UserStopped,
-
-    /// <summary>Hết số lượt thử mà không tới được.</summary>
-    Unreachable,
-
-    /// <summary>Thiếu mẫu chữ hoặc vùng đọc.</summary>
-    NotConfigured,
-
     InputFailed,
     Error
 }
 
 /// <summary>
-/// Tự đi tới điểm làm việc rồi bấm E. Không giải minigame — bảng hiện ra là xong việc của lớp này,
-/// <see cref="ElectricBot"/> nhận tiếp.
+/// Tự đi tới điểm làm việc của nghề Thợ điện rồi bấm E — port vòng lặp chính của Navigator Python
+/// CAROT2 V6.7.34 (<c>V3Phase2App.loop</c> và các máy trạng thái vòng đời quanh nó).
 ///
-/// LUẬT LÁI, và vì sao nó ngắn hơn bản Python nhiều: trong game này chuột chỉ xoay CAMERA, nhân
-/// vật không xoay theo, mà giữ W thì nhân vật đi THEO HƯỚNG CAMERA. Nên chỉ cần "xoay camera cho
-/// mục tiêu về giữa rồi giữ W" — không cần biết thân nhân vật đang hướng nào. Bản Python phải nuôi
-/// cả <c>PlayerDetector</c> đo hướng mũi tên trắng bằng <c>minEnclosingTriangle</c> chỉ để trả lời
-/// câu hỏi đó.
+/// Khác mọi bot khác trong repo, bot này có HAI luồng phụ: luồng chuột 240 Hz trong <see cref="NavInput"/>
+/// (camera xoay theo tốc độ, không theo delta từng khung) và luồng quét khung nhìn thế giới trong
+/// <see cref="NavCapture"/> (chụp cả màn 2K quá chậm cho nhịp 25 ms của luồng chính). Cả hai đều là
+/// background thread và được dừng theo thứ tự cố định trong <c>finally</c> để không phím nào còn xuống.
 ///
-/// Hệ quả thứ hai, quan trọng hơn: W+A trượt chéo trái THEO HỆ CAMERA, tức né vật cản mà KHÔNG mất
-/// hướng. Hết vật cản là đã đúng hướng sẵn. Bản Python né bằng cách xoay camera nên mỗi lần né là
-/// một lần mất hướng, và nó phải đẻ ra <c>VectorStuckWatchdog</c> (287 dòng) + <c>KET1/KET2</c> để
-/// gỡ lại.
-///
-/// BA TÍN HIỆU, dùng theo cự ly:
-///   xa  → chấm vàng trên minimap cho GÓC (<see cref="MinimapReader"/>);
-///   gần → mốc vàng 3D cho lệch ngang, to hàng nghìn pixel thay vì một chấm 10 px
-///         (<see cref="MarkerReader"/>);
-///   tới → prompt "[E] TƯƠNG TÁC" (<see cref="PromptReader"/>). Đây là tín hiệu TỚI NƠI duy nhất
-///         được tin: chính game trả lời, không phải mình đoán theo bán kính pixel.
-///
-/// Còn "có đang tiến tới đích không" thì trọng tài là CỰ LY chấm minimap
-/// (<see cref="ProgressTracker"/>), vì xoay camera đổi góc chứ không đổi cự ly. Sai phân khung
-/// trên hai dải đất (<see cref="GroundFlow"/>) chỉ là tín hiệu nhanh phụ trợ — đo trong game nó
-/// sai cả hai chiều.
+/// Bản Python không bao giờ tự bỏ cuộc: mất điểm vàng thì quét 360°, lâu quá thì đi reset nghề, 30 s
+/// không tiến thì khởi động lại mềm. Ở đây cũng vậy — lý do dừng chỉ có "tới nơi", "người dùng dừng",
+/// "không gửi được input", "lỗi".
 /// </summary>
 internal sealed class NavBot
 {
-    private const ushort VK_W = 0x57;
-    private const ushort VK_A = 0x41;
-    private const ushort VK_D = 0x44;
-    private const ushort VK_S = 0x53;
-    private const ushort VK_E = 0x45;
-    private const ushort VK_SPACE = 0x20;
-
     private readonly ElectricConfig _cfg;
-    private readonly NavSettings _nav;
     private readonly Screen _screen;
-    private readonly ElectricProfile _p;
+    private readonly ElectricProfile _profile;
 
     private CancellationTokenSource _cts;
     private Thread _thread;
-    private bool _windowWarned;
 
-    private MinimapReader _mini;
-    private MarkerReader _marker;
-    private PromptReader _prompt;
-    private GroundFlow _ground;
-    private readonly ProgressTracker _progress;
-    private readonly EscapeLadder _escape;
+    /// <summary>Vừa giải xong một minigame — vào thẳng hậu minigame (kiểm prompt, reset camera, W reclaim).</summary>
+    public bool AfterMinigame { get; init; }
 
-    /// <summary>Mốc chấm điểm quãng đi lại sau một bậc thoát kẹt. 0 = không trong quãng đó.</summary>
-    private long _judgeAt;
+    /// <summary>Bảng/panel đã biến mất bao lâu trước khi bot này bắt đầu (BoardBot báo Solved sau 3 s, WireBot 1.5 s).</summary>
+    public int PanelGoneAgoMs { get; init; }
 
-    /// <summary>Đi lệch về phía vừa trượt cho tới mốc này, để khỏi chui lại vào khe.</summary>
-    private long _detourUntil;
-
-    private bool _detourSide;
-
-    // ---- trang thai giu phim, de khong ban lai SendInput moi vong ----
-    private bool _wDown, _aDown, _dDown, _sDown, _shiftDown;
-
-    // ---- hieu chuan chuot ----
-    private double _countsPerDeg;
-    private int _yawSign = 1;
-    private bool _calibrated;
-    private int _calibTries;
-    private int _wrongWayStreak;
-
-    /// <summary>Số count ngang đã bắn kể từ lần đọc mốc gần nhất — đầu vào của phép kiểm thị sai.</summary>
-    private int _yawSinceHeavy;
-
-    public NavBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
-    {
-        _cfg = cfg;
-        _nav = cfg.Nav;
-        _screen = screen;
-        _p = profile;
-        _progress = new ProgressTracker(cfg.Nav);
-        _escape = new EscapeLadder(cfg.Nav);
-    }
+    /// <summary>Do <see cref="ElectricBot"/> cấp: minigame có đang hiện không. CHỈ gọi từ luồng nav chính.</summary>
+    public Func<bool> PanelVisible { get; set; }
 
     public bool Running => _thread is { IsAlive: true };
 
     public event Action<string> Log;
-
     public event Action<NavStopReason, string> Stopped;
 
-    /// <summary>
-    /// Hỏi bên ngoài "minigame đã hiện chưa" sau khi bấm E. <see cref="ElectricBot"/> cắm hai bộ
-    /// thăm dò sẵn có của nó vào đây — NavBot không tự dò panel/bảng, đó là việc của lớp kia.
-    /// </summary>
-    public Func<bool> PanelVisible { get; set; }
+    public NavBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
+    {
+        _cfg = cfg;
+        _screen = screen;
+        _profile = profile;
+    }
 
     public void Start()
     {
@@ -120,11 +63,15 @@ internal sealed class NavBot
         _thread.Start();
     }
 
-    public void Stop() => _cts?.Cancel();
+    public void Stop()
+    {
+        _cts?.Cancel();
+        _input?.StopMouseStream(immediate: true);     // chuot phai tat NGAY, khong cho join
+    }
 
     public void StopAndWait(int ms = 2500)
     {
-        _cts?.Cancel();
+        Stop();
         var t = _thread;
         if (t is null || !t.IsAlive) return;
         try { t.Join(ms); } catch { }
@@ -132,69 +79,132 @@ internal sealed class NavBot
 
     public static string TenLyDo(NavStopReason r) => r switch
     {
-        NavStopReason.Arrived => "đã tới điểm làm việc",
+        NavStopReason.Arrived => "đã tới điểm làm việc và mở minigame",
         NavStopReason.UserStopped => "người dùng bấm dừng",
-        NavStopReason.Unreachable => "không tới được điểm làm việc",
-        NavStopReason.NotConfigured => "chưa hiệu chuẩn đủ",
         NavStopReason.InputFailed => "không gửi được phím/chuột vào game",
         _ => "lỗi"
     };
+
+    // ================================================================ trang thai
+
+    private NavScale _s;
+    private NavInput _input;
+    private NavCapture _capture;
+    private NavController _ctl;
+    private DotTracker _tracker;
+    private NavWatchdog _watchdog;
+    private JobRecovery _job;
+    private double _originX, _originY;
+
+    // focus
+    private double _focusLastGood;
+    private bool _focusedLast = true;
+
+    // simple flow
+    private string _simplePhase = "WORLD";
+    private int _promptStreak, _promptAbsentStreak;
+    private bool _promptConsumed;
+    private double _waitBoardUntil, _closeUntil, _postCheckUntil, _wait10Until;
+    private double _recentBoardExitUntil;
+    private bool _eDown;
+    private double _eUpAt;
+    private double _lastPanelPoll;
+    private bool _arrived;
+
+    // khien bo E cua NPC sau khi xin viec
+    private bool _postJobIgnoreNpcE;
+    private double _postJobStarted;
+    private bool _postJobSeen;
+    private int _postJobAbsentFrames;
+    private double _postJobLastLog;
+
+    // camera reset
+    private string _cameraPhase;
+    private double _cameraPhaseStart;
+    private string _cameraReason;
+
+    // W reclaim
+    private bool _wReclaimPending;
+    private int _wReclaimStage;
+    private double _wReclaimAt, _wReclaimConfirmAt;
+
+    // autorun watchdog
+    private double _wdLastProgressT;
+    private double? _wdBestDist;
+    private (double a, double h, double y)? _wdAnchorWorld;
+    private int _wdRestartCount;
+
+    // watch 30 s sau minigame
+    private bool _watchActive, _watchPending, _backoutActive;
+    private double _watchStarted, _backoutUntil;
+    private int _watchCount;
+
+    // lop san phim
+    private double _lastShiftKeepaliveT;
+
+    // log
+    private double _lastStatusLog;
+    private readonly Stopwatch _tickSw = new();
+    private double _tickMsEma;
+    private int _grabFails;
+
+    private void Emit(string line) => Log?.Invoke(line);
 
     // ================================================================ vong doi
 
     private void Run(CancellationToken ct)
     {
         var reason = NavStopReason.UserStopped;
-        string message = "người dùng bấm dừng";
+        string message = TenLyDo(NavStopReason.UserStopped);
+        bool timer = false;
 
         try
         {
-            if (!OpenReaders(out string problem))
+            var b = _screen.Bounds;
+            _s = new NavScale(b.Width, b.Height, _cfg.Nav.ScreenPxScale);
+            _originX = (_cfg.Nav.PlayerOriginXRef > 0 ? _cfg.Nav.PlayerOriginXRef : NavTuning.PlayerOriginXRef) * _s.Sx;
+            _originY = (_cfg.Nav.PlayerOriginYRef > 0 ? _cfg.Nav.PlayerOriginYRef : NavTuning.PlayerOriginYRef) * _s.Sy;
+
+            timer = Native.timeBeginPeriod(1) == 0;
+
+            _input = new NavInput(_cfg.Nav.MouseSpeedMultiplier);
+            _capture = new NavCapture(_screen, _s);
+            _ctl = new NavController(_s, _input);
+            _ctl.Log += Emit;
+            _tracker = new DotTracker(_s);
+            _watchdog = new NavWatchdog(_s);
+            _job = new JobRecovery(_s, _screen, _input, _ctl, _watchdog, _tracker, _capture, _originX, _originY);
+            _job.Log += Emit;
+            _job.Finished += OnJobFinished;
+
+            Emit($"điều hướng: màn {_s.ScreenW}×{_s.ScreenH}, sx={_s.Sx:F3}, px×{_s.Px:F3}, chuột ×{_cfg.Nav.MouseSpeedMultiplier:F1}, " +
+                 $"gốc mũi tên ({_originX:F0},{_originY:F0}), minimap {_capture.MinimapRegion.Width}×{_capture.MinimapRegion.Height}, " +
+                 $"world {_capture.WorldRegion.Width}×{_capture.WorldRegion.Height}" +
+                 (timer ? "" : ", timeBeginPeriod THẤT BẠI"));
+
+            double now0 = NavClock.Now;
+            _focusLastGood = 0;
+            _wdLastProgressT = now0;
+            _lastShiftKeepaliveT = now0;
+
+            if (AfterMinigame) EnterPostMinigame(now0);
+
+            _capture.StartScanner();
+            Loop(ct);
+
+            if (_arrived)
             {
-                reason = NavStopReason.NotConfigured;
-                message = problem;
-                Emit("dừng: " + message);
-                return;
+                reason = NavStopReason.Arrived;
+                message = "minigame đã hiện";
             }
-
-            Emit($"bắt đầu. minimap {_mini.Region.Width}×{_mini.Region.Height}, " +
-                 $"băng prompt {_prompt.Region.Width}×{_prompt.Region.Height}, " +
-                 $"hộp bóng nhân vật {_marker.SilhouetteBox.Width}×{_marker.SilhouetteBox.Height}.");
-
-            WaitWindow(ct);
-            NormalizePitch(ct);
-
-            for (int attempt = 1; attempt <= _nav.MaxAttempts; attempt++)
-            {
-                ct.ThrowIfCancellationRequested();
-                Emit($"— lượt {attempt}/{_nav.MaxAttempts} —");
-
-                var outcome = Approach(ct, out string detail);
-                if (outcome == NavStopReason.Arrived)
-                {
-                    reason = NavStopReason.Arrived;
-                    message = detail;
-                    Emit("tới nơi: " + detail);
-                    return;
-                }
-
-                Emit($"lượt {attempt} hỏng: {detail}");
-                if (attempt < _nav.MaxAttempts) Recover(ct);
-            }
-
-            reason = NavStopReason.Unreachable;
-            message = $"thử {_nav.MaxAttempts} lượt đều không tới";
-            Emit("dừng: " + message);
         }
         catch (OperationCanceledException)
         {
             reason = NavStopReason.UserStopped;
-            message = "người dùng bấm dừng";
+            message = TenLyDo(reason);
         }
         catch (InvalidOperationException ex)
         {
-            // InputSender nem cai nay khi SendInput khong lot — thuong la game chay quyen Admin ma
-            // app thi khong. Thong diep cua no da noi ro cach sua.
             reason = NavStopReason.InputFailed;
             message = ex.Message;
             Emit(message);
@@ -203,785 +213,826 @@ internal sealed class NavBot
         {
             reason = NavStopReason.Error;
             message = ex.Message;
-            Emit("lỗi: " + message);
+            Emit("lỗi điều hướng: " + ex);
         }
         finally
         {
-            ReleaseAll();
-            _mini?.Dispose();
-            _marker?.Dispose();
-            _prompt?.Dispose();
-            _ground?.Dispose();
-            _mini = null; _marker = null; _prompt = null; _ground = null;
+            // Thu tu dung: chuot -> nha phim so huu -> nha toan bo -> luong quet -> reader -> timer.
+            try { _input?.Dispose(); } catch { }
+            try { _input?.ReleaseOwnedOnce(); } catch { }
+            try { HeldKeys.ReleaseAll(); } catch { }
+            try { _capture?.Dispose(); } catch { }
+            if (timer) { try { Native.timeEndPeriod(1); } catch { } }
             Stopped?.Invoke(reason, message);
         }
     }
 
-    private bool OpenReaders(out string problem)
+    /// <summary>
+    /// Vào thẳng hậu minigame khi <see cref="ElectricBot"/> vừa giải xong. Bản Python vào CLOSE_SETTLE
+    /// ~125 ms sau khi bảng mất; ở đây bảng đã mất <see cref="PanelGoneAgoMs"/> nên rút CLOSE_SETTLE và
+    /// POST_CHECK tương ứng (tối thiểu vẫn nhìn prompt 0.5 s), và khiên 8 s tính từ lúc bảng mất.
+    /// </summary>
+    private void EnterPostMinigame(double now)
     {
-        _mini = MinimapReader.Open(_cfg, _screen, _p, out problem);
-        if (_mini is null) return false;
-
-        _marker = MarkerReader.Open(_cfg, _screen, _p, out problem);
-        if (_marker is null) return false;
-
-        _prompt = PromptReader.Open(_cfg, _screen, _p, out problem);
-        if (_prompt is null)
+        double gone = Math.Max(0.0, PanelGoneAgoMs / 1000.0);
+        _promptStreak = _promptAbsentStreak = 0;
+        _promptConsumed = false;
+        _recentBoardExitUntil = now + Math.Max(0.0, NavTuning.SimpleRecentBoardExitGuardS - gone);
+        double remaining = NavTuning.SimpleCloseSettleS + NavTuning.SimplePostCheckS - gone;
+        if (gone < NavTuning.SimpleCloseSettleS)
         {
-            // Khong ha xuong "go mu" nhu WoodBot: khong co prompt thi khong biet luc nao toi noi,
-            // ma doan bang ban kinh pixel chinh la thu bo di co y thuc.
-            problem = problem + " — mở tab Thợ điện, bấm “Khoanh mẫu TƯƠNG TÁC…” rồi chạy lại";
-            return false;
+            _simplePhase = "CLOSE_SETTLE";
+            _closeUntil = now + (NavTuning.SimpleCloseSettleS - gone);
         }
-
-        try { _ground = new GroundFlow(_screen, _p, _nav); }
-        catch (Exception ex)
+        else
         {
-            problem = "không mở được dải đo tiến độ: " + ex.Message;
-            return false;
+            _simplePhase = "POST_CHECK";
+            _postCheckUntil = now + Math.Max(0.5, remaining);
         }
-
-        return true;
+        Emit($"sau minigame (bảng mất {gone:F1}s trước) → {_simplePhase}: kiểm prompt rồi reset camera");
     }
 
-    // ================================================================ mot luot tiep can
-
-    private enum Phase { Scan, Far, Near }
-
-    private NavStopReason Approach(CancellationToken ct, out string detail)
+    private void Loop(CancellationToken ct)
     {
-        _mini.Forget();
-        _marker.Forget();
-        _ground.Reset();
-        _progress.Reset();
-        _escape.Close();
-        _judgeAt = 0;
-        _detourUntil = 0;
-
-        var phase = Phase.Scan;
-        long t0 = Now;
-        long lastHeavy = 0, lastLog = 0, stillSince = 0, scanSince = Now, closeSince = 0;
-        long bestAt = Now;
-        double bestDist = double.MaxValue;
-        int promptStreak = 0;
-        bool wasClose = false;
-        MarkerFix marker = new() { Locked = false };
-        PromptHit prompt = new() { Visible = false };
+        double period = NavTuning.TickMs / 1000.0;
+        double next = NavClock.Now;
 
         while (true)
         {
             ct.ThrowIfCancellationRequested();
-            Sleep(ct, _nav.TickMs);
-
-            if (!GameForeground())
+            double now = NavClock.Now;
+            if (now < next)
             {
-                ReleaseAll();
-                WaitWindow(ct);
-                _ground.Reset();
+                double rem = next - now;
+                if (rem > 0.002) Thread.Sleep(1); else Thread.SpinWait(200);
                 continue;
             }
+            next = Math.Max(next + period, now);
+            _tickSw.Restart();
 
-            long now = Now;
-            if (now - t0 > _nav.ApproachTimeoutMs)
+            if (_input.Fault is not null) throw new InvalidOperationException("luồng chuột: " + _input.Fault.Message);
+            if (_capture.Fault is not null) throw new Exception("luồng quét màn hình dừng: " + _capture.Fault.Message);
+
+            bool focused = GameFocus(now);
+
+            // GDI co the tu choi chup mot luc (khoa man, UAC, doi che do hien thi). Ban Python bo qua
+            // khung None; o day nha phim, cho 250 ms, va chi bo cuoc sau 5 s lien tuc.
+            NavFrame mini;
+            try
             {
-                detail = $"quá {_nav.ApproachTimeoutMs / 1000}s chưa tới (pha {phase})";
-                ReleaseAll();
-                return NavStopReason.Unreachable;
+                mini = _capture.GrabMinimap(now);
+                _grabFails = 0;
             }
-
-            var dot = _mini.Read(now);
-
-            // Chi nap so ĐO ĐƯỢC vao bo theo doi tien do: luc dang dung lai vi tri nho thi khong
-            // co thong tin moi, nap vao chi lam nhieu cua so.
-            if (dot.Found && !dot.Held) _progress.Push(now, dot.DistRef);
-
-            if (dot.Found && dot.DistRef < bestDist - 0.5)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                bestDist = dot.DistRef;
-                bestAt = now;
-            }
-
-            if (now - bestAt > _nav.NoProgressAbortMs)
-            {
-                detail = $"{_nav.NoProgressAbortMs / 1000}s không rút ngắn được cự ly " +
-                         $"(gần nhất {(bestDist < double.MaxValue ? bestDist.ToString("F0") : "?")})";
-                ReleaseAll();
-                return NavStopReason.Unreachable;
-            }
-
-            bool close = dot.Found && dot.DistRef <= _nav.NearDistRef;
-            if (close) { wasClose = true; closeSince = now; }
-
-            bool heavy = now - lastHeavy >= _nav.HeavyReadEveryMs;
-            if (heavy)
-            {
-                lastHeavy = now;
-                marker = _marker.Update(now, _yawSinceHeavy);
-                _yawSinceHeavy = 0;
-
-                // Chi doc prompt khi da tam gan: bang quet la 60%x50% man hinh, doc no moi vong tu
-                // xa la tra tien cho khong. Nhung mot khi DA tung gan thi doc tiep den het luot —
-                // sat noi la cham dich chui xuong duoi mui ten nguoi choi va bien mat.
-                if (marker.Locked || close || wasClose)
-                {
-                    prompt = _prompt.Read();
-                    promptStreak = prompt.Visible ? promptStreak + 1 : 0;
-                }
-                else
-                {
-                    prompt = new PromptHit { Visible = false };
-                    promptStreak = 0;
-                }
-            }
-
-            // ---------------- toi noi ----------------
-            if (promptStreak >= _nav.PromptConfirmFrames)
-            {
-                ReleaseAll();
-                Emit($"thấy prompt (ncc={prompt.Score:F2}) — bấm E");
-                InputSender.TapKey(VK_E, _nav.EHoldMs);
-
-                if (WaitPanel(ct))
-                {
-                    detail = $"minigame đã mở sau {(Now - t0) / 1000.0:F1}s";
-                    return NavStopReason.Arrived;
-                }
-
-                Emit("bấm E mà minigame không mở — thử thêm một lần");
-                InputSender.TapKey(VK_E, _nav.EHoldMs);
-                if (WaitPanel(ct))
-                {
-                    detail = $"minigame đã mở sau {(Now - t0) / 1000.0:F1}s (lần E thứ hai)";
-                    return NavStopReason.Arrived;
-                }
-
-                promptStreak = 0;
-                detail = "bấm E hai lần mà minigame không mở";
-                return NavStopReason.Unreachable;
-            }
-
-            // ---------------- chon tin hieu lai ----------------
-            double errDeg;
-            string source;
-
-            if (marker.Locked)
-            {
-                phase = Phase.Near;
-                // marker.Cx la toa do TRONG KHUNG game, nen tam khung la Width/2 — khong dinh dang
-                // gi toi goc man hinh ao (xem MarkerCandidate.Cx).
-                errDeg = PixelToDeg(marker.Cx - (_p.Width / 2.0));
-                source = "mốc";
-            }
-            else if (dot.Found)
-            {
-                phase = Phase.Far;
-                errDeg = dot.BearingDeg;
-                source = dot.Held ? "chấm(nhớ)" : "chấm";
-            }
-            else
-            {
-                phase = Phase.Scan;
-                errDeg = 0;
-                source = "quét";
-            }
-
-            if (phase == Phase.Scan)
-            {
-                long lost = now - closeSince;
-
-                // Vua nay con gan ma gio mat dau chấm: ĐI TIẾP theo huong cuoi da biet. O cu ly do
-                // nhan vat con cach moc vai met — dung im thi khong bao gio toi (log 23/08: toi
-                // xa=7 roi dung im 2.5 s, khong co prompt, roi bo luot).
-                if (wasClose && lost <= _nav.NearPushMs)
-                {
-                    Hold(w: true, a: false, d: false, s: false, shift: false);
-                    Trace(ref lastLog, now, $"mất dấu chấm khi đã gần — đi tiếp theo hướng cuối " +
-                                            $"({lost / 1000.0:F1}s) {PromptText(prompt)}");
-                    scanSince = now;
-                    continue;
-                }
-
-                // Roi moi dung yen cho prompt, TUYET DOI khong xoay camera — xoay la prompt troi ra
-                // khoi bang quet dung luc dang dung tren moc.
-                if (wasClose && lost <= _nav.NearPushMs + _nav.NearHoldMs)
-                {
-                    Hold(w: false, a: false, d: false, s: false, shift: false);
-                    Trace(ref lastLog, now, $"đứng yên chờ prompt " +
-                                            $"({(lost - _nav.NearPushMs) / 1000.0:F1}s) {PromptText(prompt)}");
-                    scanSince = now;
-                    continue;
-                }
-
-                // Dem tu luc VAO pha quet, khong tu dau luot: di duoc mot phut roi moi mat dau cham
-                // ma tinh la het gio quet thi luot nao cung chet ngay giay dau.
-                if (now - scanSince > ScanBudgetMs())
-                {
-                    detail = $"quét {(now - scanSince) / 1000.0:F0}s không thấy chấm vàng nào";
-                    ReleaseAll();
-                    return NavStopReason.Unreachable;
-                }
-
-                Hold(w: false, a: false, d: false, s: false, shift: false);
-                Yaw(_nav.ScanYawCounts);
-                Trace(ref lastLog, now, $"quét tìm chấm ({(now - scanSince) / 1000.0:F1}s" +
-                                        $"/{ScanBudgetMs() / 1000.0:F0}s)");
+                if (_grabFails++ == 0) Emit("không chụp được minimap: " + ex.Message);
+                if (_grabFails >= 20) throw new Exception("không chụp được màn hình 5 giây liên tục: " + ex.Message);
+                _input.ReleaseOwnedOnce();
+                Thread.Sleep(250);
                 continue;
             }
+            var snap = _capture.Latest;
 
-            scanSince = now;
-
-            // Chi hieu chuan khi dang lai theo CHAM: phep do can doc lai goc cham sau khi xoay.
-            if (!_calibrated && dot.Found && !marker.Locked) CalibrateYaw(ct);
-
-            // ---------------- cham diem quang di lai sau mot bac thoat ket ----------------
-            if (_judgeAt != 0 && now >= _judgeAt)
-            {
-                _judgeAt = 0;
-
-                // Mat dau cham dung luc cham diem (dang bam moc 3D, hoac cham bi che): khong co cu
-                // ly de so, roi ve tin hieu nhanh. Coi "khong co cu ly" la "chua thoat" thi bot se
-                // leo thang oan trong khi no dang di ngon lanh theo moc.
-                //
-                // So voi StartDist cua CA DOT, khong phai vi tri truoc bac vua roi: thang co the
-                // day nhan vat ra xa dan (log 25/08: 7 → 8 → 7 → 10), va lay moc theo tung bac thi
-                // mot cu keo ve 9 cung tinh la "thoat" — dong dot o cho xa hon luc mo.
-                bool better = dot.Found
-                    ? dot.DistRef <= _escape.StartDist - _nav.MinProgressRef
-                    : stillSince == 0;
-
-                if (better)
-                {
-                    Emit($"thoát: xa {_escape.StartDist:F0} → " +
-                         $"{(dot.Found ? dot.DistRef.ToString("F0") : "? (theo đất trôi)")} " +
-                         $"sau bậc {_escape.Rung} bên {SideName(_escape.Right)} — đóng đợt");
-                    _escape.Close();
-                    _progress.Reset();
-                }
-                else
-                {
-                    // Da co bang chung: di binh thuong ca quang ma cu ly khong nhuc nhich. Leo bac
-                    // NGAY, khong cho bo theo doi gom lai du 3 s lich su.
-                    Emit($"chưa thoát (xa {(dot.Found ? dot.DistRef.ToString("F0") : "?")} " +
-                         $"so với đầu đợt {_escape.StartDist:F0}, trước bậc {_escape.LastDist:F0}) " +
-                         "— leo bậc");
-
-                    if (!RunStep(ct, dot))
-                    {
-                        detail = $"kẹt ở xa={_escape.StartDist:F0}, đã thử hết cả hai bên";
-                        ReleaseAll();
-                        return NavStopReason.Unreachable;
-                    }
-
-                    stillSince = 0;
-                    continue;
-                }
-            }
-
-            // ---------------- lai ----------------
-            // Vua thoat khe thi nham LECH ve phia da truot mot luc, roi thu ve 0 — nham thang lai
-            // muc tieu ngay la cam thang vao dung cai khe vua ra.
-            double bias = DetourBias(now);
-            double steer = errDeg + bias;
-
-            int counts = YawCountsFor(steer);
-            Yaw(counts);
-            if (bias == 0) TrackWrongWay(errDeg, source);
-
-            bool aligned = Math.Abs(steer) <= _nav.TurnOnlyDeg;
-
-            // Chay cho toi khi THAY VONG TRON VANG — khong con cua cu ly toi thieu, va goc cho phep
-            // rong hon nhieu. Theo ban Python (sprint_angle_deg 52, world_sprint_area_max 2600).
-            // Ban cu tat chay tu xa=26 nen di bo gan het quang duong: log 25/08 chi chay duoc
-            // 32→29 roi di bo suot 26→7. Luat nam trong ShouldSprint/NearRing de kiem duoc offline.
-            bool sprint = ShouldSprint(_nav, steer, bias, marker.SeenAreaRef, dot.Found, dot.DistRef);
-
-            Hold(w: aligned, a: false, d: false, s: false, shift: sprint);
-
-            // ---------------- ket chua ----------------
-            double flow = _ground.Sample(now);
-            if (!aligned || flow < 0 || flow >= _nav.GroundFlowMin) stillSince = 0;
-            else if (stillSince == 0) stillSince = now;
-
-            bool flowStill = stillSince != 0 && now - stillSince >= _nav.StuckMs;
-            bool stuck;
-            string why;
-
-            if (_progress.Ready(now))
-            {
-                // Cu ly la trong tai: xoay camera doi GOC chu khong doi CU LY, nen no mien nhiem
-                // voi chinh thu bo lai dang lam suot.
-                stuck = _progress.Stalled(now);
-                why = $"Δxa={_progress.Delta(now):+0.0;-0.0;0.0}/{_nav.ProgressWindowMs / 1000}s, flow={flow:F1}";
-            }
-            else
-            {
-                // Chua du lich su (vua vao, vua thoat bac, hoac dang bam moc va mat cham) → tam
-                // dung tin hieu nhanh.
-                stuck = flowStill;
-                why = $"flow={flow:F1}, chưa đủ lịch sử cự ly";
-            }
-
-            if (stuck && aligned && _judgeAt == 0)
-            {
-                double dist = dot.Found ? dot.DistRef : _escape.StartDist;
-
-                if (_escape.Open(dist, preferRight: steer >= 0))
-                    Emit($"kẹt ({why}) — đợt mới, bên {SideName(_escape.Right)}, xa đầu đợt={dist:F0}");
-                else
-                    Emit($"vẫn kẹt ({why}) — cùng đợt, bên {SideName(_escape.Right)} bậc {_escape.Rung}");
-
-                if (!RunStep(ct, dot))
-                {
-                    detail = $"kẹt ở xa={_escape.StartDist:F0}, đã thử hết cả hai bên";
-                    ReleaseAll();
-                    return NavStopReason.Unreachable;
-                }
-
-                stillSince = 0;
-                continue;
-            }
-
-            Trace(ref lastLog, now,
-                $"{source} lệch={errDeg:F1}°{(bias == 0 ? "" : $" (lệch né {bias:+0;-0}°)")} " +
-                $"chuột={counts:+#;-#;0} " +
-                $"{(sprint ? "chạy" : aligned ? $"đi({WhyWalk(marker, dot)})" : "xoay tại chỗ")} " +
-                $"xa={(dot.Found ? dot.DistRef.ToString("F0") : "?")} " +
-                $"Δxa={(_progress.Ready(now) ? _progress.Delta(now).ToString("+0.0;-0.0;0.0") : "?")} " +
-                $"đất={flow:F1} {PromptText(prompt)} {(marker.Locked ? "mốc✓" : marker.Note)}");
+            if (Tick(ct, now, focused, mini, snap)) return;    // Arrived
         }
     }
 
-    /// <summary>
-    /// Hạn giờ quét, tính đủ cho ÍT NHẤT một vòng 360° cộng biên.
-    ///
-    /// Vì sao không để hằng số: tốc độ quay khi quét là <c>ScanYawCounts</c> count mỗi
-    /// <c>TickMs</c>, đổi ra độ thì phải chia cho <see cref="_countsPerDeg"/> — con số chỉ biết
-    /// được SAU khi hiệu chuẩn, và nó phụ thuộc độ nhạy chuột của từng máy.
-    ///
-    /// Log 25/08 cho thấy hậu quả khi bỏ qua: đo được 16.89 count/độ → 18 count mỗi 50 ms là
-    /// 21.3 °/s → một vòng cần 16.9 s, trong khi <c>ScanTimeoutMs</c> là 12 s. Bot không bao giờ
-    /// quét hết một vòng, chỉ tới ~256° rồi bỏ lượt — mục tiêu nằm trong 100° còn lại thì vĩnh
-    /// viễn không thấy. Cả ba lượt của phiên đó đều chết đúng kiểu này.
-    ///
-    /// Vẫn tôn trọng <c>ScanTimeoutMs</c> làm sàn: người dùng chỉnh nó lên thì phải có tác dụng.
-    /// </summary>
-    private long ScanBudgetMs()
+    /// <summary>Một vòng của <c>loop()</c>. Trả true khi đã tới nơi (kết thúc bot).</summary>
+    private bool Tick(CancellationToken ct, double now, bool focused, NavFrame mini, WorldSnapshot snap)
     {
-        double cpd = _countsPerDeg > 0 ? _countsPerDeg : _nav.FallbackCountsPerDeg;
-        double degPerTick = _nav.ScanYawCounts / Math.Max(0.2, cpd);
-        if (degPerTick <= 0) return _nav.ScanTimeoutMs;
+        // Backout S nghiem trong cua watch 30 s so huu input truoc moi thu.
+        if (_backoutActive && RestartWatchStep(now, focused)) return false;
 
-        double ticks = 360.0 / degPerTick;
-        double fullTurnMs = ticks * Math.Max(1, _nav.TickMs) * _nav.ScanTurnMargin;
-
-        return (long)Math.Max(_nav.ScanTimeoutMs, Math.Min(fullTurnMs, _nav.ScanMaxMs));
-    }
-
-    /// <summary>Bấm E xong thì chờ minigame hiện ra.</summary>
-    private bool WaitPanel(CancellationToken ct)
-    {
-        long until = Now + _nav.WaitPanelMs;
-        while (Now < until)
+        // Reset nghe truoc simple flow: bang nghe la panel cyan lon.
+        if (_job.Phase is not null)
         {
-            ct.ThrowIfCancellationRequested();
-            if (PanelVisible is null) { Sleep(ct, 250); continue; }
-            if (PanelVisible()) return true;
-            Sleep(ct, 120);
-        }
-        // Khong co ham tham do thi khong khang dinh duoc gi — coi nhu da mo, de ElectricBot tu xu.
-        return PanelVisible is null;
-    }
-
-    // ================================================================ thoat ket
-
-    /// <summary>
-    /// Thi hành một bậc của thang rồi hẹn giờ chấm điểm. false = hết thang.
-    ///
-    /// Chấm điểm bằng CỰ LY sau khi đã đi lại một quãng, chứ KHÔNG hỏi sai phân khung ngay tại chỗ
-    /// như bản đầu — cú trượt làm nhân vật cựa quậy sát tường nên khung nào cũng "có đổi", và bản
-    /// đầu vì thế lần nào cũng tự báo "thoát được" rồi quay lại húc tường.
-    /// </summary>
-    private bool RunStep(CancellationToken ct, DotFix dot)
-    {
-        var step = _escape.Next();
-        Emit(step.ToString());
-
-        switch (step.Action)
-        {
-            case EscapeAction.Strafe:
-                // Truot ngang THUAN: khong kem W (W+A la di cheo 45°, van huc vao tuong), khong
-                // dung toi camera nen thoat xong huong van con nguyen.
-                Hold(w: false, a: !step.Right, d: step.Right, s: false, shift: false);
-                Sleep(ct, step.DurationMs);
-                Hold(w: false, a: false, d: false, s: false, shift: false);
-                break;
-
-            case EscapeAction.BackupAndFlip:
-                Hold(w: false, a: false, d: false, s: true, shift: false);
-                Sleep(ct, step.DurationMs);
-                Hold(w: false, a: false, d: false, s: false, shift: false);
-                break;
-
-            case EscapeAction.Jump:
-                Hold(w: true, a: false, d: false, s: false, shift: false);
-                InputSender.TapKey(VK_SPACE, 80);
-                Sleep(ct, 700);
-                break;
-
-            default:
-                ReleaseAll();
+            if (_job.Step(mini, snap, now, focused))
+            {
+                StatusLine(now, $"[RESET NGHỀ] pha={_job.Phase} {_job.StateNote}", snap);
                 return false;
+            }
         }
 
-        if (dot.Found) _escape.MarkDistance(dot.DistRef);
+        if (SimpleFlowStep(now, focused, snap, out bool arrived))
+        {
+            if (arrived) { _arrived = true; return true; }
+            StatusLine(now, $"[PROMPT/E] pha={_simplePhase}", snap);
+            return false;
+        }
 
-        _judgeAt = Now + _nav.ResumeCheckMs;
-        _detourUntil = Now + _nav.DetourBiasMs;
-        _detourSide = _escape.Right;
+        if (RestartWatchStep(now, focused)) return false;
 
-        _progress.Reset();
-        _ground.Reset();
+        if (_wReclaimPending && _cameraPhase is null)
+        {
+            if (WReclaimStep(now, focused)) return false;
+        }
+
+        if (_cameraPhase is not null)
+        {
+            if (focused)
+            {
+                if (CameraResetStep(now))
+                {
+                    StatusLine(now, $"[RESET CAMERA] pha={_cameraPhase}", snap);
+                    return false;
+                }
+            }
+            else
+            {
+                _input.ReleaseAll();
+                return false;
+            }
+        }
+
+        // ---------------- nhan dang ----------------
+        var candidates = YellowDotDetector.Detect(mini, _s, _originX, _originY);
+        var fragments = YellowDotDetector.DetectNearFragments(mini, _s, _originX, _originY);
+        var target = _tracker.Update(candidates, _originX, _originY, now, fragments);
+        var world = snap.Marker;
+
+        if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
+        {
+            _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
+            if (_job.Step(mini, snap, now, focused)) return false;
+        }
+
+        double dist = double.NaN, rel = double.NaN, dx = double.NaN, dy = double.NaN;
+        if (target.HasPos)
+        {
+            dx = target.X.Value - _originX;
+            dy = target.Y.Value - _originY;
+            dist = Math.Sqrt(dx * dx + dy * dy);
+            rel = NavController.Wrap(Math.Atan2(dx, -dy) * 180.0 / Math.PI);
+            _watchdog.Add(now, dx, dy);
+        }
+        bool forwardRequested = _input.IsHeld(NavKey.W) && !_input.IsHeld(NavKey.S);
+
+        // ---------------- ket ----------------
+        bool isStuck = false;
+        bool worldDirectCandidate = world.Present
+                                    && world.Confidence >= NavTuning.WorldSkipMinimapStuckConf
+                                    && world.Area >= NavTuning.WorldSkipMinimapStuckArea;
+        if (worldDirectCandidate) _watchdog.ClearCandidate();
+        else if (!double.IsNaN(dx))
+        {
+            bool targetAvailable = target.HasPos && target.Confidence >= NavTuning.ImpactMinTargetConf;
+            isStuck = _watchdog.ImpactStuck(now, forwardRequested, targetAvailable, dist, rel);
+        }
+        if (isStuck)
+        {
+            int side = _capture.AnalyzeObstacleSide(now, out string note);
+            _ctl.SetObstacleSide(side);
+            Emit($"[KẸT XÁC NHẬN] bên={(side > 0 ? "PHẢI" : side < 0 ? "TRÁI" : "TỰ")} {note} dist={dist:F1} rel={rel:+0.0;-0.0}");
+        }
+
+        // ---------------- cong world ----------------
+        bool strongWorld = world.Present && world.Confidence >= NavTuning.WorldInstantTakeoverConf
+                                         && world.Area >= NavTuning.WorldInstantTakeoverMinArea;
+        bool worldAllowed = false;
+        if (strongWorld) worldAllowed = true;
+        else if (world.Locked)
+        {
+            if (world.Confidence >= NavTuning.WorldStrongOverrideConf) worldAllowed = true;
+            else if (!double.IsNaN(dist) && dist <= NavTuning.WorldLockMinimapMaxDistPx * _s.Px
+                     && target.Confidence >= NavTuning.WorldRequireTargetConf) worldAllowed = true;
+            else if (_ctl.WorldLatched) worldAllowed = true;
+        }
+        if (world.Present && worldAllowed) _ctl.ClearPendingObstacle();
+
+        bool worldEscapeTakeover = world.Present && worldAllowed && _ctl.Active is not null && _ctl.Active.Source != "WORLD";
+        bool centerMinimapReady = target.HasPos && double.IsFinite(dist) && double.IsFinite(rel)
+                                  && target.Confidence >= NavTuning.CenterNavMinConf;
+        bool lineCommitActive = _ctl.RamLineHardLocked && now - _ctl.RamLineLastSeenT <= NavTuning.RamLineWorldOverrideHoldS;
+
+        if (!worldEscapeTakeover && AutorunWatchdogStep(now, focused, dist, target, world)) return false;
+
+        // ---------------- dieu phoi ----------------
+        NavKey keys;
+        string state;
+        if (!focused)
+        {
+            _input.ReleaseOwnedOnce();
+            state = "WAIT_FOCUS";
+            keys = NavKey.None;
+        }
+        else if (worldEscapeTakeover)
+        {
+            var r = _ctl.WorldStep(now, world, _s.ScreenW, false, dist) ?? (NavKey.W, "WORLD_KET_TAKEOVER_W");
+            keys = ApplyWorldNavInput(r.keys, now, r.state);
+            state = r.state;
+        }
+        else if (world.Present && worldAllowed && !centerMinimapReady && !lineCommitActive)
+        {
+            var r = _ctl.WorldStep(now, world, _s.ScreenW, false, dist)
+                    ?? (double.IsNaN(rel) ? _ctl.LostStep(now) : _ctl.Compute(now, target, dist, rel, dx, dy, isStuck));
+            keys = ApplyWorldNavInput(r.keys, now, r.state);
+            state = r.state;
+        }
+        else if ((worldAllowed || _ctl.WorldLatched) && !centerMinimapReady && !lineCommitActive)
+        {
+            var r = _ctl.WorldStep(now, world, _s.ScreenW, isStuck, dist)
+                    ?? (double.IsNaN(rel) ? _ctl.LostStep(now) : _ctl.Compute(now, target, dist, rel, dx, dy, isStuck));
+            keys = ApplyWorldNavInput(r.keys, now, r.state);
+            state = r.state;
+            if (isStuck) _watchdog.Cooldown(now);
+        }
+        else if (double.IsNaN(rel))
+        {
+            var r = _ctl.LostStep(now);
+            keys = ApplyWorldNavInput(r.keys, now, r.state);
+            state = r.state;
+        }
+        else
+        {
+            var r = _ctl.Compute(now, target, dist, rel, dx, dy, isStuck);
+            keys = ApplyWorldNavInput(r.keys, now, r.state);
+            state = r.state;
+            if (isStuck) _watchdog.Cooldown(now);
+        }
+
+        _tickMsEma = _tickMsEma <= 0 ? _tickSw.Elapsed.TotalMilliseconds : 0.9 * _tickMsEma + 0.1 * _tickSw.Elapsed.TotalMilliseconds;
+        if (now - _lastStatusLog >= _cfg.Nav.LogEveryMs / 1000.0)
+        {
+            _lastStatusLog = now;
+            string re = double.IsNaN(rel) ? "---" : $"{rel:+0.0;-0.0}";
+            string ds = double.IsNaN(dist) ? "---" : $"{dist:0.0}";
+            string wx = world.X is null ? "---" : $"{world.X.Value:0}";
+            Emit($"[{state}] Q={target.Quality} C={target.Confidence:F2} rel={re} dist={ds} " +
+                 $"WQ={world.Quality} WC={world.Confidence:F2} Wx={wx} A={world.Area:0} keys={KeysText(keys)} " +
+                 $"tick={_tickMsEma:0.0}ms quét={snap.Hz:0}Hz");
+        }
+        return false;
+    }
+
+    private void StatusLine(double now, string head, WorldSnapshot snap)
+    {
+        if (now - _lastStatusLog < 0.5) return;
+        _lastStatusLog = now;
+        Emit($"{head} quét={snap.Hz:0}Hz");
+    }
+
+    private static string KeysText(NavKey k)
+    {
+        if (k == NavKey.None) return "-";
+        var parts = new List<string>();
+        if ((k & NavKey.Shift) != 0) parts.Add("SHIFT");
+        if ((k & NavKey.W) != 0) parts.Add("W");
+        if ((k & NavKey.S) != 0) parts.Add("S");
+        if ((k & NavKey.A) != 0) parts.Add("A");
+        if ((k & NavKey.D) != 0) parts.Add("D");
+        return string.Join("+", parts);
+    }
+
+    // ================================================================ focus
+
+    /// <summary><c>game_focus</c>: tiêu đề cửa sổ chứa WindowMatch; mất tiêu đề dưới 1.5 s vẫn coi là còn focus.</summary>
+    private bool GameFocus(double now)
+    {
+        bool ok;
+        if (string.IsNullOrWhiteSpace(_cfg.WindowMatch)) ok = true;
+        else
+        {
+            string title = Native.ForegroundTitle();
+            bool titleOk = title.Contains(_cfg.WindowMatch, StringComparison.OrdinalIgnoreCase);
+            if (titleOk) { _focusLastGood = now; ok = true; }
+            else ok = _focusLastGood > 0 && now - _focusLastGood <= NavTuning.FocusGraceS;
+        }
+        if (ok != _focusedLast)
+        {
+            _focusedLast = ok;
+            Emit(ok ? "game đã focus lại — chạy tiếp" : $"mất focus “{_cfg.WindowMatch}” — nhả phím, chờ");
+        }
+        return ok;
+    }
+
+    // ================================================================ lop san phim
+
+    /// <summary>
+    /// <c>_apply_world_nav_input</c>: luôn thêm W; ngoài KET1/KET2 luôn thêm W+SHIFT; SHIFT xuống TRƯỚC cú
+    /// double-tap W khi vừa lấy lại W; sau đó SHIFT keydown-only mỗi 0.45 s. Trả tập phím THẬT đã gửi.
+    /// </summary>
+    private NavKey ApplyWorldNavInput(NavKey keys, double now, string state)
+    {
+        bool isKet = state.StartsWith("KET1", StringComparison.Ordinal) || state.StartsWith("KET2", StringComparison.Ordinal);
+        bool explicitReverse = (keys & NavKey.S) != 0;
+
+        if (!explicitReverse) keys |= NavKey.W;
+        bool normalSprint = !isKet && !explicitReverse;
+        if (normalSprint) keys |= NavKey.W | NavKey.Shift;
+
+        if (normalSprint && !_input.IsHeld(NavKey.Shift))
+        {
+            _input.SendKeyEvent(NavKey.Shift, up: false);
+            _input.MarkHeld(NavKey.Shift);
+        }
+
+        if ((keys & NavKey.W) != 0 && !_input.IsHeld(NavKey.W))
+        {
+            _input.DoublePressWStart(NavTuning.RamStartWGapMs, NavTuning.RamStartWSoftRearmS, NavTuning.RamStartWFirstHoldMs);
+            Emit($"[W×2 + SHIFT] bắt đầu chạy, trạng thái {state}");
+        }
+
+        _input.Apply(keys);
+
+        if (normalSprint && (keys & NavKey.Shift) != 0)
+        {
+            double interval = Math.Max(0.20, NavTuning.NormalMoveShiftKeepaliveS);
+            if (now >= _lastShiftKeepaliveT + interval)
+            {
+                _input.SendKeyEvent(NavKey.Shift, up: false);
+                _lastShiftKeepaliveT = now;
+            }
+        }
+        else _lastShiftKeepaliveT = now;
+
+        return keys;
+    }
+
+    // ================================================================ prompt -> E -> cho bang
+
+    private bool PromptStable(bool visible)
+    {
+        if (visible) { _promptStreak++; _promptAbsentStreak = 0; }
+        else
+        {
+            _promptStreak = 0;
+            _promptAbsentStreak++;
+            if (_promptAbsentStreak >= NavTuning.SimplePromptRearmAbsentFrames) _promptConsumed = false;
+        }
+        return visible && _promptStreak >= NavTuning.SimplePromptStableFrames;
+    }
+
+    private void ReleaseETick(double now)
+    {
+        if (_eDown && now >= _eUpAt)
+        {
+            _input.SendKeyEvent(NavKey.E, up: true);
+            _eDown = false;
+            _eUpAt = 0;
+        }
+    }
+
+    private bool PressEOnce(double now, string reason)
+    {
+        if (reason == "E_TUONG_TAC" && now < _recentBoardExitUntil)
+        {
+            Emit($"[CHẶN E] vừa thoát bảng {(_recentBoardExitUntil - now):F1}s trước — E thường bị cấm");
+            return false;
+        }
+        if (_eDown) return false;
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        _input.SendKeyEvent(NavKey.E, up: false);
+        _promptConsumed = true;
+        _eDown = true;
+        _eUpAt = now + NavTuning.SimpleEHoldS;
+        Emit($"[E MỘT LẦN] {reason}");
         return true;
     }
 
-    /// <summary>Góc lệch né còn lại, suy giảm tuyến tính về 0. Dương = lệch sang phải.</summary>
-    private double DetourBias(long now)
+    private void HoldEnter(string reason)
     {
-        if (_detourUntil <= now || _nav.DetourBiasMs <= 0) return 0;
-
-        double k = (_detourUntil - now) / (double)_nav.DetourBiasMs;
-        return _nav.DetourBiasDeg * Math.Clamp(k, 0, 1) * (_detourSide ? +1 : -1);
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        Emit($"[GIỮ] {reason}");
     }
 
-    /// <summary>
-    /// "Đã thấy vòng tròn vàng dưới đất chưa" — mốc để chuyển từ CHẠY sang ĐI BỘ.
-    ///
-    /// Tách ra thành hàm THUẦN và static để <c>--verify-nav</c> chấm được cả bảng quyết định mà
-    /// không cần dựng khung hình nào. Vòng lái là vòng kín: mỗi lần chỉnh ngưỡng ở đây mà phải vào
-    /// game mới biết đúng sai thì rất đắt.
-    /// </summary>
-    internal static bool NearRing(NavSettings nav, double seenAreaRef, bool dotFound, double distRef) =>
-        seenAreaRef >= nav.WalkMarkerAreaRef || (dotFound && distRef <= nav.WalkMinDistRef);
-
-    /// <summary>
-    /// Có được phép chạy không. Cũng thuần, cùng lý do trên.
-    /// </summary>
-    internal static bool ShouldSprint(NavSettings nav, double steerDeg, double bias,
-                                      double seenAreaRef, bool dotFound, double distRef)
+    private bool BeginPostEWait(double now, string source)
     {
-        bool aligned = Math.Abs(steerDeg) <= nav.TurnOnlyDeg;
-        return aligned
-               && bias == 0
-               && Math.Abs(steerDeg) <= nav.SprintMaxDeg
-               && !NearRing(nav, seenAreaRef, dotFound, distRef);
+        _cameraPhase = null;
+        _simplePhase = "POST_WAIT10";
+        _wait10Until = now + NavTuning.SimplePostEWaitS;
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        Emit($"[SAU E] {source} → chờ {NavTuning.SimplePostEWaitS:F0}s, không E");
+        return true;
     }
 
-    /// <summary>
-    /// Vì sao đang đi bộ chứ không chạy. Chỉ để log — nhưng là dòng log quan trọng nhất khi cần
-    /// biết bot có tắt chạy quá sớm không, đúng thứ đã phải mò bằng tay từ log 25/08.
-    /// </summary>
-    private string WhyWalk(MarkerFix marker, DotFix dot)
+    private void ResumeWorld(double now, string reason)
     {
-        if (marker.SeenAreaRef >= _nav.WalkMarkerAreaRef) return $"thấy vòng dt={marker.SeenAreaRef:F0}";
-        if (dot.Found && dot.DistRef <= _nav.WalkMinDistRef) return $"sát đích xa={dot.DistRef:F0}";
-        return "lệch quá";
-    }
-
-    private static string SideName(bool right) => right ? "PHẢI" : "TRÁI";
-
-    private static string PromptText(PromptHit p) =>
-        p is null || p.Rows.Count == 0 ? "prompt=?" : $"prompt={p.Score:F2}";
-
-    /// <summary>Giữa hai lượt: nhả phím, lùi một chút, chuẩn hoá lại góc nhìn.</summary>
-    private void Recover(CancellationToken ct)
-    {
-        ReleaseAll();
-        Hold(w: false, a: false, d: false, s: true, shift: false);
-        Sleep(ct, _nav.BackupMs);
-        ReleaseAll();
-        NormalizePitch(ct);
-    }
-
-    // ================================================================ camera
-
-    /// <summary>
-    /// Dí camera xuống hết chốt rồi ngẩng lên một lượng cố định.
-    ///
-    /// Pitch trong GTA có chốt cứng hai đầu, nên "dí quá tay" là vô hại và cho ra một mốc BIẾT
-    /// TRƯỚC. Nhờ vậy không phải bắt người dùng tự canh góc camera như bản Python.
-    /// </summary>
-    private void NormalizePitch(CancellationToken ct)
-    {
-        Emit("chuẩn hoá góc nhìn: dí xuống hết chốt rồi ngẩng lên");
-        Nudge(ct, 0, +1, _nav.PitchDownCounts);
-        Nudge(ct, 0, -1, _nav.PitchUpCounts);
-    }
-
-    private void Nudge(CancellationToken ct, int dirX, int dirY, int total)
-    {
-        int step = _nav.PitchStepCounts;
-        for (int done = 0; done < total; done += step)
+        _simplePhase = "WORLD";
+        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
+        bool finalExit = reason is "BOARD_CLOSED_NO_E" or "POST_E_GONE";
+        if (finalExit)
         {
-            ct.ThrowIfCancellationRequested();
-            int n = Math.Min(step, total - done);
-            InputSender.MoveRelative(dirX * n, dirY * n);
-            Sleep(ct, 12);
-        }
-    }
-
-    /// <summary>
-    /// Đo "bao nhiêu count chuột được một độ" bằng chính chấm vàng: xoay một lượng đã biết rồi xem
-    /// góc chấm đổi bao nhiêu.
-    ///
-    /// Phép này trả lời luôn câu hỏi mà ảnh tĩnh không trả lời được — minimap xoay theo CAMERA hay
-    /// theo NHÂN VẬT. Đổi góc rõ ràng nghĩa là theo camera, lái thẳng theo góc chấm được. Không
-    /// đổi thì rơi về tỉ lệ dự phòng và để <see cref="TrackWrongWay"/> tự sửa dấu bằng quan sát.
-    /// </summary>
-    private void CalibrateYaw(CancellationToken ct)
-    {
-        // Thu lai duoc vai lan (cham co the vua bi che), nhung khong thu mai: moi lan la mot lan
-        // dung khung giua duong.
-        if (++_calibTries >= 3)
-        {
-            _calibrated = true;
-            _countsPerDeg = _nav.FallbackCountsPerDeg;
-            Emit("hiệu chuẩn thất bại 3 lần — dùng tỉ lệ dự phòng");
-        }
-
-        Hold(w: false, a: false, d: false, s: false, shift: false);
-        Sleep(ct, 80);
-
-        var a = _mini.Read(Now);
-        if (!a.Found) return;
-
-        InputSender.MoveRelative(_nav.CalibrateCounts, 0);
-        Sleep(ct, _nav.CalibrateSettleMs);
-
-        var b = _mini.Read(Now);
-        if (!b.Found) return;
-
-        _calibrated = true;
-
-        double delta = Wrap(b.BearingDeg - a.BearingDeg);
-        if (Math.Abs(delta) < _nav.CalibrateMinDeltaDeg)
-        {
-            _countsPerDeg = _nav.FallbackCountsPerDeg;
-            _yawSign = 1;
-            Emit($"hiệu chuẩn: xoay {_nav.CalibrateCounts} count mà góc chấm chỉ đổi {delta:F1}° → " +
-                 "minimap KHÔNG theo camera, dùng tỉ lệ dự phòng và tự sửa dấu khi chạy");
+            ArmRestartWatch(now, "SIMPLE_" + reason);
+            AutorunResetTimer(now);
+            StartCameraReset(now, reason);
+            Emit($"[HẬU MINIGAME] {reason} → nhìn xuống đất → ngẩng lên → tìm lại điểm vàng → W");
             return;
         }
-
-        // Xoay phai (+count) ma goc chấm GIAM nghia la ban than goc do da tinh nguoc — dau am.
-        _yawSign = delta < 0 ? +1 : -1;
-        _countsPerDeg = Math.Clamp(Math.Abs(_nav.CalibrateCounts / delta), 0.2, 60.0);
-        Emit($"hiệu chuẩn: {_nav.CalibrateCounts} count → {delta:F1}° " +
-             $"(={_countsPerDeg:F2} count/độ, dấu {_yawSign:+#;-#}), minimap XOAY THEO CAMERA");
+        _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
+        _input.DoublePressWStart(NavTuning.InputWPostMinigameTakeoverGapMs, NavTuning.InputWPostMinigameSoftRearmS);
+        AutorunResetTimer(now);
+        Emit($"[VỀ WORLD] {reason} → lấy lại W, không reset camera");
     }
 
-    /// <summary>Số count cần bắn để bù <paramref name="errDeg"/>, đã kẹp và có vùng chết.</summary>
-    private int YawCountsFor(double errDeg)
+    /// <summary><c>_simple_flow_step</c> ánh xạ sang C#: bảng mở = <see cref="PanelVisible"/> → tới nơi.</summary>
+    private bool SimpleFlowStep(double now, bool focused, WorldSnapshot snap, out bool arrived)
     {
-        if (Math.Abs(errDeg) <= _nav.YawDeadzoneDeg) return 0;
+        arrived = false;
+        ReleaseETick(now);
+        string phase = _simplePhase;
 
-        double cpd = _countsPerDeg > 0 ? _countsPerDeg : _nav.FallbackCountsPerDeg;
-        double want = errDeg * cpd * _nav.YawKp * _yawSign;
-        int counts = (int)Math.Round(Math.Clamp(want, -_nav.YawMaxCounts, _nav.YawMaxCounts));
-
-        // Duoi 1 count thi SendInput lam tron ve 0 va bot dung nhin mai — day len 1.
-        if (counts == 0) counts = want > 0 ? 1 : -1;
-        return counts;
-    }
-
-    /// <summary>
-    /// Lưới an toàn cho DẤU xoay: nếu sai số cứ to lên sau mỗi lần bù thì dấu đang ngược — đảo.
-    /// Rẻ hơn nhiều so với việc bắt người dùng khai báo <c>invert_mouse_x</c> như bản Python.
-    /// </summary>
-    private void TrackWrongWay(double errDeg, string source)
-    {
-        // Doi tin hieu (cham minimap -> moc 3D) la doi ca don vi lan goc quy chieu, nen sai so
-        // nhay mot buoc ma khong phai vi lai sai. Bat dau dem lai tu dau.
-        if (source != _lastSource) { _lastSource = source; _wrongWayStreak = 0; _lastAbsErr = 0; return; }
-
-        double abs = Math.Abs(errDeg);
-        if (abs <= _nav.YawDeadzoneDeg) { _wrongWayStreak = 0; _lastAbsErr = abs; return; }
-
-        if (_lastAbsErr > 0 && abs > _lastAbsErr + 1.0) _wrongWayStreak++;
-        else if (abs < _lastAbsErr) _wrongWayStreak = 0;
-
-        _lastAbsErr = abs;
-
-        if (_wrongWayStreak < 6) return;
-
-        _yawSign = -_yawSign;
-        _wrongWayStreak = 0;
-        Emit($"sai số cứ to lên — đảo dấu xoay thành {_yawSign:+#;-#}");
-    }
-
-    private double _lastAbsErr;
-    private string _lastSource = "";
-
-    private void Yaw(int counts)
-    {
-        if (counts == 0) return;
-        InputSender.MoveRelative(counts, 0);
-        _yawSinceHeavy += counts;
-    }
-
-    /// <summary>
-    /// Đổi lệch ngang trên màn ra độ. Nửa màn ứng với <see cref="NavSettings.HalfFovDeg"/> —
-    /// xấp xỉ tuyến tính, đủ dùng vì đây là vòng kín: sai một chút thì vòng sau bù nốt.
-    /// </summary>
-    private double PixelToDeg(double px) => px / Math.Max(1.0, _p.Width / 2.0) * _nav.HalfFovDeg;
-
-    // ================================================================ phim
-
-    private void Hold(bool w, bool a, bool d, bool s, bool shift)
-    {
-        Set(ref _wDown, w, VK_W);
-        Set(ref _aDown, a, VK_A);
-        Set(ref _dDown, d, VK_D);
-        Set(ref _sDown, s, VK_S);
-
-        if (shift != _shiftDown)
+        if (phase == "WAIT_BOARD")
         {
-            if (shift) InputSender.ShiftDown(); else InputSender.ShiftUp();
-            _shiftDown = shift;
-        }
-    }
-
-    private static void Set(ref bool state, bool want, ushort vk)
-    {
-        if (state == want) return;
-        if (want) InputSender.KeyDown(vk); else InputSender.KeyUp(vk);
-        state = want;
-    }
-
-    private void ReleaseAll()
-    {
-        Hold(w: false, a: false, d: false, s: false, shift: false);
-        HeldKeys.ReleaseAll();
-        _wDown = _aDown = _dDown = _sDown = _shiftDown = false;
-    }
-
-    // ================================================================ vat
-
-    private static long Now => Environment.TickCount64;
-
-    private bool GameForeground()
-    {
-        if (string.IsNullOrWhiteSpace(_cfg.WindowMatch)) return true;
-        return Native.ForegroundTitle().Contains(_cfg.WindowMatch, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private void WaitWindow(CancellationToken ct)
-    {
-        while (!GameForeground())
-        {
-            if (!_windowWarned)
+            if (focused && now - _lastPanelPoll >= 0.125)
             {
-                Emit($"tạm dừng: chưa focus “{_cfg.WindowMatch}” (đang focus: “{Native.ForegroundTitle()}”)");
-                _windowWarned = true;
+                _lastPanelPoll = now;
+                if (PanelVisible?.Invoke() == true)
+                {
+                    ReleaseETick(double.MaxValue);
+                    _input.ReleaseOwnedOnce();
+                    Emit("[MINIGAME MỞ] giao cho bộ giải");
+                    arrived = true;
+                    return true;
+                }
             }
-            Sleep(ct, 250);
+            if (now < _waitBoardUntil) return true;
+            ResumeWorld(now, "ONE_E_NO_BOARD");
+            return false;
         }
 
-        if (_windowWarned)
+        if (phase == "CLOSE_SETTLE")
         {
-            Emit("game đã focus lại — chạy tiếp");
-            _windowWarned = false;
+            if (now < _closeUntil) return true;
+            _simplePhase = "POST_CHECK";
+            _postCheckUntil = now + NavTuning.SimplePostCheckS;
+            _promptStreak = 0;
+            return true;
         }
+
+        if (phase == "POST_CHECK")
+        {
+            if (!_promptConsumed && PromptStable(snap.PromptVisible)) return BeginPostEWait(now, "POST_CHECK_E");
+            if (now < _postCheckUntil) return true;
+            ResumeWorld(now, "BOARD_CLOSED_NO_E");
+            return false;
+        }
+
+        if (phase == "POST_WAIT10")
+        {
+            if (now < _wait10Until) return true;
+            if (PromptStable(snap.PromptVisible))
+            {
+                if (PressEOnce(now, "POST_MINIGAME_10S"))
+                {
+                    _recentBoardExitUntil = 0;
+                    _simplePhase = "WAIT_BOARD";
+                    _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
+                }
+                return true;
+            }
+            _recentBoardExitUntil = 0;
+            ResumeWorld(now, "POST_E_GONE");
+            return false;
+        }
+
+        _simplePhase = "WORLD";
+        if (!focused) return false;
+
+        // Khien bo E cua NPC sau khi xin viec: prompt hien thi khong bam, van di tiep.
+        if (_postJobIgnoreNpcE)
+        {
+            if (snap.PromptVisible)
+            {
+                _postJobSeen = true;
+                _postJobAbsentFrames = 0;
+                _promptConsumed = true;
+                _promptStreak = _promptAbsentStreak = 0;
+                if (now - _postJobLastLog >= 1.0)
+                {
+                    _postJobLastLog = now;
+                    Emit("[KHIÊN E NPC] prompt NPC còn hiện → bỏ qua, đi tiếp về điểm vàng");
+                }
+                return false;
+            }
+            _postJobAbsentFrames++;
+            double elapsed = now - _postJobStarted;
+            int clearFrames = Math.Max(2, NavTuning.JobPostRehirePromptClearFrames);
+            bool clearAfterSeen = _postJobSeen && elapsed >= NavTuning.JobPostRehireMinGuardS && _postJobAbsentFrames >= clearFrames;
+            bool clearWithoutSeen = !_postJobSeen && elapsed >= NavTuning.JobPostRehireNoPromptTimeoutS && _postJobAbsentFrames >= clearFrames;
+            if (clearAfterSeen || clearWithoutSeen)
+            {
+                _postJobIgnoreNpcE = false;
+                _postJobStarted = 0;
+                _postJobSeen = false;
+                _postJobAbsentFrames = 0;
+                _promptConsumed = false;
+                _promptStreak = _promptAbsentStreak = 0;
+                Emit("[KHIÊN E NPC GỠ] prompt NPC đã mất → E sẵn sàng cho điểm vàng");
+            }
+            else return false;
+        }
+
+        if (!PromptStable(snap.PromptVisible)) return false;
+        if (_promptConsumed) return false;
+
+        if (now < _recentBoardExitUntil)
+        {
+            HoldEnter("E MUỘN SAU BẢNG");
+            return BeginPostEWait(now, "LATE_WORLD_E_AFTER_BOARD");
+        }
+
+        HoldEnter("PROMPT E");
+        if (PressEOnce(now, "E_TUONG_TAC"))
+        {
+            _simplePhase = "WAIT_BOARD";
+            _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
+            _lastPanelPoll = 0;
+        }
+        return true;
     }
 
-    private void Trace(ref long last, long now, string line)
+    private void OnJobFinished()
     {
-        if (now - last < _nav.LogEveryMs) return;
-        last = now;
-        Emit(line);
+        _postJobIgnoreNpcE = true;
+        _postJobStarted = NavClock.Now;
+        _postJobSeen = false;
+        _postJobAbsentFrames = 0;
+        _postJobLastLog = 0;
+        _promptConsumed = true;
+        _promptStreak = _promptAbsentStreak = 0;
+        Emit("[KHIÊN E NPC] xin việc xong → bỏ prompt NPC, đi về điểm vàng");
     }
 
-    private static double Wrap(double deg)
+    // ================================================================ reset camera + W reclaim
+
+    private void StartCameraReset(double now, string reason)
     {
-        while (deg > 180) deg -= 360;
-        while (deg < -180) deg += 360;
-        return deg;
+        _input.ReleaseAll();
+        _cameraPhase = "SETTLE";
+        _cameraPhaseStart = now;
+        _cameraReason = reason;
+        _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
+        _watchdog.Reset();
+        _ctl.ResetTransient();
+        _capture.ResetWorld();
+        Emit($"[RESET CAMERA] bắt đầu ({reason})");
     }
 
-    private static void Sleep(CancellationToken ct, int ms)
+    /// <summary><c>_camera_reset_step</c>: SETTLE → DOWN (3300 cps, 780 ms) → GROUND_HOLD → UP (1950 cps, 525 ms) → FINAL. Nhả hết phím mỗi khung.</summary>
+    private bool CameraResetStep(double now)
     {
-        if (ms <= 0) return;
-        if (ct.WaitHandle.WaitOne(ms)) throw new OperationCanceledException();
+        string phase = _cameraPhase;
+        if (phase is null) return false;
+        double elapsed = now - _cameraPhaseStart;
+        _input.ReleaseAll();
+
+        switch (phase)
+        {
+            case "SETTLE":
+                if (elapsed >= NavTuning.CameraResetSettleS) { _cameraPhase = "DOWN_TO_GROUND"; _cameraPhaseStart = now; }
+                return true;
+            case "DOWN_TO_GROUND":
+                if (elapsed >= NavTuning.CameraResetDownS)
+                {
+                    _cameraPhase = "GROUND_HOLD"; _cameraPhaseStart = now;
+                    _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
+                    _input.ReleaseAll();
+                    return true;
+                }
+                _input.SetMouseYRate(NavTuning.CameraResetDownRateCps);
+                return true;
+            case "GROUND_HOLD":
+                if (elapsed >= NavTuning.CameraResetGroundHoldS)
+                {
+                    _cameraPhase = "UP_TO_NORMAL"; _cameraPhaseStart = now;
+                    _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
+                }
+                return true;
+            case "UP_TO_NORMAL":
+                if (elapsed >= NavTuning.CameraResetUpS)
+                {
+                    _cameraPhase = "FINAL_SETTLE"; _cameraPhaseStart = now;
+                    _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
+                    _input.ReleaseAll();
+                    return true;
+                }
+                _input.SetMouseYRate(-NavTuning.CameraResetUpRateCps);
+                return true;
+            case "FINAL_SETTLE":
+                if (elapsed < NavTuning.CameraResetFinalSettleS) return true;
+                _cameraPhase = null;
+                _tracker.Reset();
+                _watchdog.Reset();
+                _ctl.ResetTransient();
+                _capture.ResetWorld();
+                _input.ReleaseAll();
+                ScheduleWReclaim(now);
+                AutorunResetTimer(now);
+                Emit("[RESET CAMERA XONG] → lấy lại W → chạy tiếp");
+                return false;
+        }
+
+        _cameraPhase = null;
+        _input.ReleaseAll();
+        _input.DoublePressWStart(NavTuning.InputWPostMinigameTakeoverGapMs, NavTuning.InputWPostMinigameSoftRearmS);
+        AutorunResetTimer(now);
+        return false;
     }
 
-    private void Emit(string line) => Log?.Invoke(line);
+    private void ScheduleWReclaim(double now)
+    {
+        _input.ForceKeyUp(NavKey.W, 2);
+        _wReclaimPending = true;
+        _wReclaimStage = 0;
+        _wReclaimAt = now + Math.Max(0.12, NavTuning.PostMiniWReclaimDelayS);
+        _wReclaimConfirmAt = 0;
+    }
 
     /// <summary>
-    /// "Đất có trôi không" — sai phân khung trên hai dải hai bên bóng nhân vật.
-    ///
-    /// Vì sao hai dải hai bên chứ không một dải giữa: nhân vật đứng chính giữa, và bóng của nhân
-    /// vật cũng nhúc nhích theo, nên dải giữa báo có chuyển động cả khi đang đứng im húc tường.
+    /// <c>_post_mini_w_reclaim_step</c>: giữ W sạch 260 ms, rồi hai cạnh UP→DOWN thật cách nhau 520 ms để
+    /// FiveM trả quyền W cho gameplay sau NUI. Bản Python còn chờ file bắt tay với bộ giải Water ở tiến
+    /// trình khác — ở đây BoardBot/WireBot cùng tiến trình đã nhả phím trước khi bot này khởi động.
     /// </summary>
-    private sealed class GroundFlow : IDisposable
+    private bool WReclaimStep(double now, bool focused)
     {
-        private readonly NavSettings _nav;
-        private readonly RegionReader _left, _right;
-        private byte[] _prevL, _prevR, _curL, _curR;
-        private bool _has;
+        if (!_wReclaimPending) return false;
+        if (!focused) { _input.ForceKeyUp(NavKey.W, 1); return true; }
 
-        public GroundFlow(Screen screen, ElectricProfile p, NavSettings nav)
+        if (_wReclaimStage == 0)
         {
-            _nav = nav;
-
-            int y0 = (int)(p.Height * nav.GroundBandTopFrac);
-            int y1 = (int)(p.Height * nav.GroundBandBottomFrac);
-            int bw = (int)(p.Width * nav.GroundBandWidthFrac);
-            int bh = Math.Max(8, y1 - y0);
-
-            var l = new FishingRect { X = 0, Y = y0, W = bw, H = bh };
-            var r = new FishingRect { X = p.Width - bw, Y = y0, W = bw, H = bh };
-
-            _left = new RegionReader(FishingConfig.ToAbsolute(screen, l));
-            _right = new RegionReader(FishingConfig.ToAbsolute(screen, r));
+            if (now < _wReclaimAt) { _input.ForceKeyUp(NavKey.W, 1); return true; }
+            _input.ForceWTakeoverOnce(NavTuning.PostMiniWReclaimGapMs, NavTuning.InputWPostMinigameSoftRearmS);
+            _wReclaimStage = 1;
+            _wReclaimConfirmAt = now + Math.Max(0.20, NavTuning.PostMiniWReclaimConfirmS);
+            Emit("[LẤY LẠI W] cạnh #1");
+            return true;
         }
-
-        public void Reset() => _has = false;
-
-        /// <summary>Sai khác trung bình mỗi pixel so với lần gọi trước; −1 nếu chưa có khung trước.</summary>
-        public double Sample(long nowMs)
+        if (_wReclaimStage == 1)
         {
-            _left.Refresh();
-            _right.Refresh();
-            _curL = _left.GrayBuffer(_left.Region, _curL);
-            _curR = _right.GrayBuffer(_right.Region, _curR);
+            if (now < _wReclaimConfirmAt) return true;
+            _input.ForceWTakeoverOnce(NavTuning.PostMiniWReclaimConfirmGapMs, NavTuning.InputWPostMinigameSoftRearmS);
+            _wReclaimPending = false;
+            _wReclaimStage = 0;
+            Emit("[LẤY LẠI W] cạnh #2 → điều hướng tiếp");
+            return false;
+        }
+        _wReclaimPending = false;
+        return false;
+    }
 
-            if (!_has || _prevL is null || _prevL.Length != _curL.Length)
+    // ================================================================ watchdog 30 s khong tien
+
+    private void AutorunResetTimer(double now)
+    {
+        _wdLastProgressT = now;
+        _wdBestDist = null;
+        _wdAnchorWorld = null;
+    }
+
+    private void AutorunRestart(double now, string reason)
+    {
+        _wdRestartCount++;
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        _cameraPhase = null;
+        _simplePhase = "WORLD";
+        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
+        _tracker.Reset();
+        _watchdog.Reset();
+        _ctl.ResetTransient();
+        _ctl.ResetSearch360();
+        _ctl.ResetSmoothMouse();
+        _capture.ResetWorld();
+        _capture.Obstacle.Clear();
+        _input.DoublePressWStart(NavTuning.TransitionWTakeoverGapMs, NavTuning.AutorunWatchdogWRearmS);
+        _input.Apply(NavKey.W);
+        AutorunResetTimer(now);
+        Emit($"[WATCHDOG 30s] #{_wdRestartCount} {reason} → khởi động lại mềm, lấy lại W");
+    }
+
+    /// <summary><c>_autorun_idle_watchdog_step</c>: tiến = bán kính tới đích NHỎ HƠN mốc tốt nhất ≥ 1.4 px, hoặc marker world lớn lên rõ.</summary>
+    private bool AutorunWatchdogStep(double now, bool focused, double dist, TargetOutput target, WorldMarker world)
+    {
+        if (!focused) { AutorunResetTimer(now); return false; }
+        bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null;
+        if (intentionalBlock) { AutorunResetTimer(now); return false; }
+
+        bool progress = false;
+        if (target.HasPos && target.Confidence >= NavTuning.AutorunWatchdogTargetConfMin && double.IsFinite(dist))
+        {
+            double improve = NavTuning.AutorunWatchdogDistProgressPx * _s.Px;
+            if (_wdBestDist is null) { _wdBestDist = dist; _wdLastProgressT = now; }
+            else if (_wdBestDist.Value - dist >= improve) { progress = true; _wdBestDist = dist; }
+        }
+        if (world.Present && world.Confidence >= NavTuning.AutorunWatchdogWorldConfMin && world.Area >= NavTuning.AutorunWatchdogWorldAreaMin)
+        {
+            var sig = (world.Area, world.Height, world.Y ?? 0.0);
+            if (_wdAnchorWorld is null) { _wdAnchorWorld = sig; _wdLastProgressT = now; }
+            else
             {
-                _prevL = (byte[])_curL.Clone();
-                _prevR = (byte[])_curR.Clone();
-                _has = true;
-                return -1;
+                var (a0, h0, y0) = _wdAnchorWorld.Value;
+                double areaGain = (sig.Area - a0) / Math.Max(1.0, Math.Abs(a0));
+                double hGain = sig.Height - h0;
+                double yGain = sig.Item3 - y0;
+                bool approach = areaGain >= NavTuning.AutorunWatchdogWorldAreaRatio
+                                && hGain >= NavTuning.AutorunWatchdogWorldHeightPx
+                                && yGain >= NavTuning.AutorunWatchdogWorldYPx * _s.Px;
+                if (approach) { progress = true; _wdAnchorWorld = sig; }
             }
-
-            double flow = (Diff(_prevL, _curL) + Diff(_prevR, _curR)) / 2.0;
-
-            // Chup rieng ban sao: giu chinh _curL lam khung truoc thi lan sau GrayBuffer ghi de len
-            // no va phep so luon ra 0 — dung canh bao o IPixelSource.BgrBuffer(into).
-            Array.Copy(_curL, _prevL, _curL.Length);
-            Array.Copy(_curR, _prevR, _curR.Length);
-            return flow;
         }
+        if (progress) { _wdLastProgressT = now; return false; }
 
-        private static double Diff(byte[] a, byte[] b)
+        double idle = now - _wdLastProgressT;
+        if (idle >= NavTuning.AutorunIdleWatchdogS)
         {
-            long sum = 0;
-            for (int i = 0; i < a.Length; i++) sum += Math.Abs(a[i] - b[i]);
-            return (double)sum / a.Length;
+            AutorunRestart(now, $"KHÔNG TIẾN {idle:F1}s");
+            return true;
+        }
+        return false;
+    }
+
+    // ================================================================ watch 30 s sau minigame
+
+    private void ArmRestartWatch(double now, string reason)
+    {
+        _watchCount = 0;
+        _backoutActive = false;
+        _backoutUntil = 0;
+        _watchActive = true;
+        _watchStarted = now;
+        _watchPending = false;
+        Emit($"[WATCH 30s] arm sau {reason}: minigame kế phải mở trong {NavTuning.PostMinigameRestartTimeoutS:F0}s");
+    }
+
+    private void RestartPrepareCore(double now)
+    {
+        _job.ResetBlind();
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        _watchdog.Reset();
+        _ctl.ResetTransient();
+        _tracker.Reset();
+        _capture.ResetWorld();
+        _promptStreak = _promptAbsentStreak = 0;
+        _promptConsumed = false;
+    }
+
+    /// <summary><c>_post_mini_restart_watch_step</c>: 30 s không có minigame mới → reset camera + W; từ lần thứ 3 giữ S 2 s trước.</summary>
+    private bool RestartWatchStep(double now, bool focused)
+    {
+        if (!_watchActive) return false;
+        if (!focused)
+        {
+            if (_backoutActive) { _input.ReleaseOwnedOnce(); _input.StopMouseStream(immediate: true); }
+            return false;
         }
 
-        public void Dispose()
+        if (_backoutActive)
         {
-            _left?.Dispose();
-            _right?.Dispose();
+            if (now < _backoutUntil)
+            {
+                _input.StopMouseStream(immediate: true);
+                _input.Apply(NavKey.S);
+                return true;
+            }
+            _input.ReleaseOwnedOnce();
+            _input.StopMouseStream(immediate: true);
+            _backoutActive = false;
+            _backoutUntil = 0;
+            RestartPrepareCore(now);
+            Emit("[WATCH 30s NẶNG] lùi S xong → reset camera → W → chạy");
+            StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
+            return true;
         }
+
+        double timeout = Math.Max(10.0, NavTuning.PostMinigameRestartTimeoutS);
+        double elapsed = now - _watchStarted;
+        if (elapsed < timeout && !_watchPending) return false;
+
+        bool unsafeNow = _simplePhase != "WORLD" || _cameraPhase is not null || _job.Phase is not null;
+        if (unsafeNow)
+        {
+            if (!_watchPending)
+            {
+                _watchPending = true;
+                Emit($"[WATCH 30s] {elapsed:F1}s trôi qua; chờ WORLD rảnh rồi khởi động lại");
+            }
+            return false;
+        }
+        _watchPending = false;
+
+        bool severe = _watchCount >= Math.Max(2, NavTuning.PostMinigameRestartSevereAfterFailedRestarts);
+        _watchCount++;
+        _watchStarted = now;
+
+        if (severe)
+        {
+            double back = Math.Max(0.5, NavTuning.PostMinigameRestartSevereBackoutS);
+            RestartPrepareCore(now);
+            _cameraPhase = null;
+            _backoutActive = true;
+            _backoutUntil = now + back;
+            _input.Apply(NavKey.S);
+            Emit($"[WATCH 30s NẶNG] hai lần khởi động lại thất bại; chu kỳ #{_watchCount}: lùi S {back:F1}s → reset camera → W");
+            return true;
+        }
+
+        RestartPrepareCore(now);
+        Emit($"[WATCH 30s] {elapsed:F1}s không có minigame mới → chu kỳ #{_watchCount}: reset camera → W → chạy");
+        StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
+        return true;
     }
 }
