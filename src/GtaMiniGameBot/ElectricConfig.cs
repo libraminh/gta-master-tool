@@ -528,6 +528,11 @@ internal sealed class ElectricConfig
     /// </summary>
     public NavSettings Nav { get; set; } = new();
 
+    /// <summary>
+    /// Tự ăn bánh / uống nước khi đồng hồ HUD tụt dưới ngưỡng. Xem <see cref="SurvivalSettings"/>.
+    /// </summary>
+    public SurvivalSettings Survival { get; set; } = new();
+
     /// <summary>Tự đi tới điểm vàng rồi bấm E, thay vì chờ người chơi tự mở minigame.</summary>
     public bool AutoWalk { get; set; }
 
@@ -554,9 +559,11 @@ internal sealed class ElectricConfig
         Wire ??= new WireSettings();
         Board ??= new BoardSettings();
         Nav ??= new NavSettings();
+        Survival ??= new SurvivalSettings();
         Wire.Normalize();
         Board.Normalize();
         Nav.Normalize();
+        Survival.Normalize();
 
         if (!Enum.IsDefined(Mode)) Mode = ElectricMode.Both;
         if (string.IsNullOrWhiteSpace(WindowMatch)) WindowMatch = "PlayXGTA";

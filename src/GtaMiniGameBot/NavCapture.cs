@@ -40,6 +40,9 @@ internal sealed class NavCapture : IDisposable
     private readonly Rectangle _worldRel;
     private readonly object _frameLock = new();
 
+    private readonly RegionReader _surv;
+    private readonly Rectangle _survRel;
+
     private Thread _thread;
     private volatile bool _stop;
     private volatile bool _resetWorldRequested;
@@ -74,6 +77,11 @@ internal sealed class NavCapture : IDisposable
         _worldRel = s.RoiRef(w[0], w[1], w[2], w[3]);
         if (_worldRel.IsEmpty) throw new InvalidOperationException("không suy được vùng world");
         _world = new RegionReader(Abs(_worldRel));
+
+        var v = NavTuning.SurvivalRoiRef;
+        _survRel = s.RoiRef(v[0], v[1], v[2], v[3]);
+        if (_survRel.IsEmpty) throw new InvalidOperationException("không suy được vùng đồng hồ đói/khát");
+        _surv = new RegionReader(Abs(_survRel));
     }
 
     private Rectangle Abs(Rectangle rel) => new(_screen.Bounds.X + rel.X, _screen.Bounds.Y + rel.Y, rel.Width, rel.Height);
@@ -86,6 +94,21 @@ internal sealed class NavCapture : IDisposable
         {
             Bgra = _mini.Raw, Stride = _mini.Stride, Width = _miniRel.Width, Height = _miniRel.Height,
             OriginX = _miniRel.X, OriginY = _miniRel.Y, T = now
+        };
+    }
+
+    /// <summary>
+    /// Chụp vùng hai đồng hồ đói/khát (≈187×100 px ở 2K, dưới 1 ms). Gọi trên luồng chính và CHỈ khi
+    /// <see cref="SurvivalGauge.Due"/> đúng — 0.25 s một lần, không phải mỗi tick 25 ms.
+    /// Khung trả về bọc thẳng đệm của reader, chỉ hợp lệ tới lần chụp sau, giống <see cref="GrabMinimap"/>.
+    /// </summary>
+    public NavFrame GrabSurvival(double now)
+    {
+        _surv.Refresh();
+        return new NavFrame
+        {
+            Bgra = _surv.Raw, Stride = _surv.Stride, Width = _survRel.Width, Height = _survRel.Height,
+            OriginX = _survRel.X, OriginY = _survRel.Y, T = now
         };
     }
 
@@ -157,5 +180,6 @@ internal sealed class NavCapture : IDisposable
         StopScanner();
         _mini.Dispose();
         _world.Dispose();
+        _surv.Dispose();
     }
 }

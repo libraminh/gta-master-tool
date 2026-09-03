@@ -26,6 +26,14 @@ internal sealed class ElectricBot
     private BoardBot _board;
     private NavBot _navBot;
 
+    /// <summary>
+    /// Cấu hình Discord (webhook, ID để ping) nằm trong <see cref="FishingConfig"/> vì job Câu cá
+    /// dùng trước — nhưng nó là cấu hình chung của app, không phải của riêng nghề đó. Nạp MỘT LẦN
+    /// mỗi phiên chạy thay vì mỗi chặng đi, và null khi đọc hỏng thì <see cref="DiscordNotifier"/>
+    /// tự im lặng.
+    /// </summary>
+    private FishingConfig _discordCfg;
+
     public ElectricBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
     {
         _cfg = cfg;
@@ -112,6 +120,9 @@ internal sealed class ElectricBot
             }
 
             bool wantNav = _cfg.AutoWalk;
+            if (wantNav && _cfg.Survival.Enabled)
+                try { _discordCfg = FishingConfig.Load(); } catch { _discordCfg = null; }
+
             Emit($"chế độ {TenCheDo(_cfg.Mode)} — " +
                  (wantNav
                      ? $"tự đi tới điểm làm việc, {(_cfg.AutoLoop ? "chạy liên tục" : "dừng sau một lượt")}."
@@ -217,6 +228,8 @@ internal sealed class ElectricBot
             PanelGoneAgoMs = panelGoneMs
         };
         _navBot.Log += Emit;
+        _navBot.Alert += (title, body) =>
+            DiscordNotifier.NotifyAlert(_discordCfg, title, body, m => Emit("Discord: " + m));
         _navBot.Stopped += (r, m) => { reason = r; detail = m; done.Set(); };
         _navBot.Start();
 
