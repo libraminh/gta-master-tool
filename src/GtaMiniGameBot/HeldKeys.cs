@@ -17,6 +17,11 @@ internal static class HeldKeys
     public const ushort VK_E = 0x45;
     public const ushort VK_ESC = 0x1B;
 
+    /// <summary>Số hàng trên: mã phím ảo trùng mã ASCII của ký tự.</summary>
+    public const ushort VK_1 = 0x31;
+
+    public const ushort VK_9 = 0x39;
+
     /// <summary>
     /// An toàn khi gọi nhiều lần và khi chưa giữ gì. Mỗi thứ một try riêng: một cái ném lỗi
     /// không được phép chặn cái sau — đó đúng là ca mình cần nhả nhất.
@@ -31,6 +36,10 @@ internal static class HeldKeys
     ///
     /// E và Esc: bộ điều hướng giữ E đúng 90 ms (một cú down, một cú up ở tick sau) và gõ Esc khi
     /// đóng bảng nghề; dừng bot đúng giữa hai cú đó thì phím còn xuống trong game.
+    ///
+    /// Số 1–9: bộ ăn/uống giữ một phím hotbar đúng 150 ms theo cùng kiểu hai tick đó, và ô nào chứa
+    /// bánh/nước là người dùng đặt trong config nên không đoán trước được phím nào. Nhả cả dãy: kẹt
+    /// một phím số trong game là nhân vật cầm mãi món đồ đó.
     /// </summary>
     public static void ReleaseAll()
     {
@@ -42,6 +51,7 @@ internal static class HeldKeys
         try { InputSender.KeyUp(VK_D); } catch { }
         try { InputSender.KeyUp(VK_E); } catch { }
         try { InputSender.KeyUp(VK_ESC); } catch { }
+        for (ushort vk = VK_1; vk <= VK_9; vk++) { try { InputSender.KeyUp(vk); } catch { } }
         try { InputSender.LeftUp(); } catch { }
     }
 }

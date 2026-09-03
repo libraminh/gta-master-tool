@@ -254,6 +254,20 @@ internal sealed class NavInput : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Gõ một phím KHÔNG có trong <see cref="NavKey"/> (số hotbar khi ăn/uống). Không vào tập giữ:
+    /// <see cref="Apply"/> tính hiệu hai tập mỗi tick, phím nhất thời lọt vào đó sẽ bị nhả ngay ở
+    /// tick sau. Đây đúng cách E được gửi — down một tick, up ở tick sau.
+    /// </summary>
+    public bool SendRawKeyEvent(ushort vk, bool up)
+    {
+        lock (_lock)
+        {
+            if (up) InputSender.KeyUp(vk); else InputSender.KeyDown(vk);
+        }
+        return true;
+    }
+
     /// <summary><c>force_key_up</c>: KEYUP vô điều kiện <paramref name="repeats"/> lần, rồi bỏ khỏi tập giữ.</summary>
     public void ForceKeyUp(NavKey key, int repeats = 1)
     {

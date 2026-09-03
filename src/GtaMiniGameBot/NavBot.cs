@@ -48,6 +48,12 @@ internal sealed class NavBot
     public event Action<string> Log;
     public event Action<NavStopReason, string> Stopped;
 
+    /// <summary>
+    /// Chuyện đáng báo ra ngoài game (tiêu đề, chi tiết) — hiện chỉ có "hết bánh/nước trong túi".
+    /// <see cref="ElectricBot"/> bắt và đẩy sang Discord; giữ kiến thức Discord ngoài bộ điều hướng.
+    /// </summary>
+    public event Action<string, string> Alert;
+
     public NavBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
     {
         _cfg = cfg;
@@ -128,6 +134,19 @@ internal sealed class NavBot
     private int _wReclaimStage;
     private double _wReclaimAt, _wReclaimConfirmAt;
 
+    // an uong
+    private SurvivalGauge _gauge;
+    private bool _survivalActive;
+    private string _survivalPhase;
+    private double _survivalPhaseStart;
+    private readonly Queue<SurvivalItem> _survivalQueue = new();
+    private SurvivalItem _survivalCurrent;
+    private double _survivalFoodBlockUntil, _survivalWaterBlockUntil;
+    private bool _survivalKeyDown;
+    private double _survivalKeyUpAt;
+    private ushort _survivalKeyVk;
+    private double _survivalTickT;
+
     // autorun watchdog
     private double _wdLastProgressT;
     private double? _wdBestDist;
@@ -176,6 +195,7 @@ internal sealed class NavBot
             _job = new JobRecovery(_s, _screen, _input, _ctl, _watchdog, _tracker, _capture, _originX, _originY);
             _job.Log += Emit;
             _job.Finished += OnJobFinished;
+            _gauge = new SurvivalGauge(_cfg.Survival, _s);
 
             Emit($"điều hướng: màn {_s.ScreenW}×{_s.ScreenH}, sx={_s.Sx:F3}, px×{_s.Px:F3}, chuột ×{_cfg.Nav.MouseSpeedMultiplier:F1}, " +
                  $"gốc mũi tên ({_originX:F0},{_originY:F0}), minimap {_capture.MinimapRegion.Width}×{_capture.MinimapRegion.Height}, " +
@@ -186,6 +206,10 @@ internal sealed class NavBot
             _focusLastGood = 0;
             _wdLastProgressT = now0;
             _lastShiftKeepaliveT = now0;
+
+            if (_cfg.Survival.Enabled)
+                Emit($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}, " +
+                     $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% thì đứng yên {NavTuning.SurvivalFixedWaitS:F0}s để dùng");
 
             if (AfterMinigame) EnterPostMinigame(now0);
 
@@ -303,6 +327,13 @@ internal sealed class NavBot
         // Backout S nghiem trong cua watch 30 s so huu input truoc moi thu.
         if (_backoutActive && RestartWatchStep(now, focused)) return false;
 
+        // Bua an DANG DO dung ngay day, tren ca SimpleFlow — xem chu thich SurvivalOwnStep.
+        if (SurvivalOwnStep(now, focused))
+        {
+            StatusLine(now, $"[ĂN UỐNG] pha={_survivalPhase} món={_survivalCurrent?.Name ?? "-"}", snap);
+            return false;
+        }
+
         // Reset nghe truoc simple flow: bang nghe la panel cyan lon.
         if (_job.Phase is not null)
         {
@@ -342,6 +373,14 @@ internal sealed class NavBot
                 _input.ReleaseAll();
                 return false;
             }
+        }
+
+        // Mo bua moi: dung sau moi may trang thai tren va truoc dieu huong — cau "camera reset /
+        // minigame > survival > navigation" cua ban Python.
+        if (SurvivalMaybeStart(now, focused))
+        {
+            StatusLine(now, $"[ĂN UỐNG] pha={_survivalPhase} món={_survivalCurrent?.Name ?? "-"}", snap);
+            return false;
         }
 
         // ---------------- nhan dang ----------------
@@ -873,6 +912,296 @@ internal sealed class NavBot
         return false;
     }
 
+    // ================================================================ an uong
+
+    /// <summary>Một tài nguyên đang chờ/đang được dùng. <c>items</c> của bản Python (main.py 7258).</summary>
+    private sealed class SurvivalItem
+    {
+        public string Name { get; init; }
+        public ushort[] Slots { get; init; }
+        public int SlotIdx { get; set; }
+
+        /// <summary>% đo được ngay trước khi bấm phím — mốc để chấm điểm sau 10 s.</summary>
+        public double Baseline { get; set; }
+
+        public ushort Key => Slots[SlotIdx];
+        public char KeyText => (char)Slots[SlotIdx];
+    }
+
+    /// <summary><c>release_all</c> cho phím số: cú UP ở tick sau, sao <see cref="ReleaseETick"/>.</summary>
+    private void ReleaseSurvivalKeyTick(double now)
+    {
+        if (_survivalKeyDown && now >= _survivalKeyUpAt)
+        {
+            _input.SendRawKeyEvent(_survivalKeyVk, up: true);
+            _survivalKeyDown = false;
+            _survivalKeyUpAt = 0;
+        }
+    }
+
+    private void CancelSurvival(double now, string reason)
+    {
+        if (!_survivalActive) return;
+        if (_survivalKeyDown)
+        {
+            _input.SendRawKeyEvent(_survivalKeyVk, up: true);
+            _survivalKeyDown = false;
+            _survivalKeyUpAt = 0;
+        }
+        _survivalActive = false;
+        _survivalPhase = null;
+        _survivalPhaseStart = 0;
+        _survivalCurrent = null;
+        _survivalQueue.Clear();
+        _gauge.Reset();
+        Emit($"[ĂN UỐNG] huỷ — {reason}");
+    }
+
+    /// <summary>
+    /// <c>_survival_step</c>. Trả true = nuốt frame (đang sở hữu chuyển động).
+    ///
+    /// Mất focus KHÔNG huỷ bữa: người chơi alt-tab giữa lúc chờ 10 giây thì bữa vẫn còn đó, chỉ là
+    /// đồng hồ pha đứng lại — huỷ ở đây là mở đường cho một chu kỳ bấm phím nữa vào cửa sổ khác.
+    /// </summary>
+    /// <summary>
+    /// Bữa ĐANG DỞ sở hữu frame, gọi sớm trong <see cref="Tick"/> — ngay sau backout S.
+    ///
+    /// Vì sao phải sớm chứ không đứng chung chỗ với nhánh mở bữa: <see cref="SimpleFlowStep"/> chạy
+    /// trước và nó bấm E ngay khi thấy prompt. Nhân vật đứng chết 10 giây cạnh một vật tương tác
+    /// được là đủ để prompt hiện lên; SimpleFlow sẽ bấm E giữa bữa rồi chuyển sang WAIT_BOARD, và từ
+    /// đó nó nuốt mọi frame nên bữa KHÔNG BAO GIỜ chạy tiếp — <c>_survivalActive</c> kẹt true, mà cờ
+    /// đó lại vừa tắt cả hai watchdog 30 giây. Đúng một cái treo cứng.
+    ///
+    /// Bản Python chặn cùng chuyện này bằng <c>set_e_suppressed(True)</c> suốt bữa; ở đây quyền ưu
+    /// tiên frame làm luôn việc đó, gọn hơn một lá cờ nữa.
+    ///
+    /// Mất focus KHÔNG huỷ bữa: người chơi alt-tab giữa lúc chờ thì bữa vẫn còn, chỉ là đồng hồ pha
+    /// đứng lại — huỷ ở đây là mở đường cho một chu kỳ bấm phím nữa vào cửa sổ khác.
+    /// </summary>
+    private bool SurvivalOwnStep(double now, bool focused)
+    {
+        ReleaseSurvivalKeyTick(now);
+
+        // Cu E-up cua SimpleFlow: no chi duoc lo trong SimpleFlowStep, ma suot bua thi ham do khong
+        // chay. Khong lo o day thi mot cu E lo dang xuong se nam duoi ca 10 giay.
+        ReleaseETick(now);
+
+        double since = _survivalTickT > 0 ? now - _survivalTickT : 0;
+        _survivalTickT = now;
+
+        if (!_cfg.Survival.Enabled)
+        {
+            CancelSurvival(now, "người dùng tắt ăn uống");
+            return false;
+        }
+
+        if (!_survivalActive) return false;
+
+        if (!focused)
+        {
+            _input.ReleaseAll();
+
+            // Treo dong ho pha bang DUNG thoi gian troi qua that: nhip tick khong dam bao 25 ms,
+            // va alt-tab lau thi cong don sai so se cat ngan cu chuyen pha khi quay lai.
+            _survivalPhaseStart += since;
+            return true;
+        }
+
+        return SurvivalRun(now);
+    }
+
+    /// <summary>
+    /// Mở bữa mới — ưu tiên THẤP NHẤT, gọi ngay trước khối nhận dạng. Đặt ở đây nghĩa là chỉ ăn khi
+    /// <c>_simplePhase == "WORLD"</c> và không máy trạng thái nào khác đang giữ frame: không bao giờ
+    /// mở bữa giữa lúc đang bấm E, đang chờ bảng, hay đang reset camera.
+    /// </summary>
+    private bool SurvivalMaybeStart(double now, bool focused)
+    {
+        if (_survivalActive || !focused || !_cfg.Survival.Enabled) return false;
+
+        // Vi tri trong chuoi da lo WAIT_BOARD/POST_*/camera (nhung nhanh do deu nuot frame, va ba
+        // duong ra "return false" cua SimpleFlow deu goi ResumeWorld truoc). Reset nghe thi KHONG:
+        // _job.Step co the tra false ma pha van con, va chen mot bua 10-20 s vao giua chuyen di tim
+        // NPC xin viec la lam hai thu tuc dai dan chan nhau.
+        if (_job.Phase is not null || _simplePhase != "WORLD") return false;
+
+        if (!_gauge.Due(now)) return false;
+
+        var reading = _gauge.Update(_capture.GrabSurvival(now), now);
+        if (!reading.FoodLow && !reading.WaterLow) return false;
+        return StartSurvival(now, reading);
+    }
+
+    /// <summary><c>_start_survival</c>: dựng hàng đợi rồi giành quyền điều khiển.</summary>
+    private bool StartSurvival(double now, SurvivalReading r)
+    {
+        var items = new List<SurvivalItem>(2);
+
+        if (r.FoodLow && now >= _survivalFoodBlockUntil)
+        {
+            var slots = SurvivalSettings.SlotKeys(_cfg.Survival.FoodSlots);
+            if (slots.Length > 0)
+                items.Add(new SurvivalItem { Name = "BÁNH", Slots = slots, Baseline = r.FoodPct });
+        }
+
+        if (r.WaterLow && now >= _survivalWaterBlockUntil)
+        {
+            var slots = SurvivalSettings.SlotKeys(_cfg.Survival.WaterSlots);
+            if (slots.Length > 0)
+                items.Add(new SurvivalItem { Name = "NƯỚC", Slots = slots, Baseline = r.WaterPct });
+        }
+
+        if (items.Count == 0) return false;
+
+        // Thieu nang hon thi lam truoc: neu bi cat giua chung (nguoi dung dung bot, minigame hien)
+        // thi cai da an la cai gap nhat.
+        items.Sort((a, b) => a.Baseline.CompareTo(b.Baseline));
+
+        _survivalQueue.Clear();
+        foreach (var it in items) _survivalQueue.Enqueue(it);
+        _survivalCurrent = _survivalQueue.Dequeue();
+        _survivalActive = true;
+
+        // Dung cap ban giao input cua PressEOnce: cat chuot roi nha het DUNG MOT LAN.
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        EnterSurvivalPhase(now, "SETTLE");
+
+        string desc = string.Join(", ",
+            new[] { _survivalCurrent }.Concat(_survivalQueue).Select(x => $"{x.Name}={x.Baseline:F0}%"));
+        Emit($"[ĂN UỐNG] THIẾU → {desc} | DỪNG → DÙNG ĐỒ → CHỜ {NavTuning.SurvivalFixedWaitS:F0}s → CHẠY TIẾP");
+        return true;
+    }
+
+    private void EnterSurvivalPhase(double now, string phase)
+    {
+        _survivalPhase = phase;
+        _survivalPhaseStart = now;
+    }
+
+    /// <summary>Ba pha của một món: đứng im → bấm phím → chờ cứng rồi chấm điểm đúng một lần.</summary>
+    private bool SurvivalRun(double now)
+    {
+        var item = _survivalCurrent;
+        if (item is null) { CancelSurvival(now, "hàng đợi rỗng"); return false; }
+
+        double elapsed = now - _survivalPhaseStart;
+        _input.StopMouseStream(immediate: true);
+
+        if (_survivalPhase == "SETTLE")
+        {
+            _input.ReleaseAll();
+            if (elapsed < NavTuning.SurvivalPreUseSettleS) return true;
+
+            _survivalKeyVk = item.Key;
+            _survivalKeyDown = true;
+            _survivalKeyUpAt = now + NavTuning.SurvivalKeyHoldS;
+            _input.SendRawKeyEvent(_survivalKeyVk, up: false);
+            EnterSurvivalPhase(now, "PRESS");
+            Emit($"[ĂN UỐNG] dùng {item.Name} phím {item.KeyText} — mốc {item.Baseline:F1}%");
+            return true;
+        }
+
+        if (_survivalPhase == "PRESS")
+        {
+            // ReleaseSurvivalKeyTick o dau SurvivalStep da lo cu UP; cho no xong roi moi tinh gio 10 s.
+            if (_survivalKeyDown) return true;
+
+            _input.ReleaseAll();
+            _gauge.Reset();
+            EnterSurvivalPhase(now, "WAIT");
+            Emit($"[ĂN UỐNG] đã gõ phím {item.KeyText} → chờ {NavTuning.SurvivalFixedWaitS:F1}s");
+            return true;
+        }
+
+        if (_survivalPhase != "WAIT") { CancelSurvival(now, "pha lạ: " + _survivalPhase); return false; }
+
+        _input.ReleaseAll();
+
+        // Van quet trong luc cho de EMA song lai sau khi Reset — nhung KHONG cham diem som.
+        if (_gauge.Due(now)) _gauge.Update(_capture.GrabSurvival(now), now);
+        if (elapsed < NavTuning.SurvivalFixedWaitS) return true;
+
+        double? after = SurvivalValue(_gauge.Last, item.Name);
+        double before = item.Baseline;
+        bool ok = after is not null
+                  && (after.Value >= before + NavTuning.SurvivalSuccessDeltaPct
+                      || after.Value >= NavTuning.SurvivalLowThresholdPct);
+
+        if (ok)
+        {
+            Emit($"[ĂN UỐNG] {item.Name} ĐƯỢC phím {item.KeyText}: {before:F1}% → {after.Value:F1}%");
+            return SurvivalAdvance(now);
+        }
+
+        string aft = after is null ? "?" : $"{after.Value:F1}%";
+
+        if (item.SlotIdx + 1 < item.Slots.Length)
+        {
+            item.SlotIdx++;
+            if (after is not null) item.Baseline = after.Value;
+            EnterSurvivalPhase(now, "SETTLE");
+            Emit($"[ĂN UỐNG] {item.Name} phím {(char)item.Slots[item.SlotIdx - 1]} KHÔNG ĐỔI " +
+                 $"({before:F1}% → {aft}) → thử ô dự phòng {item.KeyText}");
+            return true;
+        }
+
+        // Ca hai o deu truot. Gan nhu chac chan la het do trong tui: bot khong nhin duoc tui do, no
+        // chi bam phim roi nhin dong ho ma doan. Chan tai nguyen do mot lat roi VAN di tiep.
+        double block = NavTuning.SurvivalFailedBlockS;
+        if (item.Name == "BÁNH") _survivalFoodBlockUntil = now + block;
+        else _survivalWaterBlockUntil = now + block;
+
+        Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô ({before:F1}% → {aft}) → " +
+             $"trả lại quyền đi, chặn {block:F0}s");
+        Alert?.Invoke($"⚠️ Job Điện — có thể hết {item.Name.ToLowerInvariant()}",
+            $"Đã thử ô {string.Join(" và ", item.Slots.Select(k => (char)k))} mà đồng hồ không nhúc nhích " +
+            $"({before:F1}% → {aft}). Nhân vật vẫn đi tiếp, nhưng cứ {block:F0}s lại mất " +
+            $"{NavTuning.SurvivalFixedWaitS:F0}s đứng thử lại — nên tiếp tế sớm.");
+        return SurvivalAdvance(now);
+    }
+
+    private static double? SurvivalValue(SurvivalReading r, string name)
+    {
+        bool valid = name == "BÁNH" ? r.FoodValid : r.WaterValid;
+        double v = name == "BÁNH" ? r.FoodPct : r.WaterPct;
+        return valid && double.IsFinite(v) ? v : null;
+    }
+
+    /// <summary><c>_survival_advance</c>: món tiếp theo, hoặc kết thúc và trả W về cho Auto Move.</summary>
+    private bool SurvivalAdvance(double now)
+    {
+        if (_survivalQueue.Count > 0)
+        {
+            _survivalCurrent = _survivalQueue.Dequeue();
+            EnterSurvivalPhase(now, "SETTLE");
+            _input.StopMouseStream(immediate: true);
+            _input.ReleaseAll();
+            return true;
+        }
+
+        _survivalActive = false;
+        _survivalPhase = null;
+        _survivalPhaseStart = 0;
+        _survivalCurrent = null;
+        _gauge.Reset();
+
+        // Suot bua an Tick tra ve som nen ba bo dem duoi day khong duoc lam tuoi; khong xoa thi
+        // frame dau tien sau bua bi cham oan:
+        //  - _job: bo dem mu tuong da mat diem vang ca 20 giay -> di reset nghe vo co.
+        //  - _watchdog: cua so va cham thung mot lo 20 giay -> co the ket luan "ket".
+        //  - autorun: dong ho tien do (da duoc AutorunResetTimer giu tuoi qua intentionalBlock).
+        _job.ResetBlind();
+        _watchdog.Reset();
+        AutorunResetTimer(now);
+
+        // CO Y khong reset _tracker / _ctl: V6.59 ghi ro "no tracker/controller/navigation reset".
+        _input.DoublePressWStart(NavTuning.TransitionWTakeoverGapMs, NavTuning.SurvivalPostUseWRearmS);
+        _input.Apply(NavKey.W);
+        Emit("[ĂN UỐNG] xong → trả lại W → chạy tiếp");
+        return false;
+    }
+
     // ================================================================ watchdog 30 s khong tien
 
     private void AutorunResetTimer(double now)
@@ -907,7 +1236,7 @@ internal sealed class NavBot
     private bool AutorunWatchdogStep(double now, bool focused, double dist, TargetOutput target, WorldMarker world)
     {
         if (!focused) { AutorunResetTimer(now); return false; }
-        bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null;
+        bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null || _survivalActive;
         if (intentionalBlock) { AutorunResetTimer(now); return false; }
 
         bool progress = false;
@@ -1002,7 +1331,8 @@ internal sealed class NavBot
         double elapsed = now - _watchStarted;
         if (elapsed < timeout && !_watchPending) return false;
 
-        bool unsafeNow = _simplePhase != "WORLD" || _cameraPhase is not null || _job.Phase is not null;
+        bool unsafeNow = _simplePhase != "WORLD" || _cameraPhase is not null || _job.Phase is not null
+                         || _survivalActive;
         if (unsafeNow)
         {
             if (!_watchPending)

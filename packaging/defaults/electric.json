@@ -66,6 +66,15 @@
     "JobRecoveryEnabled": true,
     "LogEveryMs": 160
   },
+  "Survival": {
+    "Enabled": false,
+    "FoodCenterXRef": 160,
+    "FoodCenterYRef": 1047,
+    "WaterCenterXRef": 210,
+    "WaterCenterYRef": 1047,
+    "FoodSlots": "5,7",
+    "WaterSlots": "4,6"
+  },
   "AutoWalk": false,
   "AutoLoop": true,
   "Mode": "Both",

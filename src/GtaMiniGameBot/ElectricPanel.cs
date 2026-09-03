@@ -26,6 +26,7 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkButton _btnToggle = new();
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
+    private readonly DarkCheck _autoEat = new();
     private readonly LogView _log = new();
 
     private string _jobKey = HotkeyText.Job();
@@ -99,7 +100,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(352),
+            Height = Theme.Px(378),
             BackColor = Theme.Ground
         };
 
@@ -149,13 +150,13 @@ internal sealed class ElectricPanel : UserControl
         _btnShot.Click += (_, _) => CaptureShot();
         shotBox.Controls.Add(_btnShot);
 
-        Lab(shotBox, "Chụp xong chạy:  --verify-wire  /  --verify-board  /  --verify-nav",
+        Lab(shotBox, "Chụp xong chạy:  --verify-wire / --verify-board / --verify-nav / --verify-survival",
             Theme.Px(12), Theme.Px(54), w - Theme.Px(24));
 
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(88))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(114))
         };
         host.Controls.Add(navBox);
 
@@ -171,17 +172,25 @@ internal sealed class ElectricPanel : UserControl
         _autoLoop.CheckedChanged += OnAutoLoopChanged;
         navBox.Controls.Add(_autoLoop);
 
+        _autoEat.Text = "Tự ăn bánh / uống nước khi dưới 50%";
+        _autoEat.SetBounds(Theme.Px(12), Theme.Px(76), Theme.Px(300), Theme.Px(22));
+        _autoEat.SetCheckedQuiet(_cfg.Survival.Enabled);
+        _autoEat.CheckedChanged += OnAutoEatChanged;
+        navBox.Controls.Add(_autoEat);
+
         // Khong con nut "Khoanh mau TUONG TAC": prompt [E] duoc do bang hinh hoc (o phim trang + chu
         // ben phai) nhu ban Python, khong can mau anh. Minimap va vung world cung suy tu do phan giai.
         Lab(navBox, "Không cần khoanh gì: minimap, mốc vàng, prompt [E] đều suy từ độ phân giải.",
             Theme.Px(330), Theme.Px(26), w - Theme.Px(342));
         Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log; bật lại để thử reset camera sau minigame.",
             Theme.Px(330), Theme.Px(50), w - Theme.Px(342));
+        Lab(navBox, "Ăn uống chỉ chạy khi tự đi; mỗi lần dùng đồ đứng yên 10 giây.",
+            Theme.Px(330), Theme.Px(76), w - Theme.Px(342));
 
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(308), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(334), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -244,7 +253,9 @@ internal sealed class ElectricPanel : UserControl
             new("board", "Bảng nước/điện"),
             new("nav-far", "Đi đường — xa, chỉ thấy chấm minimap"),
             new("nav-marker", "Đi đường — thấy mốc vàng dưới đất"),
-            new("nav-prompt", "Đi đường — đang hiện nút E TƯƠNG TÁC")
+            new("nav-prompt", "Đi đường — đang hiện nút E TƯƠNG TÁC"),
+            new("hud-no", "Đồng hồ đói/khát — lúc còn no đủ"),
+            new("hud-doi", "Đồng hồ đói/khát — lúc đã dưới 50%")
         };
 
         public string Name { get; }
@@ -315,6 +326,23 @@ internal sealed class ElectricPanel : UserControl
         Append(_cfg.AutoLoop
             ? "chạy liên tục: BẬT"
             : "chạy liên tục: TẮT — giải xong một lượt là dừng để đọc log");
+    }
+
+    private void OnAutoEatChanged()
+    {
+        _cfg.Survival.Enabled = _autoEat.Checked;
+        _cfg.Save();
+
+        if (!_cfg.Survival.Enabled)
+        {
+            Append("ăn uống: TẮT");
+            return;
+        }
+
+        Append($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}; " +
+               "sai ô thì sửa FoodSlots/WaterSlots trong electric.json");
+        if (!_cfg.AutoWalk)
+            Append("lưu ý: ăn uống nằm trong bộ tự đi, phải bật “Tự tìm điểm vàng…” mới có tác dụng");
     }
 
     private void RefreshNote() =>
@@ -447,6 +475,7 @@ internal sealed class ElectricPanel : UserControl
         _modes.Enabled = !running;
         _autoWalk.Enabled = !running;
         _autoLoop.Enabled = !running;
+        _autoEat.Enabled = !running;
         RunningChanged?.Invoke(running);
     }
 
