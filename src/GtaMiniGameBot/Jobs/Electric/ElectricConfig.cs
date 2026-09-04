@@ -448,13 +448,9 @@ internal sealed class BoardSettings
     /// <summary>
     /// Số khung tường gần như y hệt nhau cần có trước khi đóng băng tuyến.
     ///
-    /// Bản Python đòi 3, nhưng nó chụp bằng dxcam ở nhịp ~2 ms nên ba khung của nó chỉ trải
-    /// khoảng 60–90 ms. Ở đây một khung tốn ~175 ms (đo trên ROI 2K, bản Release), nên HAI khung
-    /// đã trải ~350 ms — bằng chứng "bảng đã vẽ xong" mạnh hơn hẳn ba khung cách nhau 30 ms.
-    ///
-    /// Đây là chỗ đắt nhất trong ngân sách thời gian: sợi dây tự chạy và cú rẽ đầu tiên trên bảng
-    /// đo được chỉ cách START 130 px, tức khoảng 0.2–0.5 giây. Mỗi khung đòi thêm là một khung có
-    /// thể làm bot trễ chuyến.
+    /// Live path dùng chữ ký 128×72 trên hai DXGI frame khác nhau; chỉ khi ổn định mới quét
+    /// full-resolution đúng một lần. Bản Python đòi 3, nhưng hai frame trình chiếu thật đã đủ
+    /// phân biệt hoạt ảnh đang vẽ mà không trả thêm một frame vào ngân sách cú rẽ đầu.
     /// </summary>
     public int WallStableFrames { get; set; } = 2;
 

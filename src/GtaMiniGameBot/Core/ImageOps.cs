@@ -730,6 +730,20 @@ internal static class ImageOps
         return outp;
     }
 
+    /// <summary>
+    /// Trừ một bán kính khỏi bản đồ khoảng thoát và kẹp ở 0. Với một vật cản được nở tròn
+    /// <paramref name="amount"/>, đây là cận dưới bảo thủ của khoảng thoát mới ở mọi pixel không
+    /// bị chỉnh sửa thủ công sau phép nở.
+    /// </summary>
+    public static float[] SubtractClearance(float[] clearance, double amount)
+    {
+        amount = Math.Max(0.0, amount);
+        var outp = new float[clearance.Length];
+        for (int i = 0; i < outp.Length; i++)
+            outp[i] = (float)Math.Max(0.0, clearance[i] - amount);
+        return outp;
+    }
+
     // ---------------------------------------------------------------- khoang thoat
 
     /// <summary>
@@ -956,5 +970,27 @@ internal static class ImageOps
             }
             else FillCircle(m, x, y, r, value);
         }
+    }
+
+    /// <summary>
+    /// Dựng mặt nạ hành lang dày quanh một đường gấp khúc. Vẽ xương một pixel rồi nở bằng nhân
+    /// vuông phân tách được, nên chi phí O(w·h + độ dài đường), không tăng theo bình phương độ dày.
+    /// </summary>
+    public static Mask PathCorridor(int width, int height, IReadOnlyList<Point> path, int thickness)
+    {
+        var spine = new Mask(width, height);
+        if (path is null || path.Count == 0) return spine;
+
+        thickness = Math.Max(1, thickness);
+        if (path.Count == 1)
+        {
+            if (path[0].X >= 0 && path[0].Y >= 0 && path[0].X < width && path[0].Y < height)
+                spine.Data[path[0].Y * width + path[0].X] = 1;
+            return Dilate(spine, thickness, thickness);
+        }
+
+        for (int i = 1; i < path.Count; i++)
+            DrawThickLine(spine, path[i - 1], path[i], 1, 1);
+        return Dilate(spine, thickness, thickness);
     }
 }

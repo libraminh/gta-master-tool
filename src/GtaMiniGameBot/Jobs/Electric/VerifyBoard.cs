@@ -22,7 +22,7 @@ internal static class VerifyBoard
     {
         Console.WriteLine("== kiểm tra bộ giải bảng nước/điện ==");
 
-        int fail = SyntheticTests() + StillTests();
+        int fail = SyntheticTests() + StabilityAndMotionTests() + AfterSolveWaitTests() + StillTests();
 
         Console.WriteLine();
         Console.WriteLine(fail == 0 ? "TẤT CẢ ĐẠT" : $"HỎNG {fail} ca");
@@ -39,6 +39,158 @@ internal static class VerifyBoard
         int fail = 0;
         foreach (var (sw, sh) in new[] { (1920, 1080), (2560, 1440) })
             fail += CheckSynthetic(sw, sh) ? 0 : 1;
+        return fail;
+    }
+
+    private static int StabilityAndMotionTests()
+    {
+        Console.WriteLine();
+        Console.WriteLine("-- chữ ký nhanh và dự báo chuyển động --");
+        int fail = 0;
+
+        var profile = new ElectricProfile { Width = 1920, Height = 1080 };
+        profile.Normalize();
+        using (var still = DrawBoard(profile))
+        using (var pixels = new BitmapRegion(still, profile.ScanBoardRoi().ToRectangle()))
+        {
+            var a = BoardWallSignature.Create(
+                pixels.Raw, pixels.Region.Width, pixels.Region.Height, pixels.Stride, 1, 100);
+            var b = BoardWallSignature.Create(
+                pixels.Raw, pixels.Region.Width, pixels.Region.Height, pixels.Stride, 2, 200);
+
+            if (!BoardWallSignature.Stable(a, b, out string stableWhy))
+            {
+                Console.WriteLine("  HỎNG — bảng tĩnh không ổn định: " + stableWhy);
+                fail++;
+            }
+            else Console.WriteLine("  chữ ký bảng tĩnh: đạt — " + stableWhy);
+
+            if (BoardWallSignature.Stable(a, a, out _))
+            {
+                Console.WriteLine("  HỎNG — nhận lại cùng FrameId là hai frame ổn định");
+                fail++;
+            }
+        }
+
+        foreach (int hz in new[] { 60, 120, 144 })
+        {
+            var estimator = new BoardMotionEstimator();
+            long t = 1_000_000;
+            double speed = 0.42;
+            double position = 0;
+            estimator.Reset(position, t, speed);
+
+            double dtMs = 1000.0 / hz;
+            long dtTicks = (long)Math.Round(dtMs / 1000.0 * System.Diagnostics.Stopwatch.Frequency);
+            for (int i = 0; i < 40; i++)
+            {
+                // Bỏ một frame để chứng minh timestamp, không phải số vòng lặp, điều khiển dự báo.
+                int frames = i == 15 ? 2 : 1;
+                t += dtTicks * frames;
+                position += speed * dtMs * frames;
+                estimator.Update(position, t);
+            }
+
+            double predicted = estimator.Predict(t + dtTicks);
+            double expected = position + speed * dtMs;
+            if (Math.Abs(predicted - expected) > 1.5)
+            {
+                Console.WriteLine($"  HỎNG — dự báo {hz}Hz lệch {Math.Abs(predicted - expected):F2}px");
+                fail++;
+            }
+            else Console.WriteLine($"  dự báo {hz}Hz: đạt, lệch {Math.Abs(predicted - expected):F2}px");
+        }
+
+        var onsetSamples = new List<(double Ms, double New, double Old)>
+        {
+            (3, 0.2, 4.0),
+            (6, 2.4, 6.0),
+            (18, 8.0, 7.0),
+        };
+        double onset = BoardBot.EstimateInputOnsetMs(onsetSamples, 1.0, 18);
+        if (onset < 5.5 || onset > 6.5)
+        {
+            Console.WriteLine($"  HỎNG — onset học {onset:F1}ms, mong ~6ms chứ không phải 18ms xác nhận");
+            fail++;
+        }
+        else Console.WriteLine($"  onset phím: đạt, {onset:F1}ms");
+
+        return fail;
+    }
+
+    /// <summary>
+    /// Sau khi thắng, bảng còn hiện thì không được dựng tuyến lần hai; chỉ Solved khi tiêu đề
+    /// vắng đủ <see cref="BoardAfterSolvePolicy.BoardGoneMs"/>.
+    /// </summary>
+    private static int AfterSolveWaitTests()
+    {
+        Console.WriteLine();
+        Console.WriteLine("-- sau khi giải, chờ bảng đóng --");
+        int fail = 0;
+
+        var policy = new BoardAfterSolvePolicy();
+        int plans = 0;
+        if (policy.AllowPlan) plans++;
+        policy.OnRouteSuccess();
+
+        long now = 0;
+        for (int i = 0; i < 20; i++)
+        {
+            now += 80;
+            if (policy.AllowPlan)
+            {
+                Console.WriteLine("  HỎNG — bảng vừa thắng vẫn được phép dựng tuyến lần hai");
+                fail++;
+                break;
+            }
+            if (policy.Tick(boardOpen: true, now) is not null)
+            {
+                Console.WriteLine("  HỎNG — trả Solved khi bảng còn hiện");
+                fail++;
+                break;
+            }
+        }
+
+        if (policy.Tick(boardOpen: false, now + 1_000) is not null)
+        {
+            Console.WriteLine("  HỎNG — Solved quá sớm, tiêu đề mới vắng 1s");
+            fail++;
+        }
+
+        var done = policy.Tick(boardOpen: false, now + 1_000 + BoardAfterSolvePolicy.BoardGoneMs);
+        if (done != BoardStopReason.Solved)
+        {
+            Console.WriteLine("  HỎNG — tiêu đề vắng đủ lâu mà không trả Solved");
+            fail++;
+        }
+        else if (plans != 1 || policy.AllowPlan)
+        {
+            Console.WriteLine($"  HỎNG — số lần được phép lập tuyến = {plans}, AllowPlan={policy.AllowPlan}");
+            fail++;
+        }
+        else Console.WriteLine("  đạt — không lập tuyến lần hai, Solved sau khi bảng đóng đủ lâu");
+
+        var reopen = new BoardAfterSolvePolicy();
+        reopen.OnRouteSuccess();
+        reopen.Tick(boardOpen: false, 0);
+        if (reopen.Tick(boardOpen: true, BoardAfterSolvePolicy.BoardGoneMs) is not null)
+        {
+            Console.WriteLine("  HỎNG — bảng hiện lại giữa lúc chờ vẫn bị coi là đã đóng");
+            fail++;
+        }
+        else if (reopen.Tick(boardOpen: false, BoardAfterSolvePolicy.BoardGoneMs + 500) is not null)
+        {
+            Console.WriteLine("  HỎNG — đồng hồ vắng không reset khi bảng hiện lại");
+            fail++;
+        }
+        else if (reopen.Tick(boardOpen: false, BoardAfterSolvePolicy.BoardGoneMs + 500 + BoardAfterSolvePolicy.BoardGoneMs)
+                 != BoardStopReason.Solved)
+        {
+            Console.WriteLine("  HỎNG — không Solved sau lần vắng đủ lâu thứ hai");
+            fail++;
+        }
+        else Console.WriteLine("  đạt — hiện lại giữa chừng reset đồng hồ đóng bảng");
+
         return fail;
     }
 
@@ -100,6 +252,12 @@ internal static class VerifyBoard
         for (int i = 0; i < cfg.Board.WallStableFrames; i++) history.Add(BoardPlanner.ScanWalls(frame));
 
         var scan = history[^1];
+        var fullScan = BoardPlanner.ScanWallsFullResolutionForVerify(frame);
+        if (!FastMaskCoversFull(scan.Wall, fullScan.Wall, out string coverWhy))
+        {
+            Console.WriteLine("    HỎNG — mask nhanh bỏ sót tường full-res: " + coverWhy);
+            return false;
+        }
         Console.WriteLine($"    tường: che {scan.Coverage:P1}, V thân bảng {scan.PanelV:F1}, " +
                           $"ngưỡng V {scan.ValueThreshold}, {scan.LargeWalls} khối lớn / " +
                           $"{scan.MicroWalls} khối nhỏ / {scan.SecondaryWalls} lớp bảo");
@@ -145,7 +303,50 @@ internal static class VerifyBoard
             return false;
         }
 
-        Console.WriteLine($"    đạt — {plan.Segments.Length} đoạn, không đoạn nào xuyên tường");
+        var cache = BoardRouteCache.CreateEmpty();
+        string cacheKey = BoardRouteCache.MakeKey(frame, role, scan.Wall);
+        cache.Put(cacheKey, plan);
+        if (!cache.TryGet(cacheKey, role, frame.Width, frame.Height, out var cached) ||
+            cached.Length != plan.Segments.Length ||
+            !cached.Select(s => s.Key).SequenceEqual(plan.Segments.Select(s => s.Key)))
+        {
+            Console.WriteLine("    HỎNG — cache không phục hồi đúng chuỗi đoạn");
+            return false;
+        }
+        var cachedPlan = BoardPlanner.ValidateCached(frame, role, scan, cached, out string cacheWhy);
+        if (cachedPlan is null || !RouteAvoidsWalls(cachedPlan, frame, out _))
+        {
+            Console.WriteLine("    HỎNG — cache không được chứng nhận lại: " + cacheWhy);
+            return false;
+        }
+        Console.WriteLine($"    cache chứng nhận lại {cachedPlan.BuildMs:F0}ms");
+
+        string tempCache = Path.Combine(Path.GetTempPath(), $"gta-board-cache-{Guid.NewGuid():N}.json");
+        try
+        {
+            var persisted = BoardRouteCache.CreateEmpty(tempCache);
+            persisted.Put(cacheKey, plan);
+            persisted.SaveIfDirty();
+            var loaded = BoardRouteCache.Load(tempCache);
+            if (!loaded.TryGet(cacheKey, role, frame.Width, frame.Height, out _))
+            {
+                Console.WriteLine("    HỎNG — cache JSON không đọc lại được");
+                return false;
+            }
+            File.WriteAllText(tempCache, "{not-json");
+            if (BoardRouteCache.Load(tempCache).Count != 0)
+            {
+                Console.WriteLine("    HỎNG — cache JSON hỏng không bị bỏ qua");
+                return false;
+            }
+        }
+        finally
+        {
+            try { File.Delete(tempCache); } catch { }
+            try { File.Delete(tempCache + ".tmp"); } catch { }
+        }
+
+        Console.WriteLine($"    đạt — {plan.Segments.Length} đoạn, không xuyên tường, cache khớp");
         return true;
     }
 
@@ -314,14 +515,20 @@ internal static class VerifyBoard
                 Console.WriteLine($"    ROI {frame.Width}×{frame.Height}, tiêu đề {frame.TitleCount} px");
                 foreach (var t in frame.Terminals) Console.WriteLine("    đầu nối " + t);
 
-                // Do THOI GIAN, khong chi doc ket qua: day dung la ngan sach quyet dinh bot co kip
-                // bam phim dau tien hay khong. Doc khung + quet tuong phai chay 3 lan (cong on
-                // dinh) truoc khi dung tuyen.
+                // Đo thời gian xử lý đầy đủ sau stability gate. Live path chỉ dựng chữ ký nhỏ ở
+                // các frame chờ; đọc HSV + quét tường đầy đủ chạy đúng một lần.
                 sw.Restart();
                 var scan = BoardPlanner.ScanWalls(frame);
                 double scanMs = sw.Elapsed.TotalMilliseconds;
-                Console.WriteLine($"    thời gian: đọc khung {readMs:F0}ms, quét tường {scanMs:F0}ms " +
-                                  $"→ 3 khung ổn định ≈ {(readMs + scanMs) * 3:F0}ms");
+                var fullScan = BoardPlanner.ScanWallsFullResolutionForVerify(frame);
+                if (!FastMaskCoversFull(scan.Wall, fullScan.Wall, out string coverWhy))
+                {
+                    Console.WriteLine("    HỎNG — mask nhanh bỏ sót tường full-res: " + coverWhy);
+                    fail++;
+                    continue;
+                }
+                Console.WriteLine($"    thời gian full: đọc khung {readMs:F0}ms, " +
+                                  $"quét tường {scanMs:F0}ms, tổng {readMs + scanMs:F0}ms");
                 Console.WriteLine("    chi tiết quét tường: " + scan.Timing);
                 Console.WriteLine($"    tường: che {scan.Coverage:P1}, V thân {scan.PanelV:F1}, " +
                                   $"ngưỡng {scan.ValueThreshold}, {scan.LargeWalls}/{scan.MicroWalls}/{scan.SecondaryWalls}");
@@ -384,6 +591,59 @@ internal static class VerifyBoard
             Console.WriteLine("  chưa có ảnh nào. Chụp bằng tab Điện → “Chụp ảnh tĩnh…”, " +
                               "lưu tên board.png.");
         return fail;
+    }
+
+    private static bool FastMaskCoversFull(Mask fast, Mask full, out string why)
+    {
+        if (fast.Width != full.Width || fast.Height != full.Height)
+        {
+            why = "khác kích thước";
+            return false;
+        }
+
+        // Cho sai số biên 1px do co 2x rồi phóng lại; lõi tường và từng khối không được biến mất
+        // — ngân sách 0.1% toàn cục có thể nuốt một bức chắn mảnh (~1000px trên mặt nạ 2M).
+        var covered = ImageOps.Dilate(fast, 3, 3);
+        var labeled = ImageOps.Label(full);
+        var core = ImageOps.Erode(full, 3, 3);
+        var missedPer = new int[labeled.Blobs.Count + 1];
+
+        int fullCount = 0, missed = 0, coreCount = 0, coreMissed = 0;
+        for (int i = 0; i < full.Data.Length; i++)
+        {
+            if (full.Data[i] == 0) continue;
+            fullCount++;
+            int id = labeled.Label[i];
+            bool hit = covered.Data[i] != 0;
+            if (!hit)
+            {
+                missed++;
+                if (id > 0) missedPer[id]++;
+            }
+            if (core.Data[i] == 0) continue;
+            coreCount++;
+            if (!hit) coreMissed++;
+        }
+
+        if (coreMissed > 0)
+        {
+            why = $"lõi tường mất {coreMissed}/{Math.Max(1, coreCount)} px";
+            return false;
+        }
+
+        const int minComponent = 80;
+        for (int i = 0; i < labeled.Blobs.Count; i++)
+        {
+            var blob = labeled.Blobs[i];
+            if (blob.Area < minComponent) continue;
+            if (missedPer[i + 1] / (double)blob.Area <= 0.25) continue;
+            why = $"khối {blob.Box.Width}×{blob.Box.Height} mất {missedPer[i + 1]}/{blob.Area}";
+            return false;
+        }
+
+        double ratio = missed / Math.Max(1.0, fullCount);
+        why = $"{missed}/{fullCount} pixel ({ratio:P3})";
+        return ratio <= 0.001;
     }
 
     private static void SaveMask(Mask m, string path)

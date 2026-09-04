@@ -357,12 +357,47 @@ internal enum BoardStopReason
 }
 
 /// <summary>
+/// Sau khi cắm đích, khóa dựng tuyến: bảng thắng còn hiện vài trăm ms và sẽ bị nhận
+/// lại như bảng mới nếu vòng ngoài chạy tiếp. Chỉ trả <see cref="BoardStopReason.Solved"/>
+/// khi tiêu đề đã vắng liên tục đủ lâu.
+/// </summary>
+internal sealed class BoardAfterSolvePolicy
+{
+    public const int BoardGoneMs = 3_000;
+
+    public bool AllowPlan { get; private set; } = true;
+
+    private long? _goneSinceMs;
+
+    public void OnRouteSuccess()
+    {
+        AllowPlan = false;
+        _goneSinceMs = null;
+    }
+
+    public BoardStopReason? Tick(bool boardOpen, long nowMs)
+    {
+        if (AllowPlan) return null;
+        if (boardOpen)
+        {
+            _goneSinceMs = null;
+            return null;
+        }
+
+        _goneSinceMs ??= nowMs;
+        return nowMs - _goneSinceMs.Value >= BoardGoneMs
+            ? BoardStopReason.Solved
+            : null;
+    }
+}
+
+/// <summary>
 /// Job Thợ điện, phần minigame BẢNG WATER &amp; POWER: dẫn một đầu dây tự chạy đi từ đầu nối xanh
 /// tới đầu nối đỏ mà không đụng thân bảng nào.
 ///
 /// Ba pha, và thứ tự này là bất di bất dịch:
-///   1. CHỜ ỔN ĐỊNH — hai khung tường gần như y hệt mới được đi tiếp (xem
-///      <see cref="BoardPlanner.SignatureStable"/>).
+///   1. CHỜ ỔN ĐỊNH — các chữ ký 128×72 từ những frame khác nhau phải gần như y hệt
+///      (<see cref="BoardWallSignature"/>), rồi mới quét tường đầy đủ đúng một lần.
 ///   2. DỰNG TUYẾN — A* + chứng chỉ an toàn + tinh chỉnh ngã rẽ. Không dựng nổi thì GIỮ, không
 ///      bấm phím nào.
 ///   3. CHẠY — tuyến đã ĐÓNG BĂNG, lúc chạy không bao giờ tính lại.
@@ -396,6 +431,8 @@ internal sealed class BoardBot
 
     /// <summary>Vượt góc tới ngần này vẫn còn bắn được. Python: <c>TURN_LATE_FIRE_REF</c>.</summary>
     private const double LateFireRef = 5.0;
+    private const double PredictiveLeadMaxRef = 12.0;
+    private const double InitialInputLatencyMs = 4.0;
 
     private const int InputRepeatDownMs = 14;   // CFG.INPUT_REPEAT_DOWN_MS
     private const int InputMaxRepeats = 14;
@@ -413,7 +450,6 @@ internal sealed class BoardBot
 
     private const double FinalGoalRadiusRef = 26.0;
     private const int FinalHoldMs = 70;
-    private const int FinalGoalSettleMs = 220;
 
     private const int AutoStartTimeoutMs = 1_600;
     private const double LaunchProgressRef = 3.0;
@@ -433,6 +469,8 @@ internal sealed class BoardBot
     private readonly ElectricConfig _cfg;
     private readonly Screen _screen;
     private readonly ElectricProfile _profile;
+    private readonly BoardRouteCache _routeCache;
+    private readonly IScreenCaptureSession _capture;
 
     private CancellationTokenSource _cts;
     private Thread _thread;
@@ -450,11 +488,14 @@ internal sealed class BoardBot
     /// </summary>
     private byte[] _roiBuf;
 
-    public BoardBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
+    public BoardBot(ElectricConfig cfg, Screen screen, ElectricProfile profile,
+                    BoardRouteCache routeCache = null, IScreenCaptureSession capture = null)
     {
         _cfg = cfg;
         _screen = screen;
         _profile = profile;
+        _routeCache = routeCache ?? BoardRouteCache.CreateEmpty();
+        _capture = capture;
     }
 
     public bool Running => _thread is { IsAlive: true };
@@ -508,7 +549,7 @@ internal sealed class BoardBot
 
         try
         {
-            reader = BoardReader.Open(_cfg, _screen, _profile);
+            reader = BoardReader.Open(_cfg, _screen, _profile, _capture);
             if (!reader.Configured)
             {
                 reason = BoardStopReason.Error;
@@ -518,24 +559,44 @@ internal sealed class BoardBot
             }
 
             Emit($"ROI bảng {reader.RoiRegion.Width}×{reader.RoiRegion.Height} " +
-                 $"@{reader.RoiRegion.X},{reader.RoiRegion.Y}  (tỉ lệ {_profile.Scale:F3})");
+                 $"@{reader.RoiRegion.X},{reader.RoiRegion.Y}  (tỉ lệ {_profile.Scale:F3}, " +
+                 $"capture {reader.CaptureBackend})");
             Emit($"cửa sổ game phải đang focus ({_cfg.WindowMatch}).");
 
-            var history = new List<BoardPlanner.WallScan>();
+            var signatureHistory = new List<BoardWallSignature>();
             var sinceSeen = Stopwatch.StartNew();
             var lastHold = Stopwatch.StartNew();
+            Stopwatch boardLatency = null;
             bool everSeen = false;
+            var afterSolve = new BoardAfterSolvePolicy();
+            var waitClock = Stopwatch.StartNew();
 
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
                 if (WaitWindow(ct)) sinceSeen.Restart();
 
-                var frame = reader.TryRead(out string why);
-                if (frame is null)
+                if (!afterSolve.AllowPlan)
                 {
-                    history.Clear();
-                    if (sinceSeen.ElapsedMilliseconds >= (everSeen ? 3_000 : _cfg.Board.NoBoardMs))
+                    bool stillOpen = reader.BoardOpen(conservativeOnCaptureFailure: true);
+                    var done = afterSolve.Tick(stillOpen, waitClock.ElapsedMilliseconds);
+                    if (done == BoardStopReason.Solved)
+                    {
+                        reason = BoardStopReason.Solved;
+                        message = $"bảng đã đóng — giải {_rounds} bảng";
+                        Emit("bảng đã đóng — tiếp tục chạy liên tục");
+                        return;
+                    }
+                    Sleep(ct, _cfg.Board.WatchPollMs);
+                    continue;
+                }
+
+                var signature = reader.TryQuickSignature(out string why);
+                if (signature is null)
+                {
+                    signatureHistory.Clear();
+                    boardLatency = null;
+                    if (sinceSeen.ElapsedMilliseconds >= (everSeen ? BoardAfterSolvePolicy.BoardGoneMs : _cfg.Board.NoBoardMs))
                     {
                         reason = everSeen ? BoardStopReason.Solved : BoardStopReason.NoBoard;
                         message = everSeen
@@ -550,39 +611,67 @@ internal sealed class BoardBot
 
                 everSeen = true;
                 sinceSeen.Restart();
+                boardLatency ??= Stopwatch.StartNew();
+
+                signatureHistory.Add(signature);
+                if (signatureHistory.Count > _cfg.Board.WallStableFrames)
+                    signatureHistory.RemoveAt(0);
+                if (!BoardWallSignature.Stable(
+                        signatureHistory, _cfg.Board.WallStableFrames, out string stableWhy))
+                {
+                    Throttle(lastHold, $"giữ, chưa bấm gì: {stableWhy}");
+                    continue;
+                }
+
+                var frame = reader.TryReadLast(out why);
+                if (frame is null)
+                {
+                    signatureHistory.Clear();
+                    boardLatency = null;
+                    Throttle(lastHold, $"không đọc được frame ổn định: {why}");
+                    continue;
+                }
 
                 var role = BoardReader.DetectRole(frame, out string roleWhy);
                 if (role is null)
                 {
-                    history.Clear();
+                    signatureHistory.Clear();
+                    boardLatency = null;
                     Throttle(lastHold, $"chưa chốt được START/GOAL: {roleWhy}");
                     Sleep(ct, _cfg.Board.WatchPollMs);
                     continue;
                 }
 
+                var scanWatch = Stopwatch.StartNew();
                 var scan = BoardPlanner.ScanWalls(frame);
-                history.Add(scan);
-                if (history.Count > _cfg.Board.WallStableFrames) history.RemoveAt(0);
+                scanWatch.Stop();
 
-                if (!BoardPlanner.SignatureStable(history, _cfg.Board.WallStableFrames, out string stableWhy))
+                Emit($"tường ổn định sau {boardLatency.ElapsedMilliseconds}ms — {stableWhy}; " +
+                     $"{role.Describe()}");
+                Emit($"tường: {scan.LargeWalls} khối lớn, {scan.MicroWalls} khối nhỏ, " +
+                     $"{scan.SecondaryWalls} khối lớp bảo thứ hai, ngưỡng V={scan.ValueThreshold}, " +
+                     $"quét {scanWatch.ElapsedMilliseconds}ms");
+
+                string cacheKey = BoardRouteCache.MakeKey(frame, role, scan.Wall);
+                BoardPlan plan = null;
+                string planWhy = null;
+
+                if (_routeCache.TryGet(cacheKey, role, frame.Width, frame.Height, out var cached))
                 {
-                    Throttle(lastHold, $"giữ, chưa bấm gì: {stableWhy}");
-
-                    // KHONG nghi o day. Da thay bang va dang gom khung on dinh, tuc dang trong
-                    // dung khoang thoi gian gap nhat: soi day tu chay va cu re dau tien co the chi
-                    // cach START ~0.2 giay. Mot khung tuong da ton ~175 ms, cong them 120 ms nghi
-                    // la tu nguyen bo mot phan ba ngan sach.
-                    continue;
+                    plan = BoardPlanner.ValidateCached(frame, role, scan, cached, out string cacheWhy);
+                    if (plan is not null) Emit($"cache tuyến: HIT, chứng nhận lại {plan.BuildMs:F0}ms");
+                    else Emit("cache tuyến: loại — " + cacheWhy);
                 }
 
-                Emit($"tường ổn định — {stableWhy}; {role.Describe()}");
-                Emit($"tường: {scan.LargeWalls} khối lớn, {scan.MicroWalls} khối nhỏ, " +
-                     $"{scan.SecondaryWalls} khối lớp bảo thứ hai, ngưỡng V={scan.ValueThreshold}");
-
-                var plan = BoardPlanner.Plan(frame, role, scan, out string planWhy);
                 if (plan is null)
                 {
-                    history.Clear();
+                    plan = BoardPlanner.Plan(frame, role, scan, out planWhy);
+                    if (plan is not null) _routeCache.Put(cacheKey, plan);
+                }
+                if (plan is null)
+                {
+                    signatureHistory.Clear();
+                    boardLatency = null;
                     Throttle(lastHold, $"giữ, chưa bấm gì: {planWhy}");
                     Sleep(ct, _cfg.Board.WatchPollMs);
                     continue;
@@ -598,8 +687,11 @@ internal sealed class BoardBot
                     _rounds++;
                     RoundsChanged?.Invoke(_rounds);
                     Emit($"xong bảng #{_rounds} — {note}");
-                    history.Clear();
-                    Sleep(ct, FinalGoalSettleMs);
+                    Emit("đã giải — chờ bảng đóng");
+                    afterSolve.OnRouteSuccess();
+                    waitClock.Restart();
+                    signatureHistory.Clear();
+                    boardLatency = null;
                     continue;
                 }
 
@@ -696,6 +788,11 @@ internal sealed class BoardBot
         // co du lieu that. Do duoc trong game: 2.0px moi khung 3.35ms = 0.60 px/ms o 2K, tuc 0.45
         // px/ms o moc 1080p — con so danh nghia kia gan nhu dung y.
         double speed = 0.42 * scale;              // px/ms
+        double inputLatencyMs = InitialInputLatencyMs;
+        var motion = new BoardMotionEstimator();
+        motion.Reset(0, reader.PatchTimestamp != 0
+            ? reader.PatchTimestamp
+            : Stopwatch.GetTimestamp(), speed);
         var sinceAccepted = Stopwatch.StartNew();
 
         void Accept(Point from, Point to, string key)
@@ -703,6 +800,15 @@ internal sealed class BoardBot
             int adv = Along(from, to, key);
             double dt = sinceAccepted.Elapsed.TotalMilliseconds;
             if (adv > 0 && dt > 0.5) speed = 0.7 * speed + 0.3 * (adv / dt);
+            if (adv > 0)
+            {
+                long frameTs = reader.PatchTimestamp != 0
+                    ? reader.PatchTimestamp
+                    : Stopwatch.GetTimestamp();
+                motion.Update(motion.Position + adv, frameTs);
+                if (motion.SpeedPxPerMs > 0)
+                    speed = 0.7 * speed + 0.3 * motion.SpeedPxPerMs;
+            }
             stats.Advance(adv);
             sinceAccepted.Restart();
         }
@@ -813,12 +919,18 @@ internal sealed class BoardBot
                                     $"(góc #{idx}), còn {Along(tip, corner, currentKey)}px tới góc", stats);
 
                     int rem = Along(tip, corner, currentKey);
+                    double lead = motion.LeadDistance(
+                        Stopwatch.GetTimestamp(),
+                        processingMs: 0.5,
+                        inputLatencyMs,
+                        PredictiveLeadMaxRef * scale);
+                    int predictiveEps = eps + (int)Math.Ceiling(lead);
 
                     // `crossed` la dieu kien quan trong hon `inZone`: no bat duoc ca khi vong chay
                     // cham va day da vuot qua goc giua hai lan nhin. Nho no, nhip vong te chi lam
                     // cu re TRE chu khong lam BO goc.
-                    bool crossed = prevRem is { } pr && pr > eps && rem <= eps;
-                    bool inZone = rem >= -lateTol && rem <= eps;
+                    bool crossed = prevRem is { } pr && pr > predictiveEps && rem <= predictiveEps;
+                    bool inZone = rem >= -lateTol && rem <= predictiveEps;
 
                     // LUOI AN TOAN: goc nay da bi VUOT ngay tu lan nhin dau tien (prevRem con null,
                     // tuc ta vua xac nhan xong cu re truoc). Xay ra khi doan qua ngan: bam phim
@@ -865,7 +977,8 @@ internal sealed class BoardBot
                         prevRem = null;
 
                         Emit($"  #{idx} {currentKey}→{next.Key} bắn tại ({tip.X},{tip.Y}) " +
-                             $"rem={rem}px " +
+                             $"t={route.Elapsed.TotalMilliseconds:F0}ms rem={rem}px " +
+                             $"lead={lead:F1}px " +
                              $"{(alreadyPast ? "[ĐÃ VƯỢT — bắn muộn]" : crossed ? "[qua góc]" : "[trong vùng]")} " +
                              $"mốc trừ {baseNew:F0}/{baseOld:F0}px | {stats.Describe()}" +
                              $", tốc độ {speed * 1000:F0}px/s, chặn nhảy " +
@@ -915,6 +1028,10 @@ internal sealed class BoardBot
 
                     idx++;
                     currentKey = next.Key;
+                    inputLatencyMs = 0.8 * inputLatencyMs + 0.2 * EstimateInputOnsetMs(samples, scale, ms);
+                    motion.Reset(0, reader.PatchTimestamp != 0
+                        ? reader.PatchTimestamp
+                        : Stopwatch.GetTimestamp(), speed);
                     pending = false;
                     continue;
                 }
@@ -1057,6 +1174,25 @@ internal sealed class BoardBot
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Độ trễ phím = lúc đầu dây BẮT ĐẦU chạy trên trục mới, không phải lúc đủ mạnh để xác nhận
+    /// rẽ (cái sau còn gồm quãng đi và bỏ phiếu nhiều khung). Học nhầm thời gian xác nhận sẽ
+    /// đẩy lead ngày càng sớm rồi rẽ trước cửa an toàn.
+    /// </summary>
+    internal static double EstimateInputOnsetMs(
+        List<(double Ms, double New, double Old)> samples, double scale, double fallbackMs)
+    {
+        double onsetPx = Math.Max(1.2, 1.6 * scale);
+        if (samples is not null)
+        {
+            foreach (var s in samples)
+            {
+                if (s.New >= onsetPx) return Math.Clamp(s.Ms, 1.0, 12.0);
+            }
+        }
+        return Math.Clamp(fallbackMs, 1.0, 12.0);
     }
 
     /// <summary>

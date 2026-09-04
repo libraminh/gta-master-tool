@@ -33,6 +33,8 @@
   </Target>
 
   <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+
     <!-- Mau dong ho toc do, dung cho phep do "dang trong xe" bang NCC.
          Sinh ra boi che do pick-car-template; phai di kem exe khi publish. -->
     <Content Include="Jobs\Oil\car-template.png" Condition="Exists('Jobs\Oil\car-template.png')">

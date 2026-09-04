@@ -22,6 +22,21 @@ Nếu exe đang mở: **không kill**. Báo đúng câu này rồi dừng:
 
 Đóng gói share: `tools/build-portable.ps1` (zip trong `dist\`, không đổi `app\`).
 
+## Verify nghề Điện
+
+```
+app\GtaMiniGameBot.exe --verify-board
+app\GtaMiniGameBot.exe --verify-capture
+app\GtaMiniGameBot.exe --verify-capture --strict
+app\GtaMiniGameBot.exe --verify-wire
+app\GtaMiniGameBot.exe --verify-nav
+```
+
+Water & Power ưu tiên DXGI Desktop Duplication (`Vortice.Direct3D11`) và tự lùi về GDI nếu GPU,
+output xoay hoặc desktop mode không hỗ trợ. Capture chỉ sống khi job Điện chạy, chỉ xử lý frame mới.
+Tuyến cache nằm trong `%AppData%\GtaMiniGameBot\electric\`; cache luôn được kiểm chứng lại trên
+tường hiện tại trước khi gửi phím.
+
 ## Dữ liệu
 
 - Config / ROI / icon: `%AppData%\GtaMiniGameBot` (`AppPaths`).
@@ -53,7 +68,7 @@ Build ra `app\` rồi bảo user chạy `app\GtaMiniGameBot.exe`. Không verify 
 | `src/GtaMiniGameBot/` | Vỏ app: `Program.cs`, `HomeForm.cs` |
 | `src/GtaMiniGameBot/Jobs/` | Từng job: Oil, Fishing, Miner, Wood, Electric (+ Nav) |
 | `src/GtaMiniGameBot/Utils/` | Tab Tiện ích |
-| `src/GtaMiniGameBot/Core/` | Input, vision, log, discord, overlay |
+| `src/GtaMiniGameBot/Core/` | Input, vision, capture DXGI/GDI, log, discord, overlay |
 | `src/GtaMiniGameBot/Ui/` | Theme / control dùng chung |
 | `app/` | Exe chạy hàng ngày |
 | `packaging/defaults/` | ROI / icon mang đi share |

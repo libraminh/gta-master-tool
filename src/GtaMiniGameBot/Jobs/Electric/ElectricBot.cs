@@ -25,6 +25,8 @@ internal sealed class ElectricBot
     private WireBot _wire;
     private BoardBot _board;
     private NavBot _navBot;
+    private BoardRouteCache _boardCache;
+    private IScreenCaptureSession _boardCapture;
 
     /// <summary>
     /// Cấu hình Discord (webhook, ID để ping) nằm trong <see cref="FishingConfig"/> vì job Câu cá
@@ -92,6 +94,8 @@ internal sealed class ElectricBot
 
         try
         {
+            _boardCache = BoardRouteCache.Load();
+
             if (wantWire)
             {
                 wireProbe = WireReader.Open(_cfg, _screen, _profile);
@@ -104,7 +108,8 @@ internal sealed class ElectricBot
 
             if (wantBoard)
             {
-                boardProbe = BoardReader.Open(_cfg, _screen, _profile);
+                _boardCapture = ScreenCaptureFactory.Create(_screen, Emit);
+                boardProbe = BoardReader.Open(_cfg, _screen, _profile, _boardCapture);
                 if (!boardProbe.Configured)
                 {
                     Emit("không thăm dò được bảng: " + boardProbe.Problem);
@@ -132,7 +137,7 @@ internal sealed class ElectricBot
             // con "minigame da mo chua" thi o day moi tra loi duoc.
             bool PanelVisible() =>
                 (wantWire && !wireProbe.FindPanel().IsEmpty) ||
-                (wantBoard && boardProbe.TryRead(out _) is not null);
+                (wantBoard && boardProbe.BoardOpen(conservativeOnCaptureFailure: false));
 
             // Bo dieu huong can biet no vua duoc goi lai SAU mot minigame (de reset camera, lay lai W)
             // va bang da bien mat bao lau: WireBot bao Solved sau PanelGoneMs, BoardBot sau 3 s.
@@ -153,7 +158,7 @@ internal sealed class ElectricBot
                     continue;
                 }
 
-                if (wantBoard && boardProbe.TryRead(out _) is not null)
+                if (wantBoard && boardProbe.BoardOpen(conservativeOnCaptureFailure: false))
                 {
                     Emit("thấy bảng nước/điện — giao cho bộ giải bảng.");
                     if (!RunBoard(ct, out message, out bool solved)) return;
@@ -184,8 +189,11 @@ internal sealed class ElectricBot
         }
         finally
         {
+            _boardCache?.SaveIfDirty();
             wireProbe?.Dispose();
             boardProbe?.Dispose();
+            _boardCapture?.Dispose();
+            _boardCapture = null;
             HeldKeys.ReleaseAll();
             Stopped?.Invoke(message);
         }
@@ -206,8 +214,8 @@ internal sealed class ElectricBot
         return true;
     }
 
-    /// <summary>BoardBot chỉ báo Solved sau khi bảng đã mất liên tục 3 s (BoardBot.cs, nhánh <c>sinceSeen</c>).</summary>
-    private const int BoardGoneMsAfterSolved = 3_000;
+    /// <summary>BoardBot chỉ báo Solved sau khi bảng đã mất liên tục <see cref="BoardAfterSolvePolicy.BoardGoneMs"/>.</summary>
+    private const int BoardGoneMsAfterSolved = BoardAfterSolvePolicy.BoardGoneMs;
 
     /// <summary>
     /// Cho bộ điều hướng đi tới điểm làm việc rồi bấm E. Nó không bao giờ tự bỏ cuộc (mất điểm thì
@@ -305,7 +313,7 @@ internal sealed class ElectricBot
         BoardStopReason reason = BoardStopReason.UserStopped;
         string detail = "";
 
-        _board = new BoardBot(_cfg, _screen, _profile);
+        _board = new BoardBot(_cfg, _screen, _profile, _boardCache, _boardCapture);
         _board.Log += Emit;
         _board.RoundsChanged += _ => Bump();
         _board.Stopped += (r, m) => { reason = r; detail = m; done.Set(); };

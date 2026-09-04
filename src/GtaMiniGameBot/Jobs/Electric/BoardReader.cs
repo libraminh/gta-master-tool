@@ -1,3 +1,5 @@
+using System.Diagnostics;
+
 namespace GtaMiniGameBot;
 
 /// <summary>
@@ -96,6 +98,8 @@ internal sealed class BoardFrame
 
     public byte[] Bgr { get; init; }
     public Hsv Hsv { get; init; }
+    public long FrameId { get; init; }
+    public long CaptureTimestamp { get; init; }
 
     public double Sx { get; init; }
     public double Sy { get; init; }
@@ -189,11 +193,21 @@ internal sealed class BoardReader : IDisposable
 
     private IPixelSource _title;
     private IPixelSource _roi;
+    private IScreenCaptureSession _capture;
+    private bool _ownsCapture;
+    private Rectangle _titleRegion;
+    private Rectangle _roiRegion;
+    private byte[] _titleBgra;
+    private byte[] _roiBgra;
+    private CapturedRegion _lastBoardCapture;
+    private int _lastTitleCount;
+    private bool _lastBoardOpen;
 
     /// <summary>Cửa sổ nhỏ đi theo đầu dây trong vòng chạy. Xem <see cref="OpenPatch"/>.</summary>
     private RegionReader _patch;
 
     private byte[] _patchBuf;
+    private byte[] _patchBgra;
     private int _patchSide;
 
     private BoardReader(ElectricConfig cfg, ElectricProfile profile,
@@ -208,14 +222,43 @@ internal sealed class BoardReader : IDisposable
 
     public string Problem { get; private set; }
 
-    public bool Configured => _roi is not null && _title is not null;
+    public bool Configured => _capture is not null || (_roi is not null && _title is not null);
 
-    public Rectangle RoiRegion => _roi?.Region ?? Rectangle.Empty;
+    public Rectangle RoiRegion => _capture is not null ? _roiRegion : _roi?.Region ?? Rectangle.Empty;
+    public string CaptureBackend => _capture?.BackendName ?? (_roi is null ? "none" : "GDI/bitmap");
+    public long PatchFrameId { get; private set; }
+    public long PatchTimestamp { get; private set; }
 
     // ---------------------------------------------------------------- mo
 
-    public static BoardReader Open(ElectricConfig cfg, Screen screen, ElectricProfile profile)
-        => Create(cfg, profile, r => new RegionReader(r), b => FishingConfig.ToAbsolute(screen, b));
+    public static BoardReader Open(ElectricConfig cfg, Screen screen, ElectricProfile profile,
+                                   IScreenCaptureSession capture = null)
+    {
+        if (profile is null)
+            return new BoardReader(cfg, null, null, null, "chưa có cấu hình cho màn hình này");
+
+        var roi = profile.ScanBoardRoi();
+        var title = profile.ScanTitleBand();
+        if (!roi.IsSet || !title.IsSet)
+            return new BoardReader(cfg, profile, null, null, "độ phân giải quá nhỏ, không suy được ROI bảng");
+
+        try
+        {
+            bool owns = capture is null;
+            capture ??= ScreenCaptureFactory.Create(screen);
+            return new BoardReader(cfg, profile, null, null, null)
+            {
+                _capture = capture,
+                _ownsCapture = owns,
+                _titleRegion = FishingConfig.ToAbsolute(screen, title),
+                _roiRegion = FishingConfig.ToAbsolute(screen, roi)
+            };
+        }
+        catch (Exception ex)
+        {
+            return new BoardReader(cfg, profile, null, null, "không mở được capture bảng: " + ex.Message);
+        }
+    }
 
     public static BoardReader OpenForBitmap(ElectricConfig cfg, ElectricProfile profile, Bitmap still)
         => Create(cfg, profile, r => new BitmapRegion(still, r), b => b.ToRectangle());
@@ -247,6 +290,41 @@ internal sealed class BoardReader : IDisposable
     // ---------------------------------------------------------------- doc khung
 
     /// <summary>
+    /// Chụp title + ROI từ cùng một frame mới và chỉ dựng chữ ký 128×72. Không dò đầu nối,
+    /// không tạo HSV full-resolution và không quét tường.
+    /// </summary>
+    public BoardWallSignature TryQuickSignature(out string why)
+    {
+        why = null;
+        if (_capture is null)
+        {
+            why = "đường ảnh tĩnh không có chữ ký frame trực tiếp";
+            return null;
+        }
+        if (!CaptureLiveBoard(out why)) return null;
+
+        return BoardWallSignature.Create(
+            _lastBoardCapture.Bgra,
+            _lastBoardCapture.Region.Width,
+            _lastBoardCapture.Region.Height,
+            _lastBoardCapture.Stride,
+            _lastBoardCapture.FrameId,
+            _lastBoardCapture.CaptureTimestamp);
+    }
+
+    /// <summary>Đọc đầy đủ từ frame gần nhất mà <see cref="TryQuickSignature"/> đã giữ lại.</summary>
+    public BoardFrame TryReadLast(out string why)
+    {
+        why = null;
+        if (_capture is null || _lastBoardCapture is null)
+        {
+            why = "chưa có frame bảng để đọc";
+            return null;
+        }
+        return BuildLiveFrame(_lastBoardCapture, _lastTitleCount, out why);
+    }
+
+    /// <summary>
     /// Đọc một khung. Null nghĩa là bảng KHÔNG đang mở (hoặc chưa vẽ xong) — trạng thái bình
     /// thường, không phải lỗi; <paramref name="why"/> nói rõ vướng ở đâu để log lên được.
     /// </summary>
@@ -254,6 +332,11 @@ internal sealed class BoardReader : IDisposable
     {
         why = null;
         if (!Configured) { why = Problem; return null; }
+        if (_capture is not null)
+        {
+            if (!CaptureLiveBoard(out why)) return null;
+            return BuildLiveFrame(_lastBoardCapture, _lastTitleCount, out why);
+        }
 
         int titleCount;
         try
@@ -295,19 +378,94 @@ internal sealed class BoardReader : IDisposable
             Sy = _profile.Sy,
             Scale = _profile.Scale,
             Terminals = terms,
-            TitleCount = titleCount
+            TitleCount = titleCount,
+            FrameId = 0,
+            CaptureTimestamp = Stopwatch.GetTimestamp()
+        };
+    }
+
+    private bool CaptureLiveBoard(out string why)
+    {
+        why = null;
+        var regions = new[] { _titleRegion, _roiRegion };
+        var reuse = new[] { _titleBgra, _roiBgra };
+        if (!_capture.TryCapture(regions, reuse, 80, out var captures) || captures.Count != 2)
+        {
+            why = _capture.Status == ScreenCaptureStatus.TimedOut
+                ? "chưa có frame màn hình mới"
+                : "không chụp được bảng: " + _capture.StatusDetail;
+            Problem = why;
+            return false;
+        }
+
+        var title = captures[0];
+        var board = captures[1];
+        _titleBgra = title.Bgra;
+        _roiBgra = board.Bgra;
+        _lastTitleCount = CountTitle(title);
+
+        int need = (int)(_cfg.Board.TitleMinPixels * _profile.Sx * _profile.Sy);
+        _lastBoardOpen = _lastTitleCount >= need;
+        if (_lastTitleCount < need)
+        {
+            why = $"bảng chưa mở (chữ tiêu đề {_lastTitleCount}/{need} px)";
+            _lastBoardCapture = null;
+            return false;
+        }
+
+        _lastBoardCapture = board;
+        return true;
+    }
+
+    private BoardFrame BuildLiveFrame(CapturedRegion captured, int titleCount, out string why)
+    {
+        why = null;
+        int w = captured.Region.Width, h = captured.Region.Height;
+        byte[] bgr = BgraToBgr(captured.Bgra, w, h, captured.Stride);
+        var hsv = ImageOps.BgrToHsv(bgr, w, h);
+        var terms = DetectTerminals(hsv, _profile.Scale);
+        if (terms.Length != 2)
+        {
+            why = $"thấy {terms.Length} đầu nối, cần đúng 2";
+            return null;
+        }
+
+        return new BoardFrame
+        {
+            RoiRect = captured.Region,
+            Bgr = bgr,
+            Hsv = hsv,
+            Sx = _profile.Sx,
+            Sy = _profile.Sy,
+            Scale = _profile.Scale,
+            Terminals = terms,
+            TitleCount = titleCount,
+            FrameId = captured.FrameId,
+            CaptureTimestamp = captured.CaptureTimestamp
         };
     }
 
     /// <summary>
     /// Chụp lại ROI bảng và trả đệm BGR, KHÔNG dò lại tiêu đề hay đầu nối.
     ///
-    /// Dùng trong vòng closed-loop lúc đang chạy tuyến: ở đó bot cần khung mới ~500 lần/giây-quy-đổi
-    /// và chỉ quan tâm tới đầu dây đang di chuyển; dò lại đầu nối mỗi khung là trả tiền cho thông
-    /// tin đã đóng băng từ trước. Null nếu không chụp được.
+    /// Dùng lúc bắt đầu tuyến để tìm đầu dây thật. DXGI chỉ trả frame trình chiếu mới; GDI fallback
+    /// vẫn dùng cùng contract buffer. Null nếu không chụp được.
     /// </summary>
     public byte[] GrabRoi(byte[] into = null)
     {
+        if (_capture is not null)
+        {
+            if (!_capture.TryCapture(_roiRegion, _roiBgra, 80, out var captured))
+            {
+                Problem = "không chụp được ROI bảng: " + _capture.StatusDetail;
+                return null;
+            }
+            _roiBgra = captured.Bgra;
+            PatchFrameId = captured.FrameId;
+            PatchTimestamp = captured.CaptureTimestamp;
+            return BgraToBgr(captured.Bgra, captured.Region.Width, captured.Region.Height,
+                             captured.Stride, into);
+        }
         if (_roi is null) return null;
         try { _roi.Refresh(); return _roi.BgrBuffer(into); }
         catch (Exception ex) { Problem = "không chụp được ROI bảng: " + ex.Message; return null; }
@@ -322,8 +480,17 @@ internal sealed class BoardReader : IDisposable
     /// tắt cả job. <c>TryRead</c> không dùng được ở đây: nó trả null cho cả trường hợp bảng vẫn mở
     /// mà chưa dò ra hai đầu nối.
     /// </summary>
-    public bool BoardOpen()
+    public bool BoardOpen(bool conservativeOnCaptureFailure = true)
     {
+        if (_capture is not null)
+        {
+            if (!_capture.TryCapture(_titleRegion, _titleBgra, 40, out var captured))
+                return conservativeOnCaptureFailure && _lastBoardOpen;
+            _titleBgra = captured.Bgra;
+            int need = (int)(_cfg.Board.TitleMinPixels * _profile.Sx * _profile.Sy);
+            _lastBoardOpen = CountTitle(captured) >= need;
+            return _lastBoardOpen;
+        }
         if (_title is null) return false;
         try
         {
@@ -345,11 +512,12 @@ internal sealed class BoardReader : IDisposable
     /// <summary>
     /// Mở cửa sổ chụp NHỎ dùng cho vòng chạy, cạnh <c>2·half+1</c>.
     ///
-    /// Vì sao phải có đường này thay vì cứ gọi <see cref="GrabRoi"/>: đo được trên máy 2560×1440,
+    /// Vì sao phải có đường này thay vì cứ gọi <see cref="GrabRoi"/>: ở GDI fallback 2560×1440,
     /// một lượt chụp cả ROI 1814×1053 tốn 16.08 ms (chụp 11.59 + đổi BGRA→BGR 4.03), còn chụp cửa
     /// sổ 320×320 với góc di động tốn 3.35 ms — và con số đó gần như KHÔNG đổi từ 288×288 tới
     /// 384×384, vì phần lớn là độ trễ cố định của GDI/DWM chứ không phải dữ liệu. Tức 62 lượt/giây
-    /// so với 300 lượt/giây. Bộ điều khiển checkpoint cần nhìn đầu dây vài chục lần trên mỗi đoạn
+    /// so với 300 lượt/giây. DXGI path chờ đúng frame trình chiếu mới và chỉ readback miếng này.
+    /// Bộ điều khiển checkpoint cần nhìn đầu dây vài chục lần trên mỗi đoạn
     /// để bắn phím rẽ đúng góc; ở nhịp 16 ms thì mỗi lần nhìn dây đã đi 6–9 px, tức cú rẽ luôn trễ
     /// gần bằng cả khoảng thoát của tuyến.
     ///
@@ -360,27 +528,35 @@ internal sealed class BoardReader : IDisposable
     public bool OpenPatch(int half, out string why)
     {
         why = null;
-        if (_roi is null) { why = Problem ?? "chưa mở được ROI bảng"; return false; }
+        if (_capture is null && _roi is null)
+        {
+            why = Problem ?? "chưa mở được ROI bảng";
+            return false;
+        }
 
-        if (_roi is not RegionReader)
+        if (_capture is null && _roi is not RegionReader)
         {
             why = "cửa sổ chụp nhỏ chỉ có trên đường màn hình thật";
             return false;
         }
 
         int side = Math.Max(16, half * 2 + 1);
-        if (side > _roi.Region.Width || side > _roi.Region.Height)
+        Rectangle roi = RoiRegion;
+        if (side > roi.Width || side > roi.Height)
         {
-            why = $"cửa sổ {side}×{side} lớn hơn ROI {_roi.Region.Width}×{_roi.Region.Height}";
+            why = $"cửa sổ {side}×{side} lớn hơn ROI {roi.Width}×{roi.Height}";
             return false;
         }
 
         try
         {
             _patch?.Dispose();
-            _patch = new RegionReader(new Rectangle(_roi.Region.Left, _roi.Region.Top, side, side));
+            _patch = _capture is null
+                ? new RegionReader(new Rectangle(roi.Left, roi.Top, side, side))
+                : null;
             _patchSide = side;
             _patchBuf = new byte[side * side * 3];
+            _patchBgra = _capture is null ? null : new byte[side * side * 4];
             return true;
         }
         catch (Exception ex)
@@ -401,17 +577,36 @@ internal sealed class BoardReader : IDisposable
     /// <returns>Vùng đã chụp, toạ độ TRONG ROI. Rỗng nghĩa là chụp lỗi.</returns>
     public Rectangle GrabPatch(Point centerRoi)
     {
-        if (_patch is null || _roi is null) return Rectangle.Empty;
+        if (_capture is null && (_patch is null || _roi is null)) return Rectangle.Empty;
 
-        int w = _roi.Region.Width, h = _roi.Region.Height, side = _patchSide;
+        Rectangle roi = RoiRegion;
+        int w = roi.Width, h = roi.Height, side = _patchSide;
         int x0 = Math.Clamp(centerRoi.X - side / 2, 0, w - side);
         int y0 = Math.Clamp(centerRoi.Y - side / 2, 0, h - side);
 
         try
         {
-            _patch.MoveWindow(_roi.Region.Left + x0, _roi.Region.Top + y0);
-            _patch.Refresh();
-            _patch.BgrBuffer(_patchBuf);
+            if (_capture is not null)
+            {
+                var absolute = new Rectangle(roi.Left + x0, roi.Top + y0, side, side);
+                if (!_capture.TryCapture(absolute, _patchBgra, 40, out var captured))
+                {
+                    Problem = "không chụp được cửa sổ nhỏ: " + _capture.StatusDetail;
+                    return Rectangle.Empty;
+                }
+                _patchBgra = captured.Bgra;
+                BgraToBgr(captured.Bgra, side, side, captured.Stride, _patchBuf);
+                PatchFrameId = captured.FrameId;
+                PatchTimestamp = captured.CaptureTimestamp;
+            }
+            else
+            {
+                _patch.MoveWindow(roi.Left + x0, roi.Top + y0);
+                _patch.Refresh();
+                _patch.BgrBuffer(_patchBuf);
+                PatchFrameId++;
+                PatchTimestamp = Stopwatch.GetTimestamp();
+            }
             return new Rectangle(x0, y0, side, side);
         }
         catch (Exception ex)
@@ -438,6 +633,44 @@ internal sealed class BoardReader : IDisposable
                 hsv.S[i] >= b.TitleSatMin && hsv.V[i] >= b.TitleValMin) n++;
         }
         return n;
+    }
+
+    private int CountTitle(CapturedRegion src)
+    {
+        var b = _cfg.Board;
+        int n = 0;
+        for (int y = 0; y < src.Region.Height; y++)
+        {
+            int row = y * src.Stride;
+            for (int x = 0; x < src.Region.Width; x++)
+            {
+                int i = row + x * 4;
+                var (h, s, v) = ImageOps.HsvOf(src.Bgra[i], src.Bgra[i + 1], src.Bgra[i + 2]);
+                if (h >= b.TitleHueMin && h <= b.TitleHueMax &&
+                    s >= b.TitleSatMin && v >= b.TitleValMin) n++;
+            }
+        }
+        return n;
+    }
+
+    private static byte[] BgraToBgr(byte[] bgra, int width, int height, int stride,
+                                    byte[] into = null)
+    {
+        int need = checked(width * height * 3);
+        var result = into is not null && into.Length == need ? into : new byte[need];
+        for (int y = 0; y < height; y++)
+        {
+            int src = y * stride;
+            int dst = y * width * 3;
+            for (int x = 0; x < width; x++)
+            {
+                result[dst++] = bgra[src++];
+                result[dst++] = bgra[src++];
+                result[dst++] = bgra[src++];
+                src++;
+            }
+        }
+        return result;
     }
 
     // ---------------------------------------------------------------- dau noi
@@ -777,6 +1010,8 @@ internal sealed class BoardReader : IDisposable
 
     public void Dispose()
     {
+        if (_ownsCapture) _capture?.Dispose();
+        _capture = null;
         _title?.Dispose();
         _title = null;
         _roi?.Dispose();
@@ -784,5 +1019,7 @@ internal sealed class BoardReader : IDisposable
         _patch?.Dispose();
         _patch = null;
         _patchBuf = null;
+        _patchBgra = null;
+        _lastBoardCapture = null;
     }
 }
