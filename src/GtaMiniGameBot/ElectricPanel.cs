@@ -194,7 +194,7 @@ internal sealed class ElectricPanel : UserControl
         _eDist.Max = (int)(NavTuning.SimpleEMaxDistMaxRef * 2);   // du cho ca man rong
         _eDist.Step = 1;
         navBox.Controls.Add(_eDist);
-        Lab(navBox, "px  — khớp số “dist=” trong Diễn biến; xa hơn thì đi tiếp chứ không bấm.",
+        Lab(navBox, "px  — khớp số “dist=” trong Diễn biến.",
             Theme.Px(306), Theme.Px(82), w - Theme.Px(318));
         RefreshEDistUi();
         _eDist.ValueChanged += OnEDistChanged;
