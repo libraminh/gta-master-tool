@@ -11,7 +11,10 @@ namespace GtaMiniGameBot;
 ///
 /// Phần 1 KHÔNG chứng minh được ngưỡng màu: ảnh vẽ tay dùng đúng màu mình chọn nên nó chỉ kiểm hình
 /// học và tỉ lệ. Phần 2 mới là phần chịu lực — nó trả lời câu duy nhất đáng hỏi: ở HUD THẬT của
-/// server này, hai tâm icon trong config có trỏ đúng chỗ không. Lệch thì sửa
+/// server này, bộ đọc có ra đúng cái phần trăm mắt người nhìn thấy không. Nó in phần trăm theo cách
+/// TỰ DÒ VÀNH đặt cạnh phần trăm theo dải cố định 17–23 của bản Python, kèm bán kính và độ lệch tâm
+/// dò được — chênh nhau nhiều nghĩa là dải cố định đang bắn trượt vành, đúng gốc của lỗi "ăn sớm".
+/// Không thấy icon nào cả thì mới là chuyện tâm sai hẳn: sửa
 /// <c>Survival.FoodCenterXRef</c>/<c>WaterCenterXRef</c> trong electric.json.
 ///
 /// Chạy: GtaMiniGameBot.exe --verify-survival
@@ -42,8 +45,12 @@ internal static class VerifySurvival
             Console.WriteLine($"  vùng chụp {roi.Width}×{roi.Height} @ {roi.X},{roi.Y}");
             Console.WriteLine($"  tâm bánh ({cfg.Survival.FoodCenterXRef * s.Sx:F1},{cfg.Survival.FoodCenterYRef * s.Sy:F1})  " +
                               $"tâm nước ({cfg.Survival.WaterCenterXRef * s.Sx:F1},{cfg.Survival.WaterCenterYRef * s.Sy:F1})");
-            Console.WriteLine($"  vành {NavTuning.SurvivalRingRminRef * s.Max:F1}→{NavTuning.SurvivalRingRmaxRef * s.Max:F1} px, " +
-                              $"lõi cần {Math.Max(3, (int)(NavTuning.SurvivalCoreMinPixels * s.Area))} px");
+            Console.WriteLine($"  dò vành trong {NavTuning.SurvivalRingSearchRminRef * s.Max:F1}→" +
+                              $"{NavTuning.SurvivalRingSearchRmaxRef * s.Max:F1} px " +
+                              $"(dự phòng {NavTuning.SurvivalRingRminRef * s.Max:F1}→{NavTuning.SurvivalRingRmaxRef * s.Max:F1}), " +
+                              $"lệch tâm ±{NavTuning.SurvivalCenterSearchRef * s.Max:F0} px, " +
+                              $"lõi cần {Math.Max(3, (int)(NavTuning.SurvivalCoreMinPixels * s.Area))} px, " +
+                              $"ngưỡng {cfg.Survival.LowThresholdPct:F0}%");
             fail += RealShots(cfg, profile, s, roi);
         }
 
@@ -87,6 +94,9 @@ internal static class VerifySurvival
         Check(ref fail, SurvivalSettings.SlotKeys("4,6").SequenceEqual(new ushort[] { 0x34, 0x36 }),
               "\"4,6\" → mã phím 0x34,0x36", "");
         Check(ref fail, SurvivalSettings.SlotKeys("").Length == 0, "chuỗi rỗng → không có phím nào", "");
+
+        // Hotbar chi bam duoc 4..8; 3 va 9 phai bi loai ngay o buoc doi ma phim.
+        Check(ref fail, SurvivalSettings.SlotKeys("3,9").Length == 0, "ngoài dải 4–8 → không có phím nào", "");
         return fail;
     }
 
@@ -106,6 +116,23 @@ internal static class VerifySurvival
         Check(ref fail, Math.Abs(d.FoodCenterXRef - 160.0) < 1e-9, "tâm âm → về mặc định", $"{d.FoodCenterXRef}");
         Check(ref fail, Math.Abs(d.WaterCenterYRef - 1047.0) < 1e-9, "tâm vượt màn → về mặc định", $"{d.WaterCenterYRef}");
 
+        // Ngoai dai hotbar: bo het roi bu lai tu mac dinh, chu KHONG duoc tra ve mot o.
+        var e = new SurvivalSettings { FoodSlots = "3,9", WaterSlots = "8" };
+        e.Normalize();
+        Check(ref fail, e.FoodSlots == "5,7", "ô 3/9 ngoài hotbar → về mặc định", e.FoodSlots);
+        Check(ref fail, e.WaterSlots == "8,4", "chỉ khai một ô → bù cho đủ hai", e.WaterSlots);
+
+        // Nguong nguoi dung go bay: kep vao dai chu khong lam ca tinh nang dai ra.
+        var t = new SurvivalSettings { LowThresholdPct = 400 };
+        t.Normalize();
+        Check(ref fail, Math.Abs(t.LowThresholdPct - NavTuning.SurvivalThresholdMaxPct) < 1e-9,
+              "ngưỡng vượt trần → kẹp", $"{t.LowThresholdPct:F0}%");
+
+        var t2 = new SurvivalSettings { LowThresholdPct = 0 };
+        t2.Normalize();
+        Check(ref fail, Math.Abs(t2.LowThresholdPct - NavTuning.SurvivalThresholdMinPct) < 1e-9,
+              "ngưỡng 0 → kẹp về sàn", $"{t2.LowThresholdPct:F0}%");
+
         // Chi kep, KHONG nem: ElectricConfig.Load nuot moi exception va tra config moi.
         bool threw = false;
         try { new SurvivalSettings { FoodSlots = null, WaterSlots = null }.Normalize(); }
@@ -116,11 +143,20 @@ internal static class VerifySurvival
 
     /// <summary>Vẽ một đồng hồ: đĩa lõi + vòng cung quét <paramref name="sweepDeg"/> độ từ 3 giờ.</summary>
     private static void DrawGauge(Bitmap bmp, NavScale s, double cxRef, double cyRef, double sweepDeg, Color c)
+        => DrawGaugeAt(bmp, s, cxRef, cyRef, sweepDeg, c,
+            0.5 * (NavTuning.SurvivalRingRminRef + NavTuning.SurvivalRingRmaxRef), 9.0);
+
+    /// <summary>
+    /// Như trên nhưng nói rõ bán kính và bề dày vành (mốc 1080p) — để dựng được cái HUD mà dải cố
+    /// định của bản Python bắn trượt.
+    /// </summary>
+    private static void DrawGaugeAt(Bitmap bmp, NavScale s, double cxRef, double cyRef, double sweepDeg,
+        Color c, double ringRRef, double penRef)
     {
         double cx = cxRef * s.Sx, cy = cyRef * s.Sy;
         double coreR = NavTuning.SurvivalCoreRadiusRef * s.Max;
-        double ringR = 0.5 * (NavTuning.SurvivalRingRminRef + NavTuning.SurvivalRingRmaxRef) * s.Max;
-        float pen = (float)(9.0 * s.Max);   // phu du ca dai rmin..rmax du GDI khong khu rang cua
+        double ringR = ringRRef * s.Max;
+        float pen = (float)(penRef * s.Max);
 
         using var g = Graphics.FromImage(bmp);
         using var br = new SolidBrush(c);
@@ -134,8 +170,12 @@ internal static class VerifySurvival
     }
 
     private static SurvivalReading Read(SurvivalSettings cfg, NavScale s, Bitmap bmp, double now)
+        => Read(cfg, s, bmp, now, new SurvivalState());
+
+    private static SurvivalReading Read(SurvivalSettings cfg, NavScale s, Bitmap bmp, double now,
+        SurvivalState state)
     {
-        var gauge = new SurvivalGauge(cfg, s);
+        var gauge = new SurvivalGauge(cfg, s, state);
         return gauge.Update(NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height)), now);
     }
 
@@ -193,6 +233,55 @@ internal static class VerifySurvival
             DrawGauge(bmp, s, cfg.WaterCenterXRef, cfg.WaterCenterYRef, 360, Food);
             var r = Read(cfg, s, bmp, 1.0);
             Check(ref fail, !r.WaterValid, "vàng ở ô nước → không nhận nhầm", "");
+        }
+
+        fail += OffCentreCases(w, h);
+        return fail;
+    }
+
+    /// <summary>
+    /// CA CHỊU LỰC CỦA BẢN SỬA "ĂN SỚM". Vành mảnh, nằm ở bán kính 28 (ngoài hẳn dải cố định 17–23
+    /// của bản Python) và cả icon lệch tâm so với config — đúng kiểu HUD của một server khác.
+    ///
+    /// Cách đo cũ bắn 7 tia trong dải 17–23 rồi bắt mỗi nan quạt trúng ≥2 tia: ở đây nó trúng 0 tia
+    /// nên đọc ra ~0 % và bot mở bữa ăn ngay lúc vạch còn đầy. Cách đo mới tự dò tâm + bán kính nên
+    /// phải ra đúng phần cung đã vẽ.
+    /// </summary>
+    private static int OffCentreCases(int w, int h)
+    {
+        int fail = 0;
+        Console.WriteLine($"  · vành lệch tâm & lệch bán kính {w}×{h}");
+        var s = new NavScale(w, h, 0);
+        var cfg = new SurvivalSettings();
+        cfg.Normalize();
+
+        const double ringRRef = 28.0, penRef = 4.0, offXRef = 3.0, offYRef = -2.0;
+
+        foreach (double sweep in new double[] { 360, 180, 90 })
+        {
+            using var bmp = Blank(w, h);
+            DrawGaugeAt(bmp, s, cfg.FoodCenterXRef + offXRef, cfg.FoodCenterYRef + offYRef,
+                sweep, Food, ringRRef, penRef);
+            DrawGaugeAt(bmp, s, cfg.WaterCenterXRef + offXRef, cfg.WaterCenterYRef + offYRef,
+                sweep, Water, ringRRef, penRef);
+
+            var state = new SurvivalState();
+            var r = Read(cfg, s, bmp, 1.0, state);
+
+            double want = sweep / 360.0 * 100.0;
+            Check(ref fail, r.FoodValid && Math.Abs(r.FoodPct - want) <= 6.0,
+                  $"bánh cung {sweep:F0}° ở bán kính {ringRRef:F0} lệch tâm ({offXRef:F0},{offYRef:F0}) → {want:F0}%",
+                  $"đọc {r.FoodPct:F1}%");
+            Check(ref fail, r.WaterValid && Math.Abs(r.WaterPct - want) <= 6.0,
+                  $"nước cung {sweep:F0}° tương tự → {want:F0}%", $"đọc {r.WaterPct:F1}%");
+
+            // Ban kinh phai ra dung cai da ve chu khong phai dai du phong 17-23. Chi doi hoi o cung
+            // 360: cung ngan van ra ban kinh dung nhung nhieu hon, va tri so do khong phai ket luan
+            // cua bo do — phan tram o tren moi la.
+            if (sweep >= 360)
+                Check(ref fail, state.FoodRing.ROk && Math.Abs(state.FoodRing.R / s.Max - ringRRef) <= 2.0,
+                      $"dò được bán kính vành bánh ≈ {ringRRef:F0}",
+                      state.FoodRing.ROk ? $"{state.FoodRing.R / s.Max:F1} mốc 1080p" : "chưa dò được");
         }
 
         return fail;
@@ -270,8 +359,20 @@ internal static class VerifySurvival
             using var shot = Load(p, name, out string why);
             if (shot is null) { Console.WriteLine($"  [{name}] bỏ qua: {why}"); continue; }
 
-            var r = Read(cfg.Survival, s, shot, 1.0);
+            // Doc HAI lan de tach bach: lan hai ep dung dai co dinh 17-23 va cam do lech tam, moi
+            // thu khac giu nguyen. Chenh nhau nhieu nghia la dai co dinh dang ban truot vanh cua
+            // HUD nay. (Day KHONG phai con so cua ban cu: ban cu con lay mau bang 7 tia nen con hut
+            // them nua — xem chu thich dau SurvivalGauge.)
+            var state = new SurvivalState();
+            var r = Read(cfg.Survival, s, shot, 1.0, state);
+            var fixedBand = ReadFixedBand(cfg.Survival, s, shot);
+
             Console.WriteLine($"  [{name}] ({label}) bánh={Pct(r.FoodValid, r.FoodPct)} nước={Pct(r.WaterValid, r.WaterPct)}");
+            Console.WriteLine($"      nếu ép dải cố định 17–23 và không dò tâm: " +
+                              $"bánh={Pct(fixedBand.FoodValid, fixedBand.FoodPct)} " +
+                              $"nước={Pct(fixedBand.WaterValid, fixedBand.WaterPct)}");
+            Ring("bánh", state.FoodRing, s);
+            Ring("nước", state.WaterRing, s);
 
             // Doc duoc HAI icon la ca kiem duy nhat dat cung o day: phan tram bao nhieu thi chi mat
             // nguoi moi xac nhan duoc, nhung "khong thay icon" thi chac chan la tam trong config
@@ -279,14 +380,16 @@ internal static class VerifySurvival
             Check(ref fail, r.FoodValid, $"[{name}] thấy icon bánh ở tâm đã cấu hình", "");
             Check(ref fail, r.WaterValid, $"[{name}] thấy icon nước ở tâm đã cấu hình", "");
 
-            if (name == "hud-doi" && r.FoodValid && r.WaterValid)
-                Console.WriteLine($"      → {(r.FoodPct < NavTuning.SurvivalLowThresholdPct ? "bánh" : "")}" +
-                                  $"{(r.WaterPct < NavTuning.SurvivalLowThresholdPct ? " nước" : "")}" +
-                                  $" dưới ngưỡng {NavTuning.SurvivalLowThresholdPct:F0}% → sẽ mở bữa ăn");
+            double thr = cfg.Survival.LowThresholdPct;
+            if (r.FoodValid && r.WaterValid)
+                Console.WriteLine($"      → ngưỡng {thr:F0}%: bánh {(r.FoodPct < thr ? "DƯỚI" : "trên")}, " +
+                                  $"nước {(r.WaterPct < thr ? "DƯỚI" : "trên")}" +
+                                  $"{(r.FoodPct < thr || r.WaterPct < thr ? " → sẽ mở bữa ăn" : "")}");
         }
 
-        // Vung chup phai om tron ca hai vanh, khong thi phan tram bi cat oan o ria khung.
-        double rmax = NavTuning.SurvivalRingRmaxRef * s.Max;
+        // Vung chup phai om tron ca hai vanh, ke ca dai TU DO rong hon dai co dinh — khong thi phan
+        // tram bi cat oan o ria khung dung cai kieu sinh ra loi "an som".
+        double rmax = NavTuning.SurvivalRingSearchRmaxRef * s.Max;
         foreach (var (cxr, cyr, who) in new[]
                  {
                      (cfg.Survival.FoodCenterXRef, cfg.Survival.FoodCenterYRef, "bánh"),
@@ -303,4 +406,39 @@ internal static class VerifySurvival
     }
 
     private static string Pct(bool valid, double v) => valid ? $"{v:F1}%" : "không đọc được";
+
+    /// <summary>
+    /// Đọc bằng ĐÚNG dải cố định 17–23 và tâm y nguyên trong config — tức là ép bộ đọc bỏ bước tự
+    /// dò, để đối chiếu. Ép bằng cách chốt sẵn kết quả "hiệu chuẩn" vào state: bán kính giữa dải,
+    /// lệch tâm 0. Bề dày dải trùng khớp vì <c>SurvivalRingHalfWidthRef</c> đúng bằng nửa dải cũ.
+    /// </summary>
+    private static SurvivalReading ReadFixedBand(SurvivalSettings cfg, NavScale s, Bitmap bmp)
+    {
+        double rc = 0.5 * (NavTuning.SurvivalRingRminRef + NavTuning.SurvivalRingRmaxRef) * s.Max;
+        var state = new SurvivalState();
+        foreach (var ring in new[] { state.FoodRing, state.WaterRing })
+        {
+            ring.ROk = true;
+            ring.CentreOk = true;
+            ring.OffX = 0;
+            ring.OffY = 0;
+            ring.R = rc;
+        }
+        return Read(cfg, s, bmp, 1.0, state);
+    }
+
+    private static void Ring(string who, SurvivalRing ring, NavScale s)
+    {
+        if (!ring.ROk)
+        {
+            Console.WriteLine($"      vành {who}: CHƯA dò được (vạch quá ngắn hoặc HUD mờ) → dùng dải dự phòng");
+            return;
+        }
+
+        Console.WriteLine($"      vành {who}: bán kính {ring.R:F1}px = {ring.R / s.Max:F1} mốc 1080p, " +
+                          (ring.CentreOk
+                              ? $"tâm lệch ({ring.OffX:+0;-0;0},{ring.OffY:+0;-0;0})px, "
+                              : "chưa chốt tâm (vành chưa đủ đầy) → dải nới rộng, ") +
+                          $"{ring.Strength} điểm ảnh");
+    }
 }

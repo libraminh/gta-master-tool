@@ -43,6 +43,12 @@ internal sealed class NavBot
     /// <summary>Do <see cref="ElectricBot"/> cấp: minigame có đang hiện không. CHỈ gọi từ luồng nav chính.</summary>
     public Func<bool> PanelVisible { get; set; }
 
+    /// <summary>
+    /// Trạng thái ăn uống dùng chung cho cả lượt bật job — do <see cref="ElectricBot"/> giữ, vì bot
+    /// này bị dựng lại sau mỗi minigame. Không cấp thì tự tạo (đường dùng trong test).
+    /// </summary>
+    public SurvivalState SurvivalState { get; init; } = new();
+
     public bool Running => _thread is { IsAlive: true };
 
     public event Action<string> Log;
@@ -141,7 +147,6 @@ internal sealed class NavBot
     private double _survivalPhaseStart;
     private readonly Queue<SurvivalItem> _survivalQueue = new();
     private SurvivalItem _survivalCurrent;
-    private double _survivalFoodBlockUntil, _survivalWaterBlockUntil;
     private bool _survivalKeyDown;
     private double _survivalKeyUpAt;
     private ushort _survivalKeyVk;
@@ -195,7 +200,7 @@ internal sealed class NavBot
             _job = new JobRecovery(_s, _screen, _input, _ctl, _watchdog, _tracker, _capture, _originX, _originY);
             _job.Log += Emit;
             _job.Finished += OnJobFinished;
-            _gauge = new SurvivalGauge(_cfg.Survival, _s);
+            _gauge = new SurvivalGauge(_cfg.Survival, _s, SurvivalState);
 
             Emit($"điều hướng: màn {_s.ScreenW}×{_s.ScreenH}, sx={_s.Sx:F3}, px×{_s.Px:F3}, chuột ×{_cfg.Nav.MouseSpeedMultiplier:F1}, " +
                  $"gốc mũi tên ({_originX:F0},{_originY:F0}), minimap {_capture.MinimapRegion.Width}×{_capture.MinimapRegion.Height}, " +
@@ -208,8 +213,12 @@ internal sealed class NavBot
             _lastShiftKeepaliveT = now0;
 
             if (_cfg.Survival.Enabled)
+            {
                 Emit($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}, " +
-                     $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% thì đứng yên {NavTuning.SurvivalFixedWaitS:F0}s để dùng");
+                     $"dưới {_cfg.Survival.LowThresholdPct:F0}% thì đứng yên {NavTuning.SurvivalFixedWaitS:F0}s để dùng");
+                if (SurvivalState.FoodOff) Emit("[ĂN UỐNG] BÁNH vẫn đang tắt (hết đồ ở lượt trước trong phiên này)");
+                if (SurvivalState.WaterOff) Emit("[ĂN UỐNG] NƯỚC vẫn đang tắt (hết đồ ở lượt trước trong phiên này)");
+            }
 
             if (AfterMinigame) EnterPostMinigame(now0);
 
@@ -1019,6 +1028,10 @@ internal sealed class NavBot
     {
         if (_survivalActive || !focused || !_cfg.Survival.Enabled) return false;
 
+        // Het ca banh lan nuoc thi thoi han: khong Due, khong chup man, khong dung cho. Day la cai
+        // ma nguoi dung thay ro nhat — giai xong mot bang la lai dung im quet do an trong tui rong.
+        if (SurvivalState.AllOff) return false;
+
         // Vi tri trong chuoi da lo WAIT_BOARD/POST_*/camera (nhung nhanh do deu nuot frame, va ba
         // duong ra "return false" cua SimpleFlow deu goi ResumeWorld truoc). Reset nghe thi KHONG:
         // _job.Step co the tra false ma pha van con, va chen mot bua 10-20 s vao giua chuyen di tim
@@ -1027,9 +1040,17 @@ internal sealed class NavBot
 
         if (!_gauge.Due(now)) return false;
 
-        var reading = _gauge.Update(_capture.GrabSurvival(now), now);
+        var reading = ScanGauge(now);
         if (!reading.FoodLow && !reading.WaterLow) return false;
         return StartSurvival(now, reading);
+    }
+
+    /// <summary>Quét một lượt và nhả ra những ghi chú bộ đọc để lại (dòng hiệu chuẩn vành).</summary>
+    private SurvivalReading ScanGauge(double now)
+    {
+        var reading = _gauge.Update(_capture.GrabSurvival(now), now);
+        while (SurvivalState.TakeNote() is { } note) Emit(note);
+        return reading;
     }
 
     /// <summary><c>_start_survival</c>: dựng hàng đợi rồi giành quyền điều khiển.</summary>
@@ -1037,14 +1058,14 @@ internal sealed class NavBot
     {
         var items = new List<SurvivalItem>(2);
 
-        if (r.FoodLow && now >= _survivalFoodBlockUntil)
+        if (r.FoodLow && !SurvivalState.FoodOff && now >= SurvivalState.FoodBlockUntil)
         {
             var slots = SurvivalSettings.SlotKeys(_cfg.Survival.FoodSlots);
             if (slots.Length > 0)
                 items.Add(new SurvivalItem { Name = "BÁNH", Slots = slots, Baseline = r.FoodPct });
         }
 
-        if (r.WaterLow && now >= _survivalWaterBlockUntil)
+        if (r.WaterLow && !SurvivalState.WaterOff && now >= SurvivalState.WaterBlockUntil)
         {
             var slots = SurvivalSettings.SlotKeys(_cfg.Survival.WaterSlots);
             if (slots.Length > 0)
@@ -1119,17 +1140,21 @@ internal sealed class NavBot
         _input.ReleaseAll();
 
         // Van quet trong luc cho de EMA song lai sau khi Reset — nhung KHONG cham diem som.
-        if (_gauge.Due(now)) _gauge.Update(_capture.GrabSurvival(now), now);
+        if (_gauge.Due(now)) ScanGauge(now);
         if (elapsed < NavTuning.SurvivalFixedWaitS) return true;
 
         double? after = SurvivalValue(_gauge.Last, item.Name);
         double before = item.Baseline;
         bool ok = after is not null
                   && (after.Value >= before + NavTuning.SurvivalSuccessDeltaPct
-                      || after.Value >= NavTuning.SurvivalLowThresholdPct);
+                      || after.Value >= _cfg.Survival.LowThresholdPct);
 
         if (ok)
         {
+            // An duoc la tui van con hang: xoa chuoi bua hong de lan sau lai duoc tron hai bua thu.
+            if (item.Name == "BÁNH") SurvivalState.FoodFails = 0;
+            else SurvivalState.WaterFails = 0;
+
             Emit($"[ĂN UỐNG] {item.Name} ĐƯỢC phím {item.KeyText}: {before:F1}% → {after.Value:F1}%");
             return SurvivalAdvance(now);
         }
@@ -1147,18 +1172,53 @@ internal sealed class NavBot
         }
 
         // Ca hai o deu truot. Gan nhu chac chan la het do trong tui: bot khong nhin duoc tui do, no
-        // chi bam phim roi nhin dong ho ma doan. Chan tai nguyen do mot lat roi VAN di tiep.
-        double block = NavTuning.SurvivalFailedBlockS;
-        if (item.Name == "BÁNH") _survivalFoodBlockUntil = now + block;
-        else _survivalWaterBlockUntil = now + block;
-
-        Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô ({before:F1}% → {aft}) → " +
-             $"trả lại quyền đi, chặn {block:F0}s");
-        Alert?.Invoke($"⚠️ Job Điện — có thể hết {item.Name.ToLowerInvariant()}",
-            $"Đã thử ô {string.Join(" và ", item.Slots.Select(k => (char)k))} mà đồng hồ không nhúc nhích " +
-            $"({before:F1}% → {aft}). Nhân vật vẫn đi tiếp, nhưng cứ {block:F0}s lại mất " +
-            $"{NavTuning.SurvivalFixedWaitS:F0}s đứng thử lại — nên tiếp tế sớm.");
+        // chi bam phim roi nhin dong ho ma doan.
+        SurvivalGaveUp(now, item, before, aft);
         return SurvivalAdvance(now);
+    }
+
+    /// <summary>
+    /// Một bữa bấm hết ô mà đồng hồ đứng yên. Bữa đầu chỉ chặn <see cref="NavTuning.SurvivalFailedBlockS"/>
+    /// rồi thử lại một lần nữa; bữa thứ hai là thôi hẳn loại đó cho tới khi tắt/bật lại job.
+    ///
+    /// Vì sao phải thôi hẳn chứ không chặn rồi thử mãi như bản Python: mỗi vòng thử tốn 2 lần đứng
+    /// chết 10 giây, mà <see cref="ElectricBot"/> dựng NavBot mới sau mỗi minigame nên cứ giải xong
+    /// một bảng là mốc chặn lại về 0 và bot lại đứng thử. Túi rỗng thì thử bao nhiêu lần cũng thế.
+    /// </summary>
+    private void SurvivalGaveUp(double now, SurvivalItem item, double before, string aft)
+    {
+        bool food = item.Name == "BÁNH";
+        int fails = food ? ++SurvivalState.FoodFails : ++SurvivalState.WaterFails;
+        string slots = string.Join(" và ", item.Slots.Select(k => (char)k));
+        string mon = item.Name.ToLowerInvariant();
+
+        if (fails < NavTuning.SurvivalMaxMealAttempts)
+        {
+            double block = NavTuning.SurvivalFailedBlockS;
+            if (food) SurvivalState.FoodBlockUntil = now + block;
+            else SurvivalState.WaterBlockUntil = now + block;
+
+            Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô ({before:F1}% → {aft}) → " +
+                 $"trả lại quyền đi, chặn {block:F0}s rồi thử thêm ĐÚNG một bữa nữa");
+            Alert?.Invoke($"⚠️ Job Điện — có thể hết {mon}",
+                $"Đã thử ô {slots} mà đồng hồ không nhúc nhích ({before:F1}% → {aft}). " +
+                $"Sau {block:F0}s bot thử thêm một bữa nữa; hỏng tiếp là nó tự bỏ {mon} — nên tiếp tế sớm.");
+            return;
+        }
+
+        if (food) SurvivalState.FoodOff = true;
+        else SurvivalState.WaterOff = true;
+
+        Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô lần {fails} ({before:F1}% → {aft}) → " +
+             $"TẮT tự dùng {item.Name} cho lượt chạy này");
+        Alert?.Invoke($"⛔ Job Điện — đã tắt tự dùng {mon}",
+            $"Thử {fails} bữa ở ô {slots} mà đồng hồ không nhúc nhích — coi như hết {mon}. " +
+            "Bot chạy tiếp và không đứng chờ nữa. Tiếp tế xong thì tắt/bật lại job để dùng lại.");
+
+        if (!SurvivalState.AllOff) return;
+
+        Emit("[ĂN UỐNG] hết cả bánh lẫn nước → tắt hẳn ăn uống cho lượt chạy này " +
+             "(tắt/bật lại job sau khi tiếp tế để chạy lại)");
     }
 
     private static double? SurvivalValue(SurvivalReading r, string name)

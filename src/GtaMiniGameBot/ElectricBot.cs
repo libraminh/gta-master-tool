@@ -34,6 +34,13 @@ internal sealed class ElectricBot
     /// </summary>
     private FishingConfig _discordCfg;
 
+    /// <summary>
+    /// Trạng thái ăn uống của cả lượt bật job. Phải sống ở đây chứ không trong <see cref="NavBot"/>:
+    /// <see cref="RunNav"/> dựng NavBot MỚI sau mỗi minigame, nên "đã kết luận hết bánh" hay "vành
+    /// cung nằm ở bán kính này" mà nhớ trong NavBot thì cứ giải xong một bảng là mất sạch.
+    /// </summary>
+    private SurvivalState _survival;
+
     public ElectricBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
     {
         _cfg = cfg;
@@ -120,6 +127,7 @@ internal sealed class ElectricBot
             }
 
             bool wantNav = _cfg.AutoWalk;
+            _survival = new SurvivalState();
             if (wantNav && _cfg.Survival.Enabled)
                 try { _discordCfg = FishingConfig.Load(); } catch { _discordCfg = null; }
 
@@ -225,7 +233,8 @@ internal sealed class ElectricBot
         {
             PanelVisible = panelVisible,
             AfterMinigame = afterMinigame,
-            PanelGoneAgoMs = panelGoneMs
+            PanelGoneAgoMs = panelGoneMs,
+            SurvivalState = _survival ??= new SurvivalState()
         };
         _navBot.Log += Emit;
         _navBot.Alert += (title, body) =>
