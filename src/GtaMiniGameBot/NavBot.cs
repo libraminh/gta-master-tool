@@ -37,6 +37,13 @@ internal sealed class NavBot
     /// <summary>Vừa giải xong một minigame — vào thẳng hậu minigame (kiểm prompt, reset camera, W reclaim).</summary>
     public bool AfterMinigame { get; init; }
 
+    /// <summary>
+    /// Lượt bảng vừa rồi THUA (bảng đóng mà chưa giải, hoặc dây va tường). Khác với thắng ở một
+    /// điểm quyết định: điểm làm việc VẪN ở đúng đầu nối này và game cho bấm E lại tại chỗ — nên
+    /// không reset camera, không SEARCH360, không đi reset nghề; đứng yên chờ prompt rồi E.
+    /// </summary>
+    public bool AfterLoss { get; init; }
+
     /// <summary>Bảng/panel đã biến mất bao lâu trước khi bot này bắt đầu (BoardBot báo Solved sau 3 s, WireBot 1.5 s).</summary>
     public int PanelGoneAgoMs { get; init; }
 
@@ -129,6 +136,13 @@ internal sealed class NavBot
 
     private double _lastDistT;
     private double _recentBoardExitUntil;
+
+    // sau khi THUA bang: dung tai cho, E lai
+    /// <summary>Hạn chờ prompt để E lại; 0 = không ở chế độ sau-thua.</summary>
+    private double _lossHoldUntil;
+    private int _lossRetriesLeft;
+    /// <summary>Không cho reset nghề trước mốc này — điểm làm việc đang ở dưới chân.</summary>
+    private double _lossJobGuardUntil;
     private bool _eDown;
     private double _eUpAt;
     private double _lastPanelPoll;
@@ -145,6 +159,9 @@ internal sealed class NavBot
     private string _cameraPhase;
     private double _cameraPhaseStart;
     private string _cameraReason;
+
+    /// <summary>Hạn của cửa sổ soi lại góc camera sau reset; 0 = không đang soi.</summary>
+    private double _cameraAuditUntil;
 
     // W reclaim
     private bool _wReclaimPending;
@@ -281,6 +298,23 @@ internal sealed class NavBot
         double gone = Math.Max(0.0, PanelGoneAgoMs / 1000.0);
         _promptStreak = _promptAbsentStreak = 0;
         _promptConsumed = false;
+
+        if (AfterLoss)
+        {
+            // THUA thi diem van o dau noi nay (nguoi dung xac nhan: bam E lai tai cho la choi lai).
+            // Duong cua luot THANG — reset camera → SEARCH360 → 7 s mu → reset nghe — la sai duong
+            // hoan toan: log 16:29 ngay 04/09 cho thay bot bo diem dang dung tren, chay toi NPC tia
+            // set bam E hai lan. Khien 8 s chan E cung bo: o day ta MUON bam E.
+            _recentBoardExitUntil = 0;
+            _lossRetriesLeft = NavTuning.LossRetryMaxE;
+            _lossHoldUntil = now + NavTuning.LossRetryHoldS;
+            _lossJobGuardUntil = now + NavTuning.LossJobRecoveryGuardS;
+            _simplePhase = "LOSS_RETRY";
+            Emit($"[THUA BẢNG] điểm vẫn ở đầu nối này → đứng yên chờ prompt → E lại " +
+                 $"(tối đa {NavTuning.LossRetryMaxE} lần, chờ {NavTuning.LossRetryHoldS:F0}s)");
+            return;
+        }
+
         _recentBoardExitUntil = now + Math.Max(0.0, NavTuning.SimpleRecentBoardExitGuardS - gone);
         double remaining = NavTuning.SimpleCloseSettleS + NavTuning.SimplePostCheckS - gone;
         if (gone < NavTuning.SimpleCloseSettleS)
@@ -395,6 +429,8 @@ internal sealed class NavBot
             }
         }
 
+        CameraAuditStep(now, snap);
+
         // Mo bua moi: dung sau moi may trang thai tren va truoc dieu huong — cau "camera reset /
         // minigame > survival > navigation" cua ban Python.
         if (SurvivalMaybeStart(now, focused))
@@ -409,7 +445,8 @@ internal sealed class NavBot
         var target = _tracker.Update(candidates, _originX, _originY, now, fragments);
         var world = snap.Marker;
 
-        if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
+        // Vua thua bang thi diem lam viec dang o duoi chan — mu 7 s o day khong phai "mat hang diem".
+        if (now >= _lossJobGuardUntil && _job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
         {
             _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
             if (_job.Step(mini, snap, now, focused)) return false;
@@ -734,7 +771,58 @@ internal sealed class NavBot
                 }
             }
             if (now < _waitBoardUntil) return true;
+
+            if (_lossHoldUntil > 0)
+            {
+                if (_lossRetriesLeft > 0)
+                {
+                    // Sau thua: cu E vua roi khong mo duoc bang (log 16:29:14→19 dung ca nay: co the
+                    // E dau chi tat overlay do, hoac game con cooldown). Prompt VAN dang hien nen chot
+                    // "da bam cho prompt nay" se chan E ke — ep mo lai roi thu tiep.
+                    _promptConsumed = false;
+                    _promptStreak = 0;
+                    _lossHoldUntil = now + NavTuning.SimpleWaitBoardS;
+                    _simplePhase = "LOSS_RETRY";
+                    Emit($"[THUA BẢNG] E chưa mở được bảng → chờ prompt rồi E lại (còn {_lossRetriesLeft} lần)");
+                    return true;
+                }
+
+                _lossHoldUntil = 0;
+                Emit("[THUA BẢNG] hết lượt E lại → về đường thường: reset camera, tìm lại điểm");
+                ResumeWorld(now, "BOARD_CLOSED_NO_E");
+                return false;
+            }
+
             ResumeWorld(now, "ONE_E_NO_BOARD");
+            return false;
+        }
+
+        if (phase == "LOSS_RETRY")
+        {
+            // Dung yen: khong W, khong chuot. Diem lam viec o duoi chan, moi thu dong dau la thua.
+            _input.ReleaseOwnedOnce();
+            if (!focused) return true;
+
+            if (_lossRetriesLeft > 0 && PromptStable(snap) && !_promptConsumed)
+            {
+                HoldEnter("PROMPT E (thử lại sau thua)");
+                if (PressEOnce(now, "E_THU_LAI"))
+                {
+                    _lossRetriesLeft--;
+                    _simplePhase = "WAIT_BOARD";
+                    _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
+                    _lastPanelPoll = 0;
+                }
+                return true;
+            }
+
+            if (_lossRetriesLeft > 0 && now < _lossHoldUntil) return true;
+
+            _lossHoldUntil = 0;
+            Emit(_lossRetriesLeft > 0
+                ? $"[THUA BẢNG] {NavTuning.LossRetryHoldS:F0}s không thấy prompt → về đường thường: reset camera, tìm lại điểm"
+                : "[THUA BẢNG] hết lượt E lại → về đường thường: reset camera, tìm lại điểm");
+            ResumeWorld(now, "BOARD_CLOSED_NO_E");
             return false;
         }
 
@@ -851,12 +939,27 @@ internal sealed class NavBot
         _cameraPhase = "SETTLE";
         _cameraPhaseStart = now;
         _cameraReason = reason;
+        _cameraAuditUntil = 0;
         _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
         _watchdog.Reset();
         _ctl.ResetTransient();
         _capture.ResetWorld();
-        Emit($"[RESET CAMERA] bắt đầu ({reason})");
+
+        Emit($"[RESET CAMERA] bắt đầu ({reason}) — xuống {CameraDownCounts:F0} counts, " +
+             $"lên {CameraUpCounts:F0} counts (hệ số ngẩng ×{_cfg.Nav.CameraPitchScale:F2})");
     }
+
+    /// <summary>Số counts pha chúi xuống gửi ra — chỉ để in log, pha này luôn chạm chốt dưới.</summary>
+    private static double CameraDownCounts =>
+        NavTuning.CameraResetDownRateCps * NavTuning.CameraResetDownS;
+
+    /// <summary>
+    /// Số counts pha ngẩng lên. ĐÂY là con số quyết định góc camera cuối cùng, vì pha chúi xuống
+    /// chạm chốt nên mọi thứ trước đó bị quên. In ra để dò được bằng mắt khi chỉnh
+    /// <see cref="NavSettings.CameraPitchScale"/>.
+    /// </summary>
+    private double CameraUpCounts =>
+        NavTuning.CameraResetUpRateCps * NavTuning.CameraResetUpS * _cfg.Nav.CameraPitchScale;
 
     /// <summary><c>_camera_reset_step</c>: SETTLE → DOWN (3300 cps, 780 ms) → GROUND_HOLD → UP (1950 cps, 525 ms) → FINAL. Nhả hết phím mỗi khung.</summary>
     private bool CameraResetStep(double now)
@@ -896,7 +999,7 @@ internal sealed class NavBot
                     _input.ReleaseAll();
                     return true;
                 }
-                _input.SetMouseYRate(-NavTuning.CameraResetUpRateCps);
+                _input.SetMouseYRate(-NavTuning.CameraResetUpRateCps * _cfg.Nav.CameraPitchScale);
                 return true;
             case "FINAL_SETTLE":
                 if (elapsed < NavTuning.CameraResetFinalSettleS) return true;
@@ -908,6 +1011,7 @@ internal sealed class NavBot
                 _input.ReleaseAll();
                 ScheduleWReclaim(now);
                 AutorunResetTimer(now);
+                _cameraAuditUntil = now + NavTuning.CameraResetAuditS;
                 Emit("[RESET CAMERA XONG] → lấy lại W → chạy tiếp");
                 return false;
         }
@@ -917,6 +1021,40 @@ internal sealed class NavBot
         _input.DoublePressWStart(NavTuning.InputWPostMinigameTakeoverGapMs, NavTuning.InputWPostMinigameSoftRearmS);
         AutorunResetTimer(now);
         return false;
+    }
+
+    /// <summary>
+    /// Soi lại góc camera sau khi reset xong — CHỈ ghi log, không động vào chuột.
+    ///
+    /// Reset camera là vòng hở: chúi xuống chạm chốt dưới rồi ngẩng lên một lượng cố định. Không
+    /// có phép đo nào nói lượng đó có đúng với độ nhạy chuột của máy này không, và ngẩng quá tay
+    /// thì <see cref="WorldMarkerDetector"/> loại hết khối (nó đòi đáy khối thấp hơn
+    /// <see cref="NavTuning.WorldMinBboxBottomRef"/>) — biểu hiện là WQ=WORLD_NONE kéo dài rồi
+    /// SEARCH360 và KET1 quần nhau, đúng như log 04/09.
+    ///
+    /// CỐ Ý KHÔNG tự chúi lại: điểm 3D vắng mặt còn có lý do chính đáng (điểm ở sau lưng, bị nhà
+    /// che), nên tự động bẻ camera ở đây là đẻ thêm một kiểu hỏng mới. Việc của hàm này là nói
+    /// thẳng ra để chỉnh <see cref="NavSettings.CameraPitchScale"/> cho đúng.
+    /// </summary>
+    private void CameraAuditStep(double now, WorldSnapshot snap)
+    {
+        if (_cameraAuditUntil <= 0) return;
+
+        if (snap?.Marker is { Present: true })
+        {
+            _cameraAuditUntil = 0;
+            return;
+        }
+
+        if (now < _cameraAuditUntil) return;
+        _cameraAuditUntil = 0;
+
+        // Diem 3D vang mat con co ly do chinh dang: diem ke o sau lung, hoac (sau thua) ngay duoi
+        // chan — 16:29 ngay 04/09 dong nay da bao gia dung ca do. Nen chi noi "co the".
+        Emit($"[SOI CAMERA] {NavTuning.CameraResetAuditS:F1}s sau reset chưa thấy điểm 3D (WQ=WORLD_NONE) — " +
+             $"đang gửi {CameraUpCounts:F0} counts (hệ số ×{_cfg.Nav.CameraPitchScale:F2}). Điểm ở sau lưng " +
+             $"hay dưới chân thì bình thường; còn nếu điểm ở trước mặt mà lượt nào cũng thấy dòng này " +
+             $"thì góc ngẩng đang sai: nhìn lên trời → hạ hệ số, cắm mặt đất → nâng lên.");
     }
 
     private void ScheduleWReclaim(double now)

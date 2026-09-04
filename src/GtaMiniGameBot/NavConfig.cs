@@ -52,6 +52,24 @@ internal sealed class NavSettings
     /// </summary>
     public double EMaxDistRef { get; set; } = NavTuning.SimpleEMaxDistRef;
 
+    /// <summary>
+    /// Hệ số hiệu chuẩn GÓC NGẨNG LÊN của pha reset camera sau minigame. 1.0 = đúng số của bản
+    /// Python.
+    ///
+    /// Vì sao cần một núm riêng: reset camera là vòng HỞ — chúi xuống cho chạm chốt dưới rồi ngẩng
+    /// lên một lượng CỐ ĐỊNH (1950 cps × 0.525 s = 1024 counts). Lượng đó đúng với độ nhạy chuột
+    /// trong game của tác giả bản Python, và không có gì đảm bảo nó đúng với máy khác. Trục X đã
+    /// được hiệu chuẩn bằng <see cref="MouseSpeedMultiplier"/> (×4.0, đo 25/08), còn trục Y thì
+    /// <see cref="NavInput.SetMouseYRate"/> cố ý KHÔNG nhân hệ số đó — nên trước đây trục Y không
+    /// có đường nào để chỉnh.
+    ///
+    /// Ngẩng quá tay là camera dừng ở góc nhìn lên trời, và <see cref="WorldMarkerDetector"/> loại
+    /// mọi khối có đáy cao hơn <see cref="NavTuning.WorldMinBboxBottomRef"/> — mất bám điểm 3D, log
+    /// đầy <c>WQ=WORLD_NONE</c> rồi SEARCH360 và KET1 quần nhau. Thấy vậy thì hạ số này xuống
+    /// (0.85 là bước thử đầu hợp lý); ngẩng chưa tới thì nâng lên.
+    /// </summary>
+    public double CameraPitchScale { get; set; } = 1.0;
+
     /// <summary>Chỉ kẹp giá trị, KHÔNG ném: <see cref="ElectricConfig.Load"/> nuốt mọi exception và trả config mới.</summary>
     public void Normalize()
     {
@@ -65,6 +83,9 @@ internal sealed class NavSettings
         EMaxDistRef = double.IsNaN(EMaxDistRef) || EMaxDistRef <= 0
             ? NavTuning.SimpleEMaxDistRef
             : Math.Clamp(EMaxDistRef, NavTuning.SimpleEMaxDistMinRef, NavTuning.SimpleEMaxDistMaxRef);
+        CameraPitchScale = double.IsNaN(CameraPitchScale) || CameraPitchScale <= 0
+            ? 1.0
+            : Math.Clamp(CameraPitchScale, 0.40, 2.00);
     }
 }
 
@@ -333,6 +354,20 @@ internal static class NavTuning
     public const double SimplePostCheckS = 1.50;
     public const double SimpleRecentBoardExitGuardS = 8.0;
 
+    // ---- sau khi THUA bang: dung tai cho, E lai ----
+    /// <summary>Chờ prompt hiện lại sau lượt thua (overlay đỏ "KHÔNG THÀNH CÔNG" tự tắt vài giây) — hết thì về đường thường.</summary>
+    public const double LossRetryHoldS = 12.0;
+
+    /// <summary>
+    /// Số lần E tối đa tại chỗ. Không phải 1 vì log 16:29 ngày 04/09 cho thấy cú E đầu 5 s sau khi
+    /// bảng đóng KHÔNG mở được bảng — có thể E đầu chỉ tắt overlay, hoặc game còn cooldown; cho vài
+    /// lần cách nhau <see cref="SimpleWaitBoardS"/> thay vì đoán một cơ chế.
+    /// </summary>
+    public const int LossRetryMaxE = 3;
+
+    /// <summary>Không cho reset nghề trong ngần này giây sau thua — điểm làm việc đang ở dưới chân.</summary>
+    public const double LossJobRecoveryGuardS = 30.0;
+
     // ---- cong khoang cach cho E ----
     /// <summary>Mặc định của <see cref="NavSettings.EMaxDistRef"/> — 9.0 mốc 1080p ≈ 12 px ở 2K.</summary>
     public const double SimpleEMaxDistRef = 9.0;
@@ -352,6 +387,13 @@ internal static class NavTuning
     public const double CameraResetGroundHoldS = 0.070;
     public const double CameraResetUpS = 0.525, CameraResetUpRateCps = 1950.0;
     public const double CameraResetFinalSettleS = 0.090;
+
+    /// <summary>
+    /// Sau reset camera, chờ ngần này giây để điểm 3D xuất hiện lại; hết mà chưa thấy thì ghi một
+    /// dòng cảnh báo kèm số counts đã gửi. Chỉ ghi log, không bẻ camera — xem
+    /// <c>NavBot.CameraAuditStep</c>. 1.2s là quá đủ: luồng quét world chạy 22–27 Hz.
+    /// </summary>
+    public const double CameraResetAuditS = 1.20;
     public const double PostMiniWReclaimDelayS = 0.260;
     public const double PostMiniWReclaimGapMs = 85.0;
     public const double PostMiniWReclaimConfirmS = 0.520;

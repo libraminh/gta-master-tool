@@ -26,7 +26,11 @@
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
-  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish">
+  <!-- Chan build de len exe dang chay. CHI chan khi build that su ghi vao app\ : de kiem bien dich
+       hay chay che do verify voi -p:OutputPath tro cho khac thi khong lien quan, va chan o do la
+       bao dong gia lam ket ca duong vong duy nhat con dung duoc khi app dang mo. -->
+  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish"
+          Condition="'$([MSBuild]::NormalizeDirectory($(OutputPath)))' == '$([MSBuild]::NormalizeDirectory($(MSBuildThisFileDirectory)..\..\app))'">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\tools\fail-if-app-running.ps1&quot;" />
   </Target>
 

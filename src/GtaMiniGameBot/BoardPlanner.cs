@@ -29,6 +29,16 @@ internal sealed class BoardPlan
     /// <summary>Tường đã nở thêm lề an toàn — bản đồ mà A* thật sự đi trên đó.</summary>
     public Mask Inflated { get; init; }
 
+    /// <summary>
+    /// Bản đồ khoảng thoát của mặt nạ CHỨNG NHẬN (tường vật lý + biên hợp lệ, đã khoét hai đường
+    /// hầm cổng) — đúng bản đồ mà <see cref="BoardPlanner.Certificate"/> đo trên đó.
+    ///
+    /// Mang theo vào lúc chạy để <c>BoardBot.Acquire</c> quyết được một câu hỏi bằng SỐ ĐO thay vì
+    /// cảm tính: dây đã vượt ngã rẽ đầu tiên mất rồi, dịch cả đoạn kế đi đúng ngần ấy px thì còn
+    /// đủ thoáng không. Tính sẵn ở đây nên không tốn thêm gì.
+    /// </summary>
+    public float[] CertClearance { get; init; }
+
     public Rectangle LegalBounds { get; init; }
     public int ValueThreshold { get; init; }
     public double InflationRadiusRef { get; init; }
@@ -118,6 +128,25 @@ internal static class BoardPlanner
     private const double TurnCost = 22.0;
     private const double ClearanceCost = 18.0;
     private const int MaxAStarStates = 180_000;
+
+    /// <summary>
+    /// Ngân sách cho vòng quét dự phòng, ms. Hết ngân sách thì dùng bản dự phòng tốt nhất đang có
+    /// thay vì quét nốt.
+    ///
+    /// Vì sao cần: khi MỌI ứng viên đều có đoạn ngắn hơn <see cref="MinSegmentRef"/>, vòng lặp
+    /// không bao giờ <c>break</c> nên nó quét đủ 7 bán kính × 3 lưới = 21 lượt A*, mỗi lượt duyệt
+    /// tới ~80k trạng thái — đo được 708–727ms trên bảng thật ngày 04/09, so với 158–232ms của
+    /// bảng bình thường. Sợi dây TỰ CHẠY, nên 727ms là đủ để nó vượt qua ngã rẽ đầu tiên và cả
+    /// lượt thành LateStart: ba lượt 17:16–17:24 chết đúng như vậy.
+    ///
+    /// Và quét thừa là chắc chắn — trace cho thấy kết quả LẶP Y HỆT qua mọi bán kính (22/16/13px
+    /// ở nở 18, 16, 14, 12, 10, 8, 6). Bản dự phòng tốt nhất luôn xuất hiện trong một hai bán kính
+    /// đầu; phần còn lại chỉ tiêu thời gian.
+    ///
+    /// 300ms vì một bán kính đo được ≈ 100–200ms: đủ cho hai bán kính, tức đủ để bắt được bản dự
+    /// phòng tốt nhất trên CẢ HAI bảng thua đã ghi log, mà vẫn cắt được ~430ms phần đuôi.
+    /// </summary>
+    private const double FallbackBudgetMs = 300.0;
     private static readonly double[] InflationRadiiRef = { 18, 16, 14, 12, 10, 8, 6 };
     private static readonly double[] GridFallbackRefs = { 12.0, 10.0, 8.0 };
     private const double MinAcceptClearRef = 6.0;
@@ -149,11 +178,30 @@ internal static class BoardPlanner
     private const double UrgentMinClearRef = 10.0;
 
     // ---------------- on dinh khung ve ----------------
+    //
+    // BA LAN, sao dung ba lan cua ban Python. Truoc day C# chi co MOT lan hai khung voi nguong
+    // long nhat trong ba cai (iou 0.975 / troi 0.020), tuc no nhan ca nhung khung ma ban Python
+    // se tu choi. Log that 04/09 co luot thua o dung iou=0.9953: ban Python doi lan hai khung
+    // phai >= 0.988 nen se cho them, con C# nhan roi dung tuyen tren mat na tuong chua ve xong.
+    //
+    // Vi sao khong don gian doi 3 khung: mot khung o day ton ~175 ms (ROI 2K, ban Release), ba
+    // khung la ~525 ms, trong khi cu re dau tien co the chi cach START 0.2-0.5 giay. Ba lan giu
+    // duoc CA HAI: khung nao ro rang da ve xong thi di ngay, khung nao con dong thi cho.
     private const double SignaturePanelVMin = 64.0;
     private const double SignatureCoverageMin = 0.28;
     private const double SignatureCoverageMax = 0.72;
     private const double SignatureCoverageDrift = 0.020;
     private const double SignatureIouMin = 0.975;
+
+    // Lan HAI khung: chat hon han lan ba khung, vi it bang chung hon thi phai chac hon.
+    private const double FastPanelVMin = 68.0;
+    private const double FastCoverageMin = 0.30;
+    private const double FastCoverageMax = 0.70;
+    private const double FastCoverageDrift = 0.010;
+    private const double FastIouMin = 0.988;
+
+    // Lan MOT khung: chi mo duoc nhanh urgent, khong bao gio mo duoc bo dung tuyen day du.
+    private const double SoloPanelVMin = 74.0;
 
     // ================================================================ mat na tuong
 
@@ -343,34 +391,82 @@ internal static class BoardPlanner
 
     // ================================================================ on dinh khung ve
 
-    /// <summary>
-    /// Ba khung tường gần như y hệt nhau thì mới cho đóng băng tuyến.
-    ///
-    /// Không phải cẩn thận quá mức: bảng có hoạt ảnh hiện dần, và một khung vẽ dở cho ra tường
-    /// thiếu — tức đường trống ở chỗ có tường thật. Đóng băng tuyến trên khung đó là lao vào
-    /// tường mà mọi chứng chỉ an toàn đều báo "ổn".
-    /// </summary>
-    public static bool SignatureStable(IReadOnlyList<WallScan> history, int need, out string reason)
+    /// <summary>Khung vẽ đã đủ tin để làm gì.</summary>
+    public enum StabilityLane
     {
-        need = Math.Max(2, need);
+        /// <summary>Chưa đủ tin — GIỮ, không bấm phím nào.</summary>
+        None,
+
+        /// <summary>Một khung nhưng vẽ rất đậm: chỉ được dùng nhánh urgent.</summary>
+        UrgentOnly,
+
+        /// <summary>Đủ tin cho bộ dựng tuyến đầy đủ.</summary>
+        Full
+    }
+
+    /// <summary>
+    /// Khung tường đã ổn định tới mức nào — ba làn, sao đúng bản Python.
+    ///
+    /// Vì sao phải canh: bảng có hoạt ảnh hiện dần, và một khung vẽ dở cho ra tường THIẾU — tức
+    /// đường trống ở chỗ có tường thật. Đóng băng tuyến trên khung đó là lao vào tường mà mọi
+    /// chứng chỉ an toàn đều báo "ổn".
+    ///
+    /// Ba làn, xét từ mạnh nhất xuống:
+    ///   - BA khung, ngưỡng thường (V≥64, che 0.28–0.72, trôi ≤0.020, iou ≥0.975) → đầy đủ;
+    ///   - HAI khung, ngưỡng chặt (V≥68, che 0.30–0.70, trôi ≤0.010, iou ≥0.988) → đầy đủ;
+    ///   - MỘT khung, vẽ rất đậm (V≥74, che trong dải) → CHỈ nhánh urgent.
+    /// </summary>
+    public static StabilityLane Stability(IReadOnlyList<WallScan> history, out string reason)
+    {
+        if (history is null || history.Count == 0) { reason = "chưa có khung nào"; return StabilityLane.None; }
+
+        if (Agrees(history, 3, SignaturePanelVMin, SignatureCoverageMin, SignatureCoverageMax,
+                   SignatureCoverageDrift, SignatureIouMin, out reason))
+            return StabilityLane.Full;
+
+        if (Agrees(history, 2, FastPanelVMin, FastCoverageMin, FastCoverageMax,
+                   FastCoverageDrift, FastIouMin, out string fastWhy))
+        {
+            reason = fastWhy;
+            return StabilityLane.Full;
+        }
+
+        var last = history[^1];
+        if (last.PanelV >= SoloPanelVMin
+            && last.Coverage >= SignatureCoverageMin && last.Coverage <= SignatureCoverageMax)
+        {
+            reason = $"một khung vẽ đậm (V={last.PanelV:F1} ≥ {SoloPanelVMin}, " +
+                     $"che={last.Coverage:F3}) — chỉ mở lối nhanh";
+            return StabilityLane.UrgentOnly;
+        }
+
+        // Bao lai ly do cua lan RONG nhat: no la cai sat nhat voi "sap dat".
+        return StabilityLane.None;
+    }
+
+    /// <summary>Một làn: <paramref name="need"/> khung cuối có khớp nhau theo bộ ngưỡng cho trước không.</summary>
+    private static bool Agrees(IReadOnlyList<WallScan> history, int need, double panelVMin,
+                               double covMin, double covMax, double drift, double iouMin,
+                               out string reason)
+    {
         if (history.Count < need) { reason = $"cần {need} khung"; return false; }
 
         var hs = history.Skip(history.Count - need).ToArray();
 
         double minPanelV = hs.Min(x => x.PanelV);
-        if (minPanelV < SignaturePanelVMin)
+        if (minPanelV < panelVMin)
         {
-            reason = $"bảng còn mờ (V={minPanelV:F1} < {SignaturePanelVMin})";
+            reason = $"bảng còn mờ (V={minPanelV:F1} < {panelVMin})";
             return false;
         }
 
         double minCov = hs.Min(x => x.Coverage), maxCov = hs.Max(x => x.Coverage);
-        if (minCov < SignatureCoverageMin || maxCov > SignatureCoverageMax)
+        if (minCov < covMin || maxCov > covMax)
         {
             reason = $"tỉ lệ che ngoài dải ({minCov:F3}–{maxCov:F3})";
             return false;
         }
-        if (maxCov - minCov > SignatureCoverageDrift)
+        if (maxCov - minCov > drift)
         {
             reason = $"tỉ lệ che còn đổi ({minCov:F3}–{maxCov:F3})";
             return false;
@@ -380,13 +476,14 @@ internal static class BoardPlanner
         for (int i = 0; i + 1 < hs.Length; i++)
             minIou = Math.Min(minIou, Iou(hs[i].Thumb, hs[i + 1].Thumb));
 
-        if (minIou < SignatureIouMin)
+        if (minIou < iouMin)
         {
-            reason = $"mặt nạ tường còn dịch (iou={minIou:F4})";
+            reason = $"mặt nạ tường còn dịch (iou={minIou:F4} < {iouMin})";
             return false;
         }
 
-        reason = $"ổn định {hs.Length} khung (iou={minIou:F4}, che={(minCov + maxCov) / 2:F3}, V={minPanelV:F1})";
+        reason = $"ổn định {hs.Length} khung (iou={(minIou is double.MaxValue ? 1.0 : minIou):F4}, " +
+                 $"che={(minCov + maxCov) / 2:F3}, V={minPanelV:F1})";
         return true;
     }
 
@@ -671,7 +768,8 @@ internal static class BoardPlanner
     /// không khớp mặt GOAL, có hai đoạn liền nhau ngược hướng, hay có đoạn dài ≤1px. Thà không có
     /// tuyến còn hơn có tuyến sai — bot sẽ giữ và chờ khung sau.
     /// </summary>
-    private static BoardSegment[] StatesToSegments(List<(int X, int Y, int D)> states, int cell, BoardRole role)
+    private static BoardSegment[] StatesToSegments(List<(int X, int Y, int D)> states, int cell,
+                                                   BoardRole role, double scale)
     {
         if (states is null || states.Count == 0) return null;
 
@@ -695,6 +793,30 @@ internal static class BoardPlanner
         if (keys[0] != role.StartKey || keys[^1] != role.GoalFinalKey) return null;
         for (int i = 0; i + 1 < keys.Count; i++)
             if (keys[i + 1] == BoardKeys.Opposite(keys[i])) return null;
+
+        // GOP NGOAN NGOEO CUOI: [V, H-ti, V] → [V] (va doi xung [H, V-ti, H]).
+        //
+        // A* di theo o luoi, con GOAL nam o toa do pixel bat ky. Khi cot luoi gan GOAL nhat lech
+        // khoi GOAL.X, A* ha xuong theo cot do roi buoc ngang MOT o sang cot GOAL ngay truoc khi cam
+        // — sinh ra hai doan ~11 px lien tiep. Doan 11 px thi bo dieu khien khong ban noi (xem
+        // MinSegmentRef), va cot lech con lam doan ha xuong men sat mep ham cong: log 16:29 ngay
+        // 04/09 cho khoang thoat 2.0 tai (260,1034) voi ham cong [259..283] — o ca 7 ban kinh no,
+        // o ca luoi 13 va 11. RefineTurns cung bo tay: moi cach dich ba goc cuoi deu tao doan
+        // < MinSegmentRef nen ca ba "giu nguyen" roi rollback. Cach dung la bo hai doan ti do di va
+        // de doan ha xuong chay thang theo truc GOAL — dung hinh cua luot thang sinh doi 16:27
+        // (A @968 → S @306 thang 83 px). Buoc canh truc GOAL ngay duoi day lo phan con lai.
+        if (keys.Count >= 3 && keys[^1] == keys[^3])
+        {
+            var hopA = turns[^3];
+            var hopB = turns[^2];
+            double hop = Math.Abs(hopB.X - hopA.X) + Math.Abs(hopB.Y - hopA.Y);
+            if (hop < MinSegmentRef * scale)
+            {
+                keys.RemoveRange(keys.Count - 2, 2);
+                turns.RemoveRange(turns.Count - 2, 2);
+                turns[^1] = new PointF(role.GoalHit.X, role.GoalHit.Y);
+            }
+        }
 
         // Cho cu re GAN CUOI canh lan cuoi khop dung truc cua GOAL, de doan cuoi cam thang vao.
         if (keys.Count >= 2)
@@ -765,6 +887,39 @@ internal static class BoardPlanner
     /// Bỏ qua 8 mẫu đầu của đoạn đầu và 8 mẫu cuối của đoạn cuối: hai chỗ đó nằm trong thân đầu
     /// nối, nên đo ở đó luôn ra gần 0 và sẽ loại mọi tuyến hợp lệ.
     /// </summary>
+    /// <summary>
+    /// Điểm có khoảng thoát NHỎ NHẤT trên tuyến — cùng phép đo với <see cref="Certificate"/> (bỏ 8
+    /// mẫu đầu/cuối), trả chuỗi để gắn vào trace. Tách riêng để đường thắng không trả thêm gì: chỉ
+    /// gọi khi tuyến ĐÃ trượt cổng. Một toạ độ soi được trên ảnh <c>hong-*.png</c> đáng giá hơn
+    /// hẳn câu "khoảng thoát 2.0" trơ trọi.
+    /// </summary>
+    private static string Bottleneck(BoardSegment[] segs, float[] clear, BoardFrame f)
+    {
+        double minc = double.MaxValue;
+        int at = -1;
+        PointF where = default;
+
+        for (int i = 0; i < segs.Length; i++)
+        {
+            PointF a = segs[i].Start, b = segs[i].End;
+            var vals = SampleLine(clear, f.Width, f.Height, a, b, 2.0);
+            int from = 0, to = vals.Count;
+            if (i == 0 && vals.Count > 8) from = 8;
+            if (i == segs.Length - 1 && vals.Count > 8) to = Math.Max(1, vals.Count - 8);
+
+            for (int k = from; k < to; k++)
+            {
+                if (vals[k] >= minc) continue;
+                minc = vals[k];
+                at = i;
+                double t = vals.Count > 1 ? k / (double)(vals.Count - 1) : 0.0;
+                where = new PointF((float)(a.X + (b.X - a.X) * t), (float)(a.Y + (b.Y - a.Y) * t));
+            }
+        }
+
+        return at < 0 ? "" : $" tại đoạn #{at} ({where.X:F0},{where.Y:F0})";
+    }
+
     private static (double MinClear, double Total) Certificate(
         BoardSegment[] segs, float[] clear, BoardFrame f)
     {
@@ -800,7 +955,7 @@ internal static class BoardPlanner
         return outp;
     }
 
-    private static double LineMinClear(float[] clear, int w, int h, PointF a, PointF b, double step = 1.0)
+    internal static double LineMinClear(float[] clear, int w, int h, PointF a, PointF b, double step = 1.0)
     {
         var vals = SampleLine(clear, w, h, a, b, step);
         double m = double.MaxValue;
@@ -997,7 +1152,13 @@ internal static class BoardPlanner
     /// Thử lần lượt các bán kính nở từ RỘNG tới HẸP (18→6): lấy được tuyến với lề rộng thì tốt
     /// hơn hẳn, chỉ khi bản đồ chật mới hạ lề xuống. Với mỗi bán kính thử ba cỡ lưới 12/10/8px.
     /// </summary>
-    public static BoardPlan Plan(BoardFrame f, BoardRole role, WallScan scan, out string why)
+    /// <param name="urgentOnly">
+    /// Khung mới chỉ qua được làn MỘT khung (<see cref="StabilityLane.UrgentOnly"/>). Lúc đó chỉ
+    /// lối nhanh được phép trả tuyến — nó có chứng chỉ khoảng thoát CHẶT hơn (10 thay vì 6) nên
+    /// còn chịu nổi một mặt nạ tường mới chỉ một khung; bộ dựng tuyến đầy đủ thì không.
+    /// </param>
+    public static BoardPlan Plan(BoardFrame f, BoardRole role, WallScan scan, bool urgentOnly,
+                                 out string why)
     {
         var sw = Stopwatch.StartNew();
         var wall = scan.Wall;
@@ -1041,9 +1202,26 @@ internal static class BoardPlanner
         }
 
         var trace = new List<string>();
+
+        // KHONG "tinh chinh de cuu tuyen truot cong" o day. Da thu ngay 04/09 va PHAI BO:
+        // RefineTurns quet ±32px cho MOI goc (16 goc × 65 vi tri × 3 phep do khoang thoat), goi no
+        // cho tung ung vien bi loai lam thoi gian dung tuyen nhay 180-197ms → 710/716ms. Soi day TU
+        // CHAY, nen 710ms nghia la dau day da vuot qua nga re dau tien truoc khi tuyen kip dong bang:
+        // hai ban 17:05 ngay 04/09 chet LateStart o dung day (vuot 21px va 121px). Doi mot ca hiem
+        // "planner bo cuoc" lay mot ca thuong xuyen "dung tuyen qua muon" la lo nang.
+        //
+        // Ban thua 16:29 duoc cuu bang HAI thu re tien hon, van con o duoi: gop duoi ngoan ngoeo
+        // trong StatesToSegments, va cong loi nhanh kep theo be rong ham cong.
         {
             var (urgentInf, urgentClear) = Inflated(UrgentRadiusRef);
             double segMin = UrgentFirstSegMinRef * scale, segMax = UrgentFirstSegMaxRef * scale;
+
+            // Cong khoang thoat loi nhanh KHONG duoc cao hon nua be rong ham cong. Doan cuoi luon
+            // chay trong cai ham ta tu khoet (nua rong PortCarveHalfRef = 12 px o 2K, do duoc 13.0),
+            // nen 10 × 1.333 = 13.33 la khong bao gio dat — ca luot thang 16:27 lan luot thua 16:29
+            // ngay 04/09 deu chet o "13.0 < 13.3" du moi goc sau tinh chinh deu 34–125 px. min()
+            // chi ha cong xuong toi muc ham cong; nut that ben trong van bi doi cao hon lan day du.
+            double urgentGate = Math.Min(UrgentMinClearRef, PortCarveHalfRef) * scale;
 
             foreach (double cellRef in UrgentGridRefs)
             {
@@ -1051,7 +1229,7 @@ internal static class BoardPlanner
                 var states = AStar(urgentInf, urgentClear, role, cell);
                 if (states is null) { trace.Add($"lưới {cell}: A* không ra"); continue; }
 
-                var segs = StatesToSegments(states, cell, role);
+                var segs = StatesToSegments(states, cell, role, scale);
                 if (segs is null) { trace.Add($"lưới {cell}: tuyến không hợp lệ"); continue; }
 
                 double firstLen = segs[0].Distance;
@@ -1063,9 +1241,10 @@ internal static class BoardPlanner
                 }
 
                 var (minc, total) = Certificate(segs, certClear, f);
-                if (minc < UrgentMinClearRef * scale)
+                if (minc < urgentGate)
                 {
-                    trace.Add($"lưới {cell}: khoảng thoát {minc:F1} < {UrgentMinClearRef * scale:F1}");
+                    trace.Add($"lưới {cell}: khoảng thoát {minc:F1} < {urgentGate:F1}"
+                              + Bottleneck(segs, certClear, f));
                     continue;
                 }
                 if (!ExtentAudit(segs, legal, scale, out string exWhy))
@@ -1094,7 +1273,17 @@ internal static class BoardPlanner
             why = "ok";
             trace.Add("lối nhanh: KHÔNG tinh chỉnh ngã rẽ");
             return Finish(f, role, scan, wall, bestInf, legal, bestSegs, bestMinClear, bestTotal,
-                          bestRadius, bestCell, sw, trace, mode);
+                          bestRadius, bestCell, sw, trace, mode, certClear);
+        }
+
+        if (urgentOnly)
+        {
+            // Mot khung thi DUNG O DAY. Ban Python co ham rieng (plan_urgent) tra None thay vi roi
+            // xuong duong tinh chinh, dung vi ly do nay: bo dung tuyen day du chi doi khoang thoat
+            // 6, khong du de tin mot mat na tuong moi thay MOT lan.
+            why = "mới một khung vẽ đậm, lối nhanh không ra tuyến — chờ khung thứ hai"
+                  + FormatTrace(trace);
+            return null;
         }
 
         // Duong DU PHONG: tuyen dat chung chi khoang thoat nhung CO doan ngan hon nguong. Giu rieng
@@ -1107,9 +1296,20 @@ internal static class BoardPlanner
         int fbCell = 0;
 
         double minSegOk = MinSegmentRef * scale;
+        bool firstRadius = true;
 
         foreach (double radiusRef in InflationRadiiRef)
         {
+            // NGAN SACH. Kiem TRUOC khi mo mot ban kinh moi, va chi sau khi ban kinh dau da chay
+            // tron — nho vay ket qua khong bao gio te hon truoc, chi nhanh hon.
+            if (!firstRadius && fbSegs is not null && sw.Elapsed.TotalMilliseconds > FallbackBudgetMs)
+            {
+                trace.Add($"hết ngân sách {FallbackBudgetMs:F0}ms trước nở {radiusRef:F0} → " +
+                          $"dùng dự phòng đang có (đoạn ngắn nhất {fbShortest:F0}px)");
+                break;
+            }
+            firstRadius = false;
+
             // Khoang thoat cua mat na ĐÃ NỞ, tinh MOT lan cho ca ba co luoi. Truoc day A* tu tinh
             // nen mot lan dung tuyen co the goi distance transform toi 21 lan (7 ban kinh × 3 co
             // luoi) — do dung la cho lam ham dung tuyen ton 830ms tren ROI 2K.
@@ -1120,13 +1320,26 @@ internal static class BoardPlanner
             {
                 int cell = Math.Max(4, (int)Math.Round(cellRef * scale));
                 var states = AStar(inf, infClear, role, cell);
-                if (states is null) continue;
+                if (states is null)
+                {
+                    trace.Add($"lưới {cell} nở {radiusRef:F0}: A* không ra");
+                    continue;
+                }
 
-                var segs = StatesToSegments(states, cell, role);
-                if (segs is null) continue;
+                var segs = StatesToSegments(states, cell, role, scale);
+                if (segs is null)
+                {
+                    trace.Add($"lưới {cell} nở {radiusRef:F0}: tuyến không hợp lệ");
+                    continue;
+                }
 
                 var (minc, total) = Certificate(segs, certClear, f);
-                if (minc < MinAcceptClearRef * scale) continue;
+                if (minc < MinAcceptClearRef * scale)
+                {
+                    trace.Add($"lưới {cell} nở {radiusRef:F0}: khoảng thoát {minc:F1} " +
+                              $"< {MinAcceptClearRef * scale:F1}" + Bottleneck(segs, certClear, f));
+                    continue;
+                }
 
                 double shortest = MinSegment(segs);
                 if (shortest < minSegOk)
@@ -1166,11 +1379,19 @@ internal static class BoardPlanner
 
         if (bestSegs is null)
         {
-            why = "không dựng được tuyến nào đủ an toàn ở mọi bán kính nở";
+            // Dinh kem TRACE. Truoc day trace bi vut o day va chi in ra qua Finish khi THANG —
+            // dung cai luc can no nhat thi khong co. Log that 04/09 co ba luot "giai 0 bang" ma
+            // dong duy nhat de lai la cau nay, khong noi duoc ban kinh nao chet vi A* va ban kinh
+            // nao chet vi khoang thoat.
+            why = "không dựng được tuyến nào đủ an toàn ở mọi bán kính nở"
+                  + FormatTrace(trace);
             return null;
         }
 
-        var (refined, notes) = RefineTurns(bestSegs, certClear, f, role);
+        // RefineTurns chi chay MOT lan, tren tuyen DA duoc chung nhan. Day la ngan sach da do:
+        // 180-197ms tong cho ca ham. Goi no them cho cac ung vien bi loai la cach lam bang 17:05
+        // ngay 04/09 chet LateStart.
+        var (refined, refineNotes) = RefineTurns(bestSegs, certClear, f, role);
         if (!ReferenceEquals(refined, bestSegs))
         {
             var (minc2, total2) = Certificate(refined, certClear, f);
@@ -1181,28 +1402,43 @@ internal static class BoardPlanner
 
         if (!ExtentAudit(bestSegs, legal, scale, out string extentWhy))
         {
-            why = extentWhy;
+            why = extentWhy + FormatTrace(trace);
             return null;
         }
 
         // KHONG chan theo DO DAI tuyen. Xem ghi chu o cuoi class de biet vi sao cho chan cu da
         // giet oan nhung ban do that.
         why = "ok";
-        trace.AddRange(notes);
+        trace.AddRange(refineNotes);
         return Finish(f, role, scan, wall, bestInf, legal, bestSegs, bestMinClear, bestTotal,
-                      bestRadius, bestCell, sw, trace, mode);
+                      bestRadius, bestCell, sw, trace, mode, certClear);
+    }
+
+    /// <summary>
+    /// Gắn trace vào chuỗi lý do hỏng, mỗi bậc một dòng thụt lề. Rỗng thì trả chuỗi rỗng để câu
+    /// lý do vẫn đọc được như cũ.
+    /// </summary>
+    private static string FormatTrace(List<string> trace)
+    {
+        if (trace is null || trace.Count == 0) return "";
+
+        var sb = new System.Text.StringBuilder();
+        foreach (string t in trace) sb.Append("\n    ").Append(t);
+        return sb.ToString();
     }
 
     private static BoardPlan Finish(BoardFrame f, BoardRole role, WallScan scan, Mask wall,
                                     Mask inflated, Rectangle legal, BoardSegment[] segs,
                                     double minClear, double total, double radiusRef, int cell,
-                                    Stopwatch sw, List<string> notes, string mode) =>
+                                    Stopwatch sw, List<string> notes, string mode,
+                                    float[] certClear) =>
         new()
         {
             Segments = segs,
             Role = role,
             Obstacles = wall,
             Inflated = inflated,
+            CertClearance = certClear,
             LegalBounds = legal,
             ValueThreshold = scan.ValueThreshold,
             InflationRadiusRef = radiusRef,

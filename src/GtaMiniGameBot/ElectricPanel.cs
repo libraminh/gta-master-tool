@@ -28,6 +28,7 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkCheck _autoLoop = new();
     private readonly DarkCheck _autoEat = new();
     private readonly DarkSpin _eDist = new();
+    private readonly DarkSpin _pitch = new();
     private readonly DarkSpin _eatPct = new();
     private readonly DarkSpin _foodSlot1 = new();
     private readonly DarkSpin _foodSlot2 = new();
@@ -109,7 +110,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(498),
+            Height = Theme.Px(526),
             BackColor = Theme.Ground
         };
 
@@ -165,7 +166,7 @@ internal sealed class ElectricPanel : UserControl
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(118))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(146))
         };
         host.Controls.Add(navBox);
 
@@ -199,10 +200,21 @@ internal sealed class ElectricPanel : UserControl
         RefreshEDistUi();
         _eDist.ValueChanged += OnEDistChanged;
 
+        Lab(navBox, "Góc ngẩng camera sau minigame", Theme.Px(12), Theme.Px(110), Theme.Px(226));
+        _pitch.SetBounds(Theme.Px(240), Theme.Px(106), Theme.Px(60), Theme.Px(24));
+        _pitch.Min = 40;
+        _pitch.Max = 200;
+        _pitch.Step = 5;
+        navBox.Controls.Add(_pitch);
+        Lab(navBox, "%  — nhìn lên trời thì giảm, cắm mặt đất thì tăng.",
+            Theme.Px(306), Theme.Px(110), w - Theme.Px(318));
+        RefreshPitchUi();
+        _pitch.ValueChanged += OnPitchChanged;
+
         var eatBox = new DarkGroup
         {
             Title = "Ăn uống",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(338), w, Theme.Px(104))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(366), w, Theme.Px(104))
         };
         host.Controls.Add(eatBox);
         BuildEat(eatBox, w);
@@ -210,7 +222,7 @@ internal sealed class ElectricPanel : UserControl
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(450), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(478), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -449,6 +461,26 @@ internal sealed class ElectricPanel : UserControl
                $"({_cfg.Nav.EMaxDistRef:F1} mốc 1080p)");
     }
 
+    /// <summary>Ô hiện phần trăm cho dễ đọc; config lưu hệ số (1.0 = đúng số bản Python).</summary>
+    private void RefreshPitchUi()
+    {
+        int shown = (int)Math.Round(_cfg.Nav.CameraPitchScale * 100);
+        _pitch.SetValueQuiet(Math.Clamp(shown, _pitch.Min, _pitch.Max));
+    }
+
+    private void OnPitchChanged()
+    {
+        _cfg.Nav.CameraPitchScale = _pitch.Value / 100.0;
+        _cfg.Nav.Normalize();
+        _cfg.Save();
+        RefreshPitchUi();
+
+        double counts = NavTuning.CameraResetUpRateCps * NavTuning.CameraResetUpS
+                        * _cfg.Nav.CameraPitchScale;
+        Append($"góc ngẩng sau minigame: {_pitch.Value}% — gửi {counts:F0} counts " +
+               $"(mặc định 100% = 1024). Soi dòng [SOI CAMERA] trong Diễn biến để biết đã đúng chưa.");
+    }
+
     private void OnEatPctChanged()
     {
         _cfg.Survival.LowThresholdPct = _eatPct.Value;
@@ -660,6 +692,7 @@ internal sealed class ElectricPanel : UserControl
         _autoWalk.Enabled = !running;
         _autoLoop.Enabled = !running;
         _eDist.Enabled = !running;
+        _pitch.Enabled = !running;
         _autoEat.Enabled = !running;
         _eatPct.Enabled = !running;
         _foodSlot1.Enabled = !running;
