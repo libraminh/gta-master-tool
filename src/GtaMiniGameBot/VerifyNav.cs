@@ -81,6 +81,7 @@ internal static class VerifyNav
         fail += MouseCases();
         fail += WatchdogCases();
         fail += PromptCases();
+        fail += EDistGateCases();
         fail += WorldCases();
         fail += BoardCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
@@ -358,6 +359,35 @@ internal static class VerifyNav
             now += 0.025;
         }
         Check(ref fail, !any, "góc 60° > 55° → không tính kẹt", "");
+        return fail;
+    }
+
+    /// <summary>
+    /// Cổng khoảng cách của phím E. Bộ dò prompt nhận MỌI prompt tương tác nên đây là thứ duy nhất
+    /// ngăn bot bấm E vào xe/cửa/thùng dọc đường: đo trên log thật, 43 lần mở được bảng đều ở
+    /// dist ≤ 10.3 px (màn 2K) còn 35 cú hỏng nằm ở 12.3–70.4 px.
+    ///
+    /// Hai ca "cho qua" mới là chỗ dễ sai: mất bám chấm vàng phần lớn vì chấm khuất dưới mũi tên
+    /// người chơi — tức là đã đứng ngay trên điểm, đúng lúc cần bấm nhất. Chặn ở đó là làm cả tính
+    /// năng chết câm.
+    /// </summary>
+    private static int EDistGateCases()
+    {
+        int fail = 0;
+        Console.WriteLine("  · cổng khoảng cách phím E");
+
+        const double max = 12.0;   // 9.0 moc 1080p tren man 2K
+        Check(ref fail, NavBot.FarForE(70.4, 0.1, max), "dist 70.4 (số đo tươi) → CHẶN", "");
+        Check(ref fail, NavBot.FarForE(12.3, 0.1, max), "dist 12.3 vừa quá ngưỡng → CHẶN", "");
+        Check(ref fail, !NavBot.FarForE(10.3, 0.1, max), "dist 10.3 — lần mở bảng xa nhất từng ghi → CHO", "");
+        Check(ref fail, !NavBot.FarForE(6.8, 0.1, max), "dist 6.8 — mức mở bảng thường gặp → CHO", "");
+
+        Check(ref fail, !NavBot.FarForE(double.NaN, 0.1, max),
+              "chưa đo được lần nào → CHO (chấm khuất dưới mũi tên)", "");
+        Check(ref fail, !NavBot.FarForE(70.4, NavTuning.SimpleEDistMaxAgeS + 0.5, max),
+              "số đo quá cũ → CHO, không giữ mãi kết luận cũ", "");
+        Check(ref fail, NavBot.FarForE(70.4, NavTuning.SimpleEDistMaxAgeS - 0.1, max),
+              "số đo còn trong hạn → vẫn CHẶN", "");
         return fail;
     }
 

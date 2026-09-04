@@ -41,6 +41,17 @@ internal sealed class NavSettings
     /// <summary>Nhịp ghi dòng trạng thái vào log — <c>console_interval_s</c> 0.16 của Python.</summary>
     public int LogEveryMs { get; set; } = 160;
 
+    /// <summary>
+    /// Chỉ bấm E khi chấm vàng còn cách dưới bấy nhiêu pixel minimap (mốc 1080p, nhân
+    /// <see cref="NavScale.Px"/> lúc dùng như mọi ngưỡng khoảng cách khác).
+    ///
+    /// Bộ dò prompt là heuristic hình học nhận MỌI prompt tương tác — xe, cửa, NPC, thùng ven đường
+    /// — nên không có cổng này thì bot bấm E vào bất cứ thứ gì đi ngang qua, mỗi cú hỏng kẹt
+    /// <see cref="NavTuning.SimpleWaitBoardS"/> giây. Số mặc định lấy từ log thật: 43 lần mở được
+    /// bảng đều ở dist ≤ 10.3 px màn 2K (≈ 7.7 mốc 1080p), nên 9.0 còn dư biên.
+    /// </summary>
+    public double EMaxDistRef { get; set; } = NavTuning.SimpleEMaxDistRef;
+
     /// <summary>Chỉ kẹp giá trị, KHÔNG ném: <see cref="ElectricConfig.Load"/> nuốt mọi exception và trả config mới.</summary>
     public void Normalize()
     {
@@ -51,6 +62,9 @@ internal sealed class NavSettings
         if (double.IsNaN(PlayerOriginXRef) || PlayerOriginXRef < 0 || PlayerOriginXRef > 1920) PlayerOriginXRef = 0;
         if (double.IsNaN(PlayerOriginYRef) || PlayerOriginYRef < 0 || PlayerOriginYRef > 1080) PlayerOriginYRef = 0;
         LogEveryMs = Math.Clamp(LogEveryMs <= 0 ? 160 : LogEveryMs, 50, 5000);
+        EMaxDistRef = double.IsNaN(EMaxDistRef) || EMaxDistRef <= 0
+            ? NavTuning.SimpleEMaxDistRef
+            : Math.Clamp(EMaxDistRef, NavTuning.SimpleEMaxDistMinRef, NavTuning.SimpleEMaxDistMaxRef);
     }
 }
 
@@ -317,8 +331,20 @@ internal static class NavTuning
     public const int SimpleBoardClearFrames = 5;
     public const double SimpleCloseSettleS = 0.60;
     public const double SimplePostCheckS = 1.50;
-    public const double SimplePostEWaitS = 10.0;
     public const double SimpleRecentBoardExitGuardS = 8.0;
+
+    // ---- cong khoang cach cho E ----
+    /// <summary>Mặc định của <see cref="NavSettings.EMaxDistRef"/> — 9.0 mốc 1080p ≈ 12 px ở 2K.</summary>
+    public const double SimpleEMaxDistRef = 9.0;
+
+    public const double SimpleEMaxDistMinRef = 3.0;
+    public const double SimpleEMaxDistMaxRef = 45.0;
+
+    /// <summary>
+    /// Số đo khoảng cách già hơn bấy nhiêu giây thì coi như không biết, và KHÔNG chặn E nữa. Mất
+    /// bám chấm vàng phần lớn là vì chấm khuất dưới mũi tên — tức là đã tới nơi, đúng lúc cần bấm.
+    /// </summary>
+    public const double SimpleEDistMaxAgeS = 3.0;
 
     // ================================================================ reset camera + W reclaim
     public const double CameraResetSettleS = 0.070;

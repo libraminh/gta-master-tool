@@ -116,7 +116,18 @@ internal sealed class NavBot
     private string _simplePhase = "WORLD";
     private int _promptStreak, _promptAbsentStreak;
     private bool _promptConsumed;
-    private double _waitBoardUntil, _closeUntil, _postCheckUntil, _wait10Until;
+    private double _waitBoardUntil, _closeUntil, _postCheckUntil;
+    private int _promptSeq = -1;
+    private double _farELogT;
+
+    /// <summary>
+    /// Khoảng cách tới chấm vàng của lần đo gần nhất, và lúc đo. <see cref="SimpleFlowStep"/> chạy
+    /// TRƯỚC khối nhận dạng nên trong tick của nó chưa có số mới — nhưng số của tick trước chỉ già
+    /// 25 ms, thừa tươi để quyết định có đáng bấm E không.
+    /// </summary>
+    private double _lastDist = double.NaN;
+
+    private double _lastDistT;
     private double _recentBoardExitUntil;
     private bool _eDown;
     private double _eUpAt;
@@ -412,6 +423,11 @@ internal sealed class NavBot
             dist = Math.Sqrt(dx * dx + dy * dy);
             rel = NavController.Wrap(Math.Atan2(dx, -dy) * 180.0 / Math.PI);
             _watchdog.Add(now, dx, dy);
+
+            // Cong khoang cach cua E doc o day: SimpleFlowStep chay truoc khoi nay nen no lay so
+            // cua tick truoc, gia 25 ms.
+            _lastDist = dist;
+            _lastDistT = now;
         }
         bool forwardRequested = _input.IsHeld(NavKey.W) && !_input.IsHeld(NavKey.S);
 
@@ -598,17 +614,41 @@ internal sealed class NavBot
 
     // ================================================================ prompt -> E -> cho bang
 
-    private bool PromptStable(bool visible)
+    /// <summary>
+    /// Prompt đã hiện ổn định chưa. Đếm theo KHUNG QUÉT THẬT (<see cref="WorldSnapshot.Seq"/>) chứ
+    /// không theo tick: luồng chính chạy 25 ms còn bộ quét world chỉ ~22–27 Hz (37–45 ms/khung), nên
+    /// hai tick liên tiếp thường đọc CÙNG một snapshot — đếm theo tick thì "ổn định 2 khung" thực
+    /// chất là một lần dò duy nhất, và một dương tính giả đủ để kéo cả chuỗi bấm E.
+    /// </summary>
+    private bool PromptStable(WorldSnapshot snap)
     {
-        if (visible) { _promptStreak++; _promptAbsentStreak = 0; }
-        else
+        bool visible = snap.PromptVisible;
+        if (snap.Seq != _promptSeq)
         {
-            _promptStreak = 0;
-            _promptAbsentStreak++;
-            if (_promptAbsentStreak >= NavTuning.SimplePromptRearmAbsentFrames) _promptConsumed = false;
+            _promptSeq = snap.Seq;
+            if (visible) { _promptStreak++; _promptAbsentStreak = 0; }
+            else
+            {
+                _promptStreak = 0;
+                _promptAbsentStreak++;
+                if (_promptAbsentStreak >= NavTuning.SimplePromptRearmAbsentFrames) _promptConsumed = false;
+            }
         }
         return visible && _promptStreak >= NavTuning.SimplePromptStableFrames;
     }
+
+    /// <summary>
+    /// Còn quá xa chấm vàng để cái prompt này là của điểm làm việc.
+    ///
+    /// Chưa đo được lần nào, hoặc số đo đã quá cũ → trả false (CHO bấm). Mất bám chấm vàng phần lớn
+    /// là vì chấm khuất dưới mũi tên người chơi, tức là đã đứng ngay trên điểm — chặn ở đó là chặn
+    /// đúng lúc cần bấm nhất.
+    /// </summary>
+    private bool TooFarForE(double now) => FarForE(_lastDist, now - _lastDistT, _cfg.Nav.EMaxDistRef * _s.Px);
+
+    /// <summary>Phần thuần của <see cref="TooFarForE"/> — tách ra để <c>--verify-nav</c> kiểm được.</summary>
+    public static bool FarForE(double dist, double age, double maxDist)
+        => double.IsFinite(dist) && age <= NavTuning.SimpleEDistMaxAgeS && dist > maxDist;
 
     private void ReleaseETick(double now)
     {
@@ -645,22 +685,19 @@ internal sealed class NavBot
         Emit($"[GIỮ] {reason}");
     }
 
-    private bool BeginPostEWait(double now, string source)
+    /// <summary>Một dòng mỗi giây cho những thứ xảy ra mỗi tick — đừng làm ngập khung Diễn biến.</summary>
+    private void EmitThrottled(double now, ref double last, string line)
     {
-        _cameraPhase = null;
-        _simplePhase = "POST_WAIT10";
-        _wait10Until = now + NavTuning.SimplePostEWaitS;
-        _input.StopMouseStream(immediate: true);
-        _input.ReleaseOwnedOnce();
-        Emit($"[SAU E] {source} → chờ {NavTuning.SimplePostEWaitS:F0}s, không E");
-        return true;
+        if (now - last < 1.0) return;
+        last = now;
+        Emit(line);
     }
 
     private void ResumeWorld(double now, string reason)
     {
         _simplePhase = "WORLD";
-        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
-        bool finalExit = reason is "BOARD_CLOSED_NO_E" or "POST_E_GONE";
+        _closeUntil = _postCheckUntil = _waitBoardUntil = 0;
+        bool finalExit = reason is "BOARD_CLOSED_NO_E";
         if (finalExit)
         {
             ArmRestartWatch(now, "SIMPLE_" + reason);
@@ -710,29 +747,14 @@ internal sealed class NavBot
             return true;
         }
 
+        // Chi la mot khoang lang cho bang bien han khoi man. CO Y khong doi gi voi prompt o day:
+        // day la ~0.5 s dau cua mot NavBot MOI, chua he do khoang cach lan nao, nen khong co co so
+        // gi de ket luan cai prompt dang thay la cua diem lam viec ke tiep hay cua cai bang vua dong.
+        // Cu de het gio roi ra WORLD — luc ay da co khoang cach that de quyet.
         if (phase == "POST_CHECK")
         {
-            if (!_promptConsumed && PromptStable(snap.PromptVisible)) return BeginPostEWait(now, "POST_CHECK_E");
             if (now < _postCheckUntil) return true;
             ResumeWorld(now, "BOARD_CLOSED_NO_E");
-            return false;
-        }
-
-        if (phase == "POST_WAIT10")
-        {
-            if (now < _wait10Until) return true;
-            if (PromptStable(snap.PromptVisible))
-            {
-                if (PressEOnce(now, "POST_MINIGAME_10S"))
-                {
-                    _recentBoardExitUntil = 0;
-                    _simplePhase = "WAIT_BOARD";
-                    _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
-                }
-                return true;
-            }
-            _recentBoardExitUntil = 0;
-            ResumeWorld(now, "POST_E_GONE");
             return false;
         }
 
@@ -773,13 +795,30 @@ internal sealed class NavBot
             else return false;
         }
 
-        if (!PromptStable(snap.PromptVisible)) return false;
+        if (!PromptStable(snap)) return false;
         if (_promptConsumed) return false;
 
+        // Con xa cham vang thi prompt nay khong phai cua diem lam viec. Bo do dò prompt nhan MOI
+        // prompt tuong tac (xe, cua, thung, NPC) nen doc duong luc nao cung co cai de bam; moi cu
+        // bam hong tra gia bang SimpleWaitBoardS giay dung im.
+        //
+        // return false, KHONG HoldEnter: frame khong bi nuot nen bot chay tiep — dung khuon
+        // "khien E NPC" ngay tren.
+        if (TooFarForE(now))
+        {
+            EmitThrottled(now, ref _farELogT,
+                $"[BỎ QUA PROMPT] còn cách chấm vàng {_lastDist:F1}px " +
+                $"(> {_cfg.Nav.EMaxDistRef * _s.Px:F0}px) → đi tiếp, không bấm E");
+            return false;
+        }
+
+        // Vua thoat bang: game cam E vai giay. Van DI TIEP chu khong dung cho — prompt cua chinh cai
+        // bang vua lam chi tat khi nhan vat di ra xa, dung yen thi no khong bao gio tat.
         if (now < _recentBoardExitUntil)
         {
-            HoldEnter("E MUỘN SAU BẢNG");
-            return BeginPostEWait(now, "LATE_WORLD_E_AFTER_BOARD");
+            EmitThrottled(now, ref _farELogT,
+                $"[BỎ QUA PROMPT] vừa thoát bảng {(_recentBoardExitUntil - now):F1}s trước → đi tiếp, không bấm E");
+            return false;
         }
 
         HoldEnter("PROMPT E");
@@ -1278,7 +1317,7 @@ internal sealed class NavBot
         _input.ReleaseOwnedOnce();
         _cameraPhase = null;
         _simplePhase = "WORLD";
-        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
+        _closeUntil = _postCheckUntil = _waitBoardUntil = 0;
         _tracker.Reset();
         _watchdog.Reset();
         _ctl.ResetTransient();
@@ -1322,7 +1361,17 @@ internal sealed class NavBot
                 if (approach) { progress = true; _wdAnchorWorld = sig; }
             }
         }
-        if (progress) { _wdLastProgressT = now; return false; }
+        if (progress)
+        {
+            _wdLastProgressT = now;
+
+            // WATCH 30 s do "da bao lau chua co minigame moi", khong do tien bo — ma di bo toi diem
+            // moi lau hon 30 s la chuyen thuong. De nguyen thi cu 30 s no lai cat ngang mot chuyen
+            // di dang tot: RestartPrepareCore xoa bam cham vang VA arm lai E. Bot dang tien that thi
+            // lui moc cua no theo.
+            _watchStarted = now;
+            return false;
+        }
 
         double idle = now - _wdLastProgressT;
         if (idle >= NavTuning.AutorunIdleWatchdogS)

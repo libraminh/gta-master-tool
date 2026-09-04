@@ -64,7 +64,8 @@
     "PlayerOriginXRef": 0,
     "PlayerOriginYRef": 0,
     "JobRecoveryEnabled": true,
-    "LogEveryMs": 160
+    "LogEveryMs": 160,
+    "EMaxDistRef": 9
   },
   "Survival": {
     "Enabled": false,

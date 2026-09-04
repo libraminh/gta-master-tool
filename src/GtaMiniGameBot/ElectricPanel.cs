@@ -27,6 +27,7 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
     private readonly DarkCheck _autoEat = new();
+    private readonly DarkSpin _eDist = new();
     private readonly DarkSpin _eatPct = new();
     private readonly DarkSpin _foodSlot1 = new();
     private readonly DarkSpin _foodSlot2 = new();
@@ -108,7 +109,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(468),
+            Height = Theme.Px(498),
             BackColor = Theme.Ground
         };
 
@@ -164,7 +165,7 @@ internal sealed class ElectricPanel : UserControl
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(88))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(118))
         };
         host.Controls.Add(navBox);
 
@@ -187,10 +188,21 @@ internal sealed class ElectricPanel : UserControl
         Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log; bật lại để thử reset camera sau minigame.",
             Theme.Px(330), Theme.Px(50), w - Theme.Px(342));
 
+        Lab(navBox, "Chỉ bấm E khi còn cách chấm vàng dưới", Theme.Px(12), Theme.Px(82), Theme.Px(226));
+        _eDist.SetBounds(Theme.Px(240), Theme.Px(78), Theme.Px(60), Theme.Px(24));
+        _eDist.Min = (int)Math.Ceiling(NavTuning.SimpleEMaxDistMinRef);
+        _eDist.Max = (int)(NavTuning.SimpleEMaxDistMaxRef * 2);   // du cho ca man rong
+        _eDist.Step = 1;
+        navBox.Controls.Add(_eDist);
+        Lab(navBox, "px  — khớp số “dist=” trong Diễn biến; xa hơn thì đi tiếp chứ không bấm.",
+            Theme.Px(306), Theme.Px(82), w - Theme.Px(318));
+        RefreshEDistUi();
+        _eDist.ValueChanged += OnEDistChanged;
+
         var eatBox = new DarkGroup
         {
             Title = "Ăn uống",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(308), w, Theme.Px(104))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(338), w, Theme.Px(104))
         };
         host.Controls.Add(eatBox);
         BuildEat(eatBox, w);
@@ -198,7 +210,7 @@ internal sealed class ElectricPanel : UserControl
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(420), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(450), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -366,6 +378,7 @@ internal sealed class ElectricPanel : UserControl
     private void RefreshCalib()
     {
         _calib.Text = _profile.Describe();
+        RefreshEDistUi();
         _calib.ForeColor = Theme.GoodText;
     }
 
@@ -404,6 +417,36 @@ internal sealed class ElectricPanel : UserControl
                $"ngưỡng {_cfg.Survival.LowThresholdPct:F0}%");
         if (!_cfg.AutoWalk)
             Append("lưu ý: ăn uống nằm trong bộ tự đi, phải bật “Tự tìm điểm vàng…” mới có tác dụng");
+    }
+
+    /// <summary>
+    /// Hệ số quy đổi giữa số hiện trên ô và số lưu trong config. Ô hiển thị PIXEL THẬT của màn đang
+    /// chọn để so thẳng với “dist=” trong khung Diễn biến; config lưu theo mốc 1080p như mọi ngưỡng
+    /// khoảng cách khác, nên đổi độ phân giải không phải chỉnh lại.
+    /// </summary>
+    private double EDistPxScale
+    {
+        get
+        {
+            double s = _cfg.Nav.ScreenPxScale;
+            return s > 0 ? s : (_screen?.Bounds.Width ?? 1920) / ElectricConfig.RefW;
+        }
+    }
+
+    private void RefreshEDistUi()
+    {
+        int shown = (int)Math.Round(_cfg.Nav.EMaxDistRef * EDistPxScale);
+        _eDist.SetValueQuiet(Math.Clamp(shown, _eDist.Min, _eDist.Max));
+    }
+
+    private void OnEDistChanged()
+    {
+        _cfg.Nav.EMaxDistRef = _eDist.Value / EDistPxScale;
+        _cfg.Nav.Normalize();
+        _cfg.Save();
+        RefreshEDistUi();
+        Append($"chỉ bấm E khi còn cách chấm vàng dưới {_cfg.Nav.EMaxDistRef * EDistPxScale:F0}px " +
+               $"({_cfg.Nav.EMaxDistRef:F1} mốc 1080p)");
     }
 
     private void OnEatPctChanged()
@@ -616,6 +659,7 @@ internal sealed class ElectricPanel : UserControl
         _modes.Enabled = !running;
         _autoWalk.Enabled = !running;
         _autoLoop.Enabled = !running;
+        _eDist.Enabled = !running;
         _autoEat.Enabled = !running;
         _eatPct.Enabled = !running;
         _foodSlot1.Enabled = !running;
