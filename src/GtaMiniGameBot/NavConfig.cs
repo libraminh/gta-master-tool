@@ -41,6 +41,35 @@ internal sealed class NavSettings
     /// <summary>Nhịp ghi dòng trạng thái vào log — <c>console_interval_s</c> 0.16 của Python.</summary>
     public int LogEveryMs { get; set; } = 160;
 
+    /// <summary>
+    /// Chỉ bấm E khi chấm vàng còn cách dưới bấy nhiêu pixel minimap (mốc 1080p, nhân
+    /// <see cref="NavScale.Px"/> lúc dùng như mọi ngưỡng khoảng cách khác).
+    ///
+    /// Bộ dò prompt là heuristic hình học nhận MỌI prompt tương tác — xe, cửa, NPC, thùng ven đường
+    /// — nên không có cổng này thì bot bấm E vào bất cứ thứ gì đi ngang qua, mỗi cú hỏng kẹt
+    /// <see cref="NavTuning.SimpleWaitBoardS"/> giây. Số mặc định lấy từ log thật: 43 lần mở được
+    /// bảng đều ở dist ≤ 10.3 px màn 2K (≈ 7.7 mốc 1080p), nên 9.0 còn dư biên.
+    /// </summary>
+    public double EMaxDistRef { get; set; } = NavTuning.SimpleEMaxDistRef;
+
+    /// <summary>
+    /// Hệ số hiệu chuẩn GÓC NGẨNG LÊN của pha reset camera sau minigame. 1.0 = đúng số của bản
+    /// Python.
+    ///
+    /// Vì sao cần một núm riêng: reset camera là vòng HỞ — chúi xuống cho chạm chốt dưới rồi ngẩng
+    /// lên một lượng CỐ ĐỊNH (1950 cps × 0.525 s = 1024 counts). Lượng đó đúng với độ nhạy chuột
+    /// trong game của tác giả bản Python, và không có gì đảm bảo nó đúng với máy khác. Trục X đã
+    /// được hiệu chuẩn bằng <see cref="MouseSpeedMultiplier"/> (×4.0, đo 25/08), còn trục Y thì
+    /// <see cref="NavInput.SetMouseYRate"/> cố ý KHÔNG nhân hệ số đó — nên trước đây trục Y không
+    /// có đường nào để chỉnh.
+    ///
+    /// Ngẩng quá tay là camera dừng ở góc nhìn lên trời, và <see cref="WorldMarkerDetector"/> loại
+    /// mọi khối có đáy cao hơn <see cref="NavTuning.WorldMinBboxBottomRef"/> — mất bám điểm 3D, log
+    /// đầy <c>WQ=WORLD_NONE</c> rồi SEARCH360 và KET1 quần nhau. Thấy vậy thì hạ số này xuống
+    /// (0.85 là bước thử đầu hợp lý); ngẩng chưa tới thì nâng lên.
+    /// </summary>
+    public double CameraPitchScale { get; set; } = 1.0;
+
     /// <summary>Chỉ kẹp giá trị, KHÔNG ném: <see cref="ElectricConfig.Load"/> nuốt mọi exception và trả config mới.</summary>
     public void Normalize()
     {
@@ -51,6 +80,12 @@ internal sealed class NavSettings
         if (double.IsNaN(PlayerOriginXRef) || PlayerOriginXRef < 0 || PlayerOriginXRef > 1920) PlayerOriginXRef = 0;
         if (double.IsNaN(PlayerOriginYRef) || PlayerOriginYRef < 0 || PlayerOriginYRef > 1080) PlayerOriginYRef = 0;
         LogEveryMs = Math.Clamp(LogEveryMs <= 0 ? 160 : LogEveryMs, 50, 5000);
+        EMaxDistRef = double.IsNaN(EMaxDistRef) || EMaxDistRef <= 0
+            ? NavTuning.SimpleEMaxDistRef
+            : Math.Clamp(EMaxDistRef, NavTuning.SimpleEMaxDistMinRef, NavTuning.SimpleEMaxDistMaxRef);
+        CameraPitchScale = double.IsNaN(CameraPitchScale) || CameraPitchScale <= 0
+            ? 1.0
+            : Math.Clamp(CameraPitchScale, 0.40, 2.00);
     }
 }
 
@@ -317,8 +352,34 @@ internal static class NavTuning
     public const int SimpleBoardClearFrames = 5;
     public const double SimpleCloseSettleS = 0.60;
     public const double SimplePostCheckS = 1.50;
-    public const double SimplePostEWaitS = 10.0;
     public const double SimpleRecentBoardExitGuardS = 8.0;
+
+    // ---- sau khi THUA bang: dung tai cho, E lai ----
+    /// <summary>Chờ prompt hiện lại sau lượt thua (overlay đỏ "KHÔNG THÀNH CÔNG" tự tắt vài giây) — hết thì về đường thường.</summary>
+    public const double LossRetryHoldS = 12.0;
+
+    /// <summary>
+    /// Số lần E tối đa tại chỗ. Không phải 1 vì log 16:29 ngày 04/09 cho thấy cú E đầu 5 s sau khi
+    /// bảng đóng KHÔNG mở được bảng — có thể E đầu chỉ tắt overlay, hoặc game còn cooldown; cho vài
+    /// lần cách nhau <see cref="SimpleWaitBoardS"/> thay vì đoán một cơ chế.
+    /// </summary>
+    public const int LossRetryMaxE = 3;
+
+    /// <summary>Không cho reset nghề trong ngần này giây sau thua — điểm làm việc đang ở dưới chân.</summary>
+    public const double LossJobRecoveryGuardS = 30.0;
+
+    // ---- cong khoang cach cho E ----
+    /// <summary>Mặc định của <see cref="NavSettings.EMaxDistRef"/> — 9.0 mốc 1080p ≈ 12 px ở 2K.</summary>
+    public const double SimpleEMaxDistRef = 9.0;
+
+    public const double SimpleEMaxDistMinRef = 3.0;
+    public const double SimpleEMaxDistMaxRef = 45.0;
+
+    /// <summary>
+    /// Số đo khoảng cách già hơn bấy nhiêu giây thì coi như không biết, và KHÔNG chặn E nữa. Mất
+    /// bám chấm vàng phần lớn là vì chấm khuất dưới mũi tên — tức là đã tới nơi, đúng lúc cần bấm.
+    /// </summary>
+    public const double SimpleEDistMaxAgeS = 3.0;
 
     // ================================================================ reset camera + W reclaim
     public const double CameraResetSettleS = 0.070;
@@ -326,6 +387,13 @@ internal static class NavTuning
     public const double CameraResetGroundHoldS = 0.070;
     public const double CameraResetUpS = 0.525, CameraResetUpRateCps = 1950.0;
     public const double CameraResetFinalSettleS = 0.090;
+
+    /// <summary>
+    /// Sau reset camera, chờ ngần này giây để điểm 3D xuất hiện lại; hết mà chưa thấy thì ghi một
+    /// dòng cảnh báo kèm số counts đã gửi. Chỉ ghi log, không bẻ camera — xem
+    /// <c>NavBot.CameraAuditStep</c>. 1.2s là quá đủ: luồng quét world chạy 22–27 Hz.
+    /// </summary>
+    public const double CameraResetAuditS = 1.20;
     public const double PostMiniWReclaimDelayS = 0.260;
     public const double PostMiniWReclaimGapMs = 85.0;
     public const double PostMiniWReclaimConfirmS = 0.520;
@@ -398,18 +466,67 @@ internal static class NavTuning
     /// vì vùng đó dừng ở y=950 còn hai icon nằm ở y≈1047. Rộng hơn tâm icon mỗi bên ~30 px để còn chỗ
     /// cho vành ngoài (rmax 23) và cho người dùng chỉnh tâm vài chục pixel mà không phải sửa ROI.
     /// </summary>
-    public static readonly double[] SurvivalRoiRef = { 120, 1005, 260, 1080 };
+    public static readonly double[] SurvivalRoiRef = { 110, 995, 270, 1080 };
 
     public const double SurvivalCoreRadiusRef = 10.0;                    // survival_core_radius_px
     public const int SurvivalCoreMinPixels = 16;                         // survival_core_min_pixels (dien tich)
-    public const double SurvivalRingRminRef = 17.0;                      // survival_ring_rmin_px
-    public const double SurvivalRingRmaxRef = 23.0;                      // survival_ring_rmax_px
-    public const int SurvivalRadialSamples = 7;                          // survival_radial_samples
-    public const int SurvivalAngleBins = 180;                            // survival_angle_bins
-    public const int SurvivalAngleHitPixels = 2;                         // survival_angle_hit_pixels
+
+    /// <summary>
+    /// Dải bán kính DỰ PHÒNG, dùng khi chưa tự dò được vành — đúng hai số của bản Python
+    /// (<c>survival_ring_rmin_px</c>/<c>rmax</c>). Xem <see cref="SurvivalGauge"/> để biết vì sao
+    /// tin tuyệt đối vào chúng là nguồn của lỗi "ăn sớm".
+    /// </summary>
+    public const double SurvivalRingRminRef = 17.0;
+
+    public const double SurvivalRingRmaxRef = 23.0;
+
+    // ---- tu do vanh cung: dai quet, be day, va do lech tam cho phep ----
+    /// <summary>Bán kính nhỏ nhất còn có thể là vành. Phải lớn hơn đĩa lõi để hình icon không lẫn vào.</summary>
+    public const double SurvivalRingSearchRminRef = 12.0;
+
+    public const double SurvivalRingSearchRmaxRef = 32.0;
+
+    /// <summary>Nửa bề dày dải đo độ phủ góc quanh bán kính đã dò.</summary>
+    public const double SurvivalRingHalfWidthRef = 3.0;
+
+    /// <summary>Tâm icon trong config được phép lệch bấy nhiêu pixel mỗi trục; quá thì phải sửa config.</summary>
+    public const double SurvivalCenterSearchRef = 4.0;
+
+    /// <summary>
+    /// Số pixel tối thiểu trong dải mới dám chốt bán kính (diện tích, nhân <c>_s.Area</c>).
+    ///
+    /// Đo trên HUD thật ở 2560×1440: vành dày ~2 px, bán kính 28 px → cả vòng đầy chỉ ~350 pixel.
+    /// Để 80 nghĩa là cần vành còn khoảng 40 % mới dò; cao hơn nữa thì đúng lúc cần nhất (vạch đang
+    /// tụt) lại không dò được. Viền đĩa lõi — thứ duy nhất có thể nhận nhầm — chỉ cho ~50 pixel.
+    /// </summary>
+    public const int SurvivalCalibMinPixels = 80;
+
+    /// <summary>
+    /// Vành phải phủ ít nhất bấy nhiêu phần trăm góc thì mới được dò ĐỘ LỆCH TÂM. Một cung ngắn
+    /// khớp với vô số đường tròn nên bộ dò sẽ chọn cái làm nó dày nhất — tâm sai, phần trăm phồng.
+    /// </summary>
+    public const double SurvivalCalibMinCoveragePct = 70.0;
+
+    /// <summary>Số pixel trong một nan quạt để tính là "còn màu".</summary>
+    public const int SurvivalAngleMinPixels = 2;
+
+    /// <summary>
+    /// Bản Python chia 180 nan (2° mỗi nan). Ở đây 90 nan (4°) là CỐ Ý: vành HUD chỉ dày ~4 px nên
+    /// một nan 2° chỉ nhặt được 3–4 pixel, sát ngưỡng <see cref="SurvivalAngleMinPixels"/> tới mức
+    /// răng cưa của một vòng cung bo góc là đủ làm rụng nan — tức là đọc hụt, đúng cái sinh ra lỗi
+    /// "ăn sớm". Nan 4° cho gấp đôi biên an toàn, mà độ phân giải 1.1 % vẫn thừa cho một quyết định
+    /// nhị phân "trên hay dưới ngưỡng".
+    /// </summary>
+    public const int SurvivalAngleBins = 90;                             // survival_angle_bins (Python: 180)
     public const double SurvivalScanIntervalS = 0.25;                    // survival_scan_interval_s
     public const double SurvivalEmaAlpha = 0.45;                         // survival_ema_alpha
+
+    /// <summary>Mặc định của <see cref="SurvivalSettings.LowThresholdPct"/> — người dùng chỉnh được.</summary>
     public const double SurvivalLowThresholdPct = 50.0;                  // survival_low_threshold_pct
+
+    public const double SurvivalThresholdMinPct = 10.0;
+    public const double SurvivalThresholdMaxPct = 90.0;
+
     public const int SurvivalLowConfirmScans = 3;                        // survival_low_confirm_scans
     public const double SurvivalPreUseSettleS = 0.20;                    // survival_pre_use_settle_s
     public const double SurvivalKeyHoldS = 0.150;                        // survival_key_hold_ms
@@ -423,6 +540,14 @@ internal static class NavTuning
 
     public const double SurvivalSuccessDeltaPct = 3.0;                   // survival_success_delta_pct
     public const double SurvivalFailedBlockS = 30.0;                     // survival_failed_resource_block_s
+
+    /// <summary>
+    /// Bao nhiêu bữa hỏng liên tiếp thì thôi hẳn loại đó cho tới khi tắt/bật lại job. Bấm hết ô mà
+    /// đồng hồ không nhúc nhích gần như chắc chắn là hết đồ trong túi — bot không nhìn được túi nên
+    /// nó chỉ đoán được thế. Bản Python thử lại vô hạn, mỗi vòng mất ~20 giây đứng chết; ở đây thử
+    /// đúng hai bữa (một lần + một lần nữa) rồi dừng.
+    /// </summary>
+    public const int SurvivalMaxMealAttempts = 2;
     public const double SurvivalPostUseWRearmS = 1.2;                    // survival_post_use_w_rearm_s
 
     // food_hsv_low/high (14,80,70)-(35,255,255) — vong cung vang/cam.

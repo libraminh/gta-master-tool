@@ -104,13 +104,17 @@ internal static class VerifyBoard
                           $"ngưỡng V {scan.ValueThreshold}, {scan.LargeWalls} khối lớn / " +
                           $"{scan.MicroWalls} khối nhỏ / {scan.SecondaryWalls} lớp bảo");
 
-        if (!BoardPlanner.SignatureStable(history, cfg.Board.WallStableFrames, out string stableWhy))
+        // Anh tinh thi moi khung y het nhau, nen phai vao duoc lan MANH NHAT. Lan urgent-only o
+        // day la bao dong: nghia la khung khong qua noi nguong che/V, tuc fixture hoac anh sai.
+        var lane = BoardPlanner.Stability(history, out string stableWhy);
+        if (lane != BoardPlanner.StabilityLane.Full)
         {
-            Console.WriteLine($"    HỎNG — bộ canh ổn định từ chối bảng tĩnh: {stableWhy}");
+            Console.WriteLine($"    HỎNG — bộ canh ổn định từ chối bảng tĩnh ({lane}): {stableWhy}");
             return false;
         }
+        Console.WriteLine($"    ổn định: {stableWhy}");
 
-        var plan = BoardPlanner.Plan(frame, role, scan, out string planWhy);
+        var plan = BoardPlanner.Plan(frame, role, scan, urgentOnly: false, out string planWhy);
         if (plan is null)
         {
             Console.WriteLine($"    HỎNG — không dựng được tuyến: {planWhy}");
@@ -224,16 +228,37 @@ internal static class VerifyBoard
         var roi = profile.ScanBoardRoi();
         int ox = roi.X, oy = roi.Y;
 
+        // Bản vẽ dưới đây được đặt cho ROI 1360×790 (đơn vị mốc 1080p) — cỡ của ô ROI CŨ. Từ khi
+        // ScanBoardRoi lấy theo phân số màn hình, ROI rộng hơn (1536×790 → 1536×875 mốc 1080p),
+        // nên nếu vẽ y nguyên thì cùng ngần ấy tường nằm trong một khung to hơn và tỉ lệ che tụt
+        // xuống 23.5 %, dưới sàn 0.28 của SignatureStable — fixture tự làm mình trượt chứ không
+        // phải bộ giải hỏng.
+        //
+        // Nên kéo VỊ TRÍ và cỡ TƯỜNG theo ROI thật, nhưng giữ nguyên KÍCH THƯỚC đầu nối: bộ dò
+        // hình dáng đối chiếu đúng hai cỡ 62×32 và 39×59, kéo méo chúng là hỏng phép dò.
+        double roiRefW = roi.W / k, roiRefH = roi.H / k;
+        double px = roiRefW / 1360.0, py = roiRefH / 790.0;
+
         var wallColour = Color.FromArgb(40, 160, 40);     // H=60 S=191 V=160
         var bodyColour = Color.FromArgb(90, 90, 90);      // S=0  V=90
         var pinColour = Color.FromArgb(240, 240, 240);    // S=0  V=240
         var greenLamp = Color.FromArgb(0, 220, 0);
         var redLamp = Color.FromArgb(230, 0, 0);
 
+        // Tường: kéo cả vị trí lẫn kích thước theo ROI.
         void Fill(Color c, double x, double y, double w, double h)
         {
             using var b = new SolidBrush(c);
-            g.FillRectangle(b, ox + R(x), oy + R(y), R(w), R(h));
+            g.FillRectangle(b, ox + R(x * px), oy + R(y * py), R(w * px), R(h * py));
+        }
+
+        // Một mảnh của đầu nối. GỐC đầu nối (ax,ay) kéo theo ROI, còn (dx,dy,w,h) là số đo TRONG
+        // đầu nối nên giữ nguyên — có vậy đèn báo và dải chân cắm mới nằm đúng chỗ trên thân, là
+        // điều mà BoardReader.LampEdgeSide/PinSide dựa vào.
+        void Part(Color c, double ax, double ay, double dx, double dy, double w, double h)
+        {
+            using var b = new SolidBrush(c);
+            g.FillRectangle(b, ox + R(ax * px) + R(dx), oy + R(ay * py) + R(dy), R(w), R(h));
         }
 
         // Khung tren/duoi cua bang.
@@ -262,14 +287,14 @@ internal static class VerifyBoard
         // hop bao thu duoc khong con chua den. Trong game den la khoi nho nam tren mat, than xam
         // vay quanh no — ve dung nhu vay thi hop bao moi trum ca den, va do la dieu ma
         // BoardReader.LampEdgeSide dua vao.
-        Fill(bodyColour, 140, 375, 62, 32);
-        Fill(pinColour, 140, 375, 8, 32);
-        Fill(greenLamp, 194, 385, 8, 12);
+        Part(bodyColour, 140, 375, 0, 0, 62, 32);
+        Part(pinColour, 140, 375, 0, 0, 8, 32);
+        Part(greenLamp, 140, 375, 54, 10, 8, 12);
 
         // Dau noi GOAL: den do ben TRAI (day la mat day se cam vao), chan cam ben PHAI.
-        Fill(bodyColour, 1120, 375, 62, 32);
-        Fill(redLamp, 1120, 385, 8, 12);
-        Fill(pinColour, 1174, 375, 8, 32);
+        Part(bodyColour, 1120, 375, 0, 0, 62, 32);
+        Part(redLamp, 1120, 375, 0, 10, 8, 12);
+        Part(pinColour, 1120, 375, 54, 0, 8, 32);
 
         return bmp;
     }
@@ -351,7 +376,7 @@ internal static class VerifyBoard
                                   $"GOAL @{role.GoalHit.X},{role.GoalHit.Y} trong vùng: " +
                                   $"{(legal.Contains(role.GoalHit) ? "CÓ" : "KHÔNG")}");
 
-                var plan = BoardPlanner.Plan(frame, role, scan, out string planWhy);
+                var plan = BoardPlanner.Plan(frame, role, scan, urgentOnly: false, out string planWhy);
                 if (plan is null)
                 {
                     Console.WriteLine("    HỎNG — không dựng được tuyến: " + planWhy);

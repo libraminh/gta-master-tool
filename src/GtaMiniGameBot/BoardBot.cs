@@ -338,6 +338,17 @@ internal enum BoardStopReason
     NoBoard,
 
     /// <summary>
+    /// Bảng ĐÃ mở rồi đóng lại mà không giải được lượt nào — gần như luôn là
+    /// <see cref="BoardPlanner.Plan"/> trả null tới lúc hết giờ, tức dây tự chạy đâm tường trong
+    /// khi bot còn đang giữ.
+    ///
+    /// Trước đây trạng thái này bị gộp vào <see cref="Solved"/> (điều kiện cũ là "đã từng thấy
+    /// bảng"), nên bot ghi một lượt THUA thành một lượt THẮNG và không ai đếm được tỉ lệ hỏng.
+    /// Tách ra để đếm được, nhưng vẫn là lý do KHÔNG chết phiên — xem ElectricBot.RunBoard.
+    /// </summary>
+    BoardFailed,
+
+    /// <summary>
     /// Đầu dây không nhích nữa. Giữa tuyến thì gần như luôn nghĩa là ĐÃ VA TƯỜNG — dây va tường là
     /// nó ngừng chạy. Không có <c>Collision</c> riêng: xem ghi chú chỗ đã bỏ <c>RedNearTip</c>.
     /// </summary>
@@ -419,6 +430,23 @@ internal sealed class BoardBot
     private const double LaunchProgressRef = 3.0;
 
     /// <summary>
+    /// Vượt ngã rẽ ĐẦU quá bấy nhiêu (mốc 1080p) thì thôi, không nới nữa. 30 ref = 40px ở 2K, dư
+    /// trên ba mức vượt đo được ngày 04/09 (23/27/39px) mà vẫn không cho phép một cú dịch đủ lớn
+    /// để hình học thành chuyện khác. Xem <c>LateTurnCertified</c>.
+    /// </summary>
+    private const double LateTurnMaxPastRef = 30.0;
+
+    /// <summary>
+    /// Sàn khoảng thoát của đoạn kế SAU KHI dịch, mốc 1080p. Đặt bằng đúng sàn chứng chỉ của bộ
+    /// dựng tuyến (<c>MinAcceptClearRef</c> = 6) — nới điểm bắt đầu thì được, nhưng tiêu chuẩn an
+    /// toàn của tuyến thì không hạ.
+    /// </summary>
+    private const double LateTurnMinClearRef = 6.0;
+
+    /// <summary>Bản sao của <c>BoardPlanner.MinSegmentRef</c> quy ra pixel — dùng ở phép kiểm rẽ trễ.</summary>
+    private static double MinSegmentRefPx(double scale) => 20.0 * scale;
+
+    /// <summary>
     /// Sàn tốc độ đầu dây (px/giây, mốc 1080p) dùng để suy ngân sách thời gian của cả tuyến.
     ///
     /// Đo được trên bảng thật ở 2K: ~355px/s, tức ~266px/s ở mốc 1080p. Lấy 110 là để rộng gấp
@@ -490,6 +518,7 @@ internal sealed class BoardBot
         BoardStopReason.UserStopped => "người dùng bấm dừng",
         BoardStopReason.Solved => "đã cắm tới đầu nối đích",
         BoardStopReason.NoBoard => "không thấy bảng nước/điện",
+        BoardStopReason.BoardFailed => "bảng đóng mà chưa giải được lượt nào",
         BoardStopReason.NoProgress => "đầu dây đứng im (thường là va tường)",
         BoardStopReason.WireDidNotStart => "dây không tự phóng khỏi đầu nối",
         BoardStopReason.LateStart => "dựng tuyến xong thì dây đã vượt ngã rẽ đầu tiên",
@@ -525,6 +554,11 @@ internal sealed class BoardBot
             var sinceSeen = Stopwatch.StartNew();
             var lastHold = Stopwatch.StartNew();
             bool everSeen = false;
+            int planFails = 0;
+
+            // Do TU LUC THAY BANG toi luc tuyen dong bang — day la con so quyet dinh thang/thua o
+            // lop LateStart, va truoc day phai suy nguoc bang tay tu dau thoi gian trong log.
+            var sinceBoard = new Stopwatch();
 
             while (true)
             {
@@ -537,7 +571,9 @@ internal sealed class BoardBot
                     history.Clear();
                     if (sinceSeen.ElapsedMilliseconds >= (everSeen ? 3_000 : _cfg.Board.NoBoardMs))
                     {
-                        reason = everSeen ? BoardStopReason.Solved : BoardStopReason.NoBoard;
+                        reason = !everSeen ? BoardStopReason.NoBoard
+                               : _rounds > 0 ? BoardStopReason.Solved
+                                             : BoardStopReason.BoardFailed;
                         message = everSeen
                             ? $"bảng đã đóng — giải {_rounds} bảng"
                             : $"{_cfg.Board.NoBoardMs / 1000}s không thấy bảng ({why})";
@@ -548,6 +584,7 @@ internal sealed class BoardBot
                     continue;
                 }
 
+                if (!everSeen) sinceBoard.Restart();
                 everSeen = true;
                 sinceSeen.Restart();
 
@@ -564,7 +601,8 @@ internal sealed class BoardBot
                 history.Add(scan);
                 if (history.Count > _cfg.Board.WallStableFrames) history.RemoveAt(0);
 
-                if (!BoardPlanner.SignatureStable(history, _cfg.Board.WallStableFrames, out string stableWhy))
+                var lane = BoardPlanner.Stability(history, out string stableWhy);
+                if (lane == BoardPlanner.StabilityLane.None)
                 {
                     Throttle(lastHold, $"giữ, chưa bấm gì: {stableWhy}");
 
@@ -575,20 +613,52 @@ internal sealed class BoardBot
                     continue;
                 }
 
-                Emit($"tường ổn định — {stableWhy}; {role.Describe()}");
-                Emit($"tường: {scan.LargeWalls} khối lớn, {scan.MicroWalls} khối nhỏ, " +
-                     $"{scan.SecondaryWalls} khối lớp bảo thứ hai, ngưỡng V={scan.ValueThreshold}");
+                bool urgentOnly = lane == BoardPlanner.StabilityLane.UrgentOnly;
 
-                var plan = BoardPlanner.Plan(frame, role, scan, out string planWhy);
+                // Làn một khung chạy trên MỌI bảng ngay từ khung đầu, nên đừng ồn: nó trượt là
+                // chuyện thường, chỉ nói khi đã đủ bằng chứng cho bộ dựng tuyến đầy đủ.
+                if (!urgentOnly)
+                {
+                    Emit($"tường ổn định — {stableWhy}; {role.Describe()}");
+                    Emit($"tường: {scan.LargeWalls} khối lớn, {scan.MicroWalls} khối nhỏ, " +
+                         $"{scan.SecondaryWalls} khối lớp bảo thứ hai, ngưỡng V={scan.ValueThreshold}");
+                }
+
+                var plan = BoardPlanner.Plan(frame, role, scan, urgentOnly, out string planWhy);
                 if (plan is null)
                 {
-                    history.Clear();
+                    // KHÔNG xoá history ở đây. Trước kia có xoá, nhưng với ba làn thì xoá là tự
+                    // nhốt mình trong làn MỘT khung: mỗi vòng lại chỉ có một khung, lại chỉ được
+                    // chạy lối nhanh, lại hỏng, lại xoá. Giữ lại thì khung sau nâng được lên làn
+                    // hai rồi làn ba — đúng cái đang cần khi khung đầu chưa đủ tin.
+
+                    // CHỈ đếm hỏng ở làn đầy đủ. Làn một khung không ra tuyến là bình thường —
+                    // phần lớn bản đồ không thuộc loại "rẽ sớm" mà lối nhanh nhắm tới — nên đếm
+                    // cả nó là lượt nào cũng chụp ảnh hỏng, đúng thứ ảnh đó thành vô dụng.
+                    if (urgentOnly)
+                    {
+                        // KHÔNG nghỉ: mới có một khung, và việc cần làm ngay là chụp khung thứ hai
+                        // để lên được làn đầy đủ. Nghỉ 120ms ở đây là vứt đi đúng phần ngân sách
+                        // mà lối nhanh sinh ra để tiết kiệm.
+                        continue;
+                    }
+
                     Throttle(lastHold, $"giữ, chưa bấm gì: {planWhy}");
+
+                    // Chup NGAY lan hong dau. Truoc day cho toi lan hai "de chac khong phai khung
+                    // chua ve xong" — nhung lan hong dau da di qua lan on dinh day du roi, va anh
+                    // that 16:29 ngay 04/09 cho thay den lan hai thi day da dam tuong, overlay do
+                    // "KHONG THANH CONG" phu kin dai giua bang: phat lai bang --verify-board thanh vo
+                    // nghia. Hai trace lan 1 va lan 2 y het nhau nen lan dau la du.
+                    if (++planFails == 1) SaveFailShot();
+
                     Sleep(ct, _cfg.Board.WatchPollMs);
                     continue;
                 }
+                planFails = 0;
 
                 Emit(plan.Describe());
+                Emit(BudgetLine(plan, frame.Scale, sinceBoard.Elapsed.TotalMilliseconds));
                 foreach (string n in plan.RefineNotes) Emit("  ngã rẽ " + n);
                 foreach (var s in plan.Segments) Emit("  đoạn " + s);
 
@@ -633,6 +703,42 @@ internal sealed class BoardBot
             HeldKeys.ReleaseAll();
             Stopped?.Invoke(reason, message);
         }
+    }
+
+    /// <summary>
+    /// Chụp CẢ MÀN HÌNH vào <c>electric\&lt;WxH&gt;\debug\hong-HHmmss.png</c>, giữ 8 bản mới nhất.
+    ///
+    /// Chụp cả màn chứ không chỉ ROI là có chủ đích: khi nghi chính cái ROI bị cắt sai thì một tấm
+    /// đã cắt theo ROI không chứng minh được gì. Chép tấm này đè lên <c>shots\board.png</c> là
+    /// phát lại được đúng khung đã giết lượt đó bằng <c>--verify-board</c>.
+    /// </summary>
+    private void SaveFailShot()
+    {
+        try
+        {
+            string dir = ElectricConfig.DebugDir(_profile.Key);
+            Directory.CreateDirectory(dir);
+
+            var b = _screen.Bounds;
+            using (var full = new Bitmap(b.Width, b.Height,
+                                         System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            {
+                using (var g = Graphics.FromImage(full))
+                    g.CopyFromScreen(b.Left, b.Top, 0, 0, b.Size, CopyPixelOperation.SourceCopy);
+
+                full.Save(Path.Combine(dir, $"hong-{DateTime.Now:HHmmss}.png"),
+                          System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            var olds = new DirectoryInfo(dir).GetFiles("hong-*.png")
+                                             .OrderByDescending(x => x.LastWriteTimeUtc)
+                                             .Skip(8);
+            foreach (var f in olds) { try { f.Delete(); } catch { } }
+
+            Emit($"đã lưu ảnh lượt hỏng vào {dir} — chép đè shots\\board.png rồi chạy " +
+                 $"“--verify-board” để phát lại đúng khung này");
+        }
+        catch { /* chup that bai khong duoc lam hong luot dang chay */ }
     }
 
     /// <summary>Log lặp lại (kiểu "đang giữ, chưa bấm") tối đa một lần mỗi 700 ms.</summary>
@@ -979,9 +1085,14 @@ internal sealed class BoardBot
             {
                 int past = -Along(p, corner0, seg0.Key);
                 if (past > lateTol)
-                    return (p, new Failure(BoardStopReason.LateStart,
-                        $"đầu dây đã ở ({p.X},{p.Y}), vượt ngã rẽ đầu tiên {past}px > {lateTol}px " +
-                        $"— tuyến dựng xong quá muộn"));
+                {
+                    if (!LateTurnCertified(plan, past, scale, out string lateWhy))
+                        return (p, new Failure(BoardStopReason.LateStart,
+                            $"đầu dây đã ở ({p.X},{p.Y}), vượt ngã rẽ đầu tiên {past}px > {lateTol}px " +
+                            $"— tuyến dựng xong quá muộn ({lateWhy})"));
+
+                    Emit($"[RẼ TRỄ] vượt ngã rẽ đầu {past}px nhưng {lateWhy} — bắn phím rẽ luôn");
+                }
 
                 Emit($"thấy dây tự phóng: ({p.X},{p.Y}), đi được " +
                      $"{Along(start, p, seg0.Key)}px từ START sau {sw.ElapsedMilliseconds}ms / {tries} lượt chụp");
@@ -991,6 +1102,110 @@ internal sealed class BoardBot
 
         return (start, new Failure(BoardStopReason.WireDidNotStart,
             $"{AutoStartTimeoutMs}ms không thấy đầu dây rời đầu nối START ({tries} lượt chụp)"));
+    }
+
+    /// <summary>
+    /// Tốc độ đầu dây theo trục, px/giây mốc 1080p — <c>SPEED_PRIOR</c> của
+    /// <c>v10_engine.py</c>. Trục ngang nhanh gần gấp đôi trục dọc, nên cùng một độ trễ mà bảng
+    /// bắt đầu bằng A/D thì khắc nghiệt hơn hẳn bảng bắt đầu bằng W/S.
+    /// </summary>
+    private static double SpeedPriorRef(string key) => key switch
+    {
+        BoardKeys.Up => 198.0,
+        BoardKeys.Down => 194.0,
+        BoardKeys.Left => 320.0,
+        _ => 349.0
+    };
+
+    /// <summary>
+    /// Một dòng nói thẳng lượt này có kịp không: đoạn đầu dài bao nhiêu, dây đi hết nó mất bao lâu,
+    /// và ta đã tiêu mất bao lâu kể từ lúc thấy bảng.
+    ///
+    /// Có nó thì mỗi lượt tự khai lý do thắng/thua ngay trong log. Không có nó thì phải dựng lại
+    /// bảng tính từ dấu thời gian — đúng việc đã phải làm hai vòng liền ngày 04/09.
+    /// </summary>
+    private static string BudgetLine(BoardPlan plan, double scale, double elapsedMs)
+    {
+        var seg0 = plan.Segments[0];
+        double speed = SpeedPriorRef(seg0.Key) * scale;
+        double windowMs = speed <= 1 ? 0 : seg0.Distance / speed * 1000.0;
+        double margin = windowMs - elapsedMs;
+
+        return $"[NGÂN SÁCH] đoạn 1 = {seg0.Distance:F0}px trục {seg0.Key} " +
+               $"(~{speed:F0}px/s ⇒ {windowMs:F0}ms) | trễ thật {elapsedMs:F0}ms | " +
+               (margin >= 0 ? $"dư {margin:F0}ms" : $"THIẾU {-margin:F0}ms");
+    }
+
+    /// <summary>
+    /// Dây đã vượt ngã rẽ đầu tiên — rẽ trễ ngay bây giờ có còn an toàn không.
+    ///
+    /// Vượt góc rồi thì cú rẽ sẽ đưa dây vào một làn SONG SONG với làn đã dựng, lệch đúng
+    /// <paramref name="past"/> px dọc theo trục cũ. Nên câu hỏi trả lời được bằng số đo: dịch cả
+    /// đoạn 1 đi ngần ấy px thì khoảng thoát nhỏ nhất của nó còn bao nhiêu. Đo trên đúng bản đồ
+    /// khoảng thoát mà bộ dựng tuyến đã chứng nhận (<see cref="BoardPlan.CertClearance"/>).
+    ///
+    /// Vì sao đáng làm: nhánh này TRƯỚC ĐÂY luôn thua — bot không bấm gì, dây đâm tường, mất máu.
+    /// Ba lượt 17:16–17:24 ngày 04/09 chết ở đây với mức vượt chỉ 23/27/39px. Bộ điều khiển GIỮA
+    /// tuyến vốn đã có nhánh <c>alreadyPast</c> bắn phím dù đã vượt góc, vì với dây tự chạy thì
+    /// vượt góc là chuyện thường; chỗ này chỉ là đưa góc 0 về cùng một luật, nhưng KHẮT KHE hơn:
+    /// phải có chứng chỉ hình học mới cho qua, không thì vẫn báo LateStart như cũ.
+    ///
+    /// Chỉ nới ở góc ĐẦU. Các góc sau không đụng tới.
+    /// </summary>
+    private static bool LateTurnCertified(BoardPlan plan, int past, double scale, out string why)
+    {
+        why = "";
+        if (plan.Segments.Length < 2 || plan.CertClearance is null)
+        {
+            why = "không có bản đồ khoảng thoát để kiểm";
+            return false;
+        }
+
+        // Vuot qua xa thi thoi: dich mot doan dai bang ca doan 1 nghia la hinh hoc da khac han.
+        double cap = Math.Max(24.0, LateTurnMaxPastRef * scale);
+        if (past > cap)
+        {
+            why = $"vượt {past}px > mức nới tối đa {cap:F0}px";
+            return false;
+        }
+
+        var seg1 = plan.Segments[1];
+        var v0 = BoardKeys.Vec(plan.Segments[0].Key);
+        var shifted = new PointF(seg1.Start.X + v0.X * past, seg1.Start.Y + v0.Y * past);
+        var shiftedEnd = new PointF(seg1.End.X + v0.X * past, seg1.End.Y + v0.Y * past);
+
+        var f = plan.Obstacles;
+        double clear = BoardPlanner.LineMinClear(plan.CertClearance, f.Width, f.Height,
+                                                 shifted, shiftedEnd);
+        double floor = LateTurnMinClearRef * scale;
+        if (clear < floor)
+        {
+            why = $"đoạn kế dịch {past}px chỉ còn {clear:F1}px thoát < {floor:F1}px";
+            return false;
+        }
+
+        // Doan 2 NGAN DI dung `past` px neu no cung huong voi doan 0 — day la cai bay that su cua
+        // viec re tre: lan bi dich song song thi cac doan CUNG TRUC voi doan 0 bi cat ngan, va mot
+        // doan ngan hon MinSegmentRef la mot cu re bot khong ban kip (xem BoardPlanner.MinSegmentRef).
+        if (plan.Segments.Length >= 3)
+        {
+            var seg2 = plan.Segments[2];
+            var v2 = BoardKeys.Vec(seg2.Key);
+            bool sameAxisDir = v2.X == v0.X && v2.Y == v0.Y;
+            if (sameAxisDir)
+            {
+                double left = seg2.Distance - past;
+                double need = MinSegmentRefPx(scale);
+                if (left < need)
+                {
+                    why = $"đoạn 3 cùng trục sẽ chỉ còn {left:F0}px < {need:F0}px";
+                    return false;
+                }
+            }
+        }
+
+        why = $"đoạn kế dịch {past}px vẫn còn {clear:F1}px thoát ≥ {floor:F1}px";
+        return true;
     }
 
     /// <summary>

@@ -64,7 +64,8 @@
     "PlayerOriginXRef": 0,
     "PlayerOriginYRef": 0,
     "JobRecoveryEnabled": true,
-    "LogEveryMs": 160
+    "LogEveryMs": 160,
+    "EMaxDistRef": 9
   },
   "Survival": {
     "Enabled": false,
@@ -72,6 +73,7 @@
     "FoodCenterYRef": 1047,
     "WaterCenterXRef": 210,
     "WaterCenterYRef": 1047,
+    "LowThresholdPct": 50,
     "FoodSlots": "5,7",
     "WaterSlots": "4,6"
   },

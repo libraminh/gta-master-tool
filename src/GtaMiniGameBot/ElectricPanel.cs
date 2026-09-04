@@ -27,10 +27,20 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
     private readonly DarkCheck _autoEat = new();
+    private readonly DarkSpin _eDist = new();
+    private readonly DarkSpin _pitch = new();
+    private readonly DarkSpin _eatPct = new();
+    private readonly DarkSpin _foodSlot1 = new();
+    private readonly DarkSpin _foodSlot2 = new();
+    private readonly DarkSpin _waterSlot1 = new();
+    private readonly DarkSpin _waterSlot2 = new();
     private readonly LogView _log = new();
 
     private string _jobKey = HotkeyText.Job();
     private int _rounds;
+
+    /// <summary>Đang tự sửa ô kia cho khỏi trùng — chặn vòng lặp <c>ValueChanged</c> gọi lại chính nó.</summary>
+    private bool _syncingSlots;
 
     public bool IsRunning => _bot is { Running: true };
 
@@ -100,7 +110,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(378),
+            Height = Theme.Px(526),
             BackColor = Theme.Ground
         };
 
@@ -156,7 +166,7 @@ internal sealed class ElectricPanel : UserControl
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(114))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(146))
         };
         host.Controls.Add(navBox);
 
@@ -172,25 +182,47 @@ internal sealed class ElectricPanel : UserControl
         _autoLoop.CheckedChanged += OnAutoLoopChanged;
         navBox.Controls.Add(_autoLoop);
 
-        _autoEat.Text = "Tự ăn bánh / uống nước khi dưới 50%";
-        _autoEat.SetBounds(Theme.Px(12), Theme.Px(76), Theme.Px(300), Theme.Px(22));
-        _autoEat.SetCheckedQuiet(_cfg.Survival.Enabled);
-        _autoEat.CheckedChanged += OnAutoEatChanged;
-        navBox.Controls.Add(_autoEat);
-
         // Khong con nut "Khoanh mau TUONG TAC": prompt [E] duoc do bang hinh hoc (o phim trang + chu
         // ben phai) nhu ban Python, khong can mau anh. Minimap va vung world cung suy tu do phan giai.
         Lab(navBox, "Không cần khoanh gì: minimap, mốc vàng, prompt [E] đều suy từ độ phân giải.",
             Theme.Px(330), Theme.Px(26), w - Theme.Px(342));
         Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log; bật lại để thử reset camera sau minigame.",
             Theme.Px(330), Theme.Px(50), w - Theme.Px(342));
-        Lab(navBox, "Ăn uống chỉ chạy khi tự đi; mỗi lần dùng đồ đứng yên 10 giây.",
-            Theme.Px(330), Theme.Px(76), w - Theme.Px(342));
+
+        Lab(navBox, "Chỉ bấm E khi còn cách chấm vàng dưới", Theme.Px(12), Theme.Px(82), Theme.Px(226));
+        _eDist.SetBounds(Theme.Px(240), Theme.Px(78), Theme.Px(60), Theme.Px(24));
+        _eDist.Min = (int)Math.Ceiling(NavTuning.SimpleEMaxDistMinRef);
+        _eDist.Max = (int)(NavTuning.SimpleEMaxDistMaxRef * 2);   // du cho ca man rong
+        _eDist.Step = 1;
+        navBox.Controls.Add(_eDist);
+        Lab(navBox, "px  — khớp số “dist=” trong Diễn biến.",
+            Theme.Px(306), Theme.Px(82), w - Theme.Px(318));
+        RefreshEDistUi();
+        _eDist.ValueChanged += OnEDistChanged;
+
+        Lab(navBox, "Góc ngẩng camera sau minigame", Theme.Px(12), Theme.Px(110), Theme.Px(226));
+        _pitch.SetBounds(Theme.Px(240), Theme.Px(106), Theme.Px(60), Theme.Px(24));
+        _pitch.Min = 40;
+        _pitch.Max = 200;
+        _pitch.Step = 5;
+        navBox.Controls.Add(_pitch);
+        Lab(navBox, "%  — nhìn lên trời thì giảm, cắm mặt đất thì tăng.",
+            Theme.Px(306), Theme.Px(110), w - Theme.Px(318));
+        RefreshPitchUi();
+        _pitch.ValueChanged += OnPitchChanged;
+
+        var eatBox = new DarkGroup
+        {
+            Title = "Ăn uống",
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(366), w, Theme.Px(104))
+        };
+        host.Controls.Add(eatBox);
+        BuildEat(eatBox, w);
 
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(334), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(478), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -204,6 +236,59 @@ internal sealed class ElectricPanel : UserControl
         FillScreens();
         RefreshNote();
         return host;
+    }
+
+    /// <summary>
+    /// Khối ăn uống: bật/tắt + ngưỡng + bốn ô hotbar. Mọi <c>SetValueQuiet</c> chạy TRƯỚC khi gắn
+    /// <c>ValueChanged</c> — dựng UI mà bắn event là ghi đè config bằng chính giá trị mặc định.
+    /// </summary>
+    private void BuildEat(DarkGroup box, int w)
+    {
+        _autoEat.Text = "Tự ăn bánh / uống nước khi xuống dưới";
+        _autoEat.SetBounds(Theme.Px(12), Theme.Px(24), Theme.Px(258), Theme.Px(22));
+        _autoEat.SetCheckedQuiet(_cfg.Survival.Enabled);
+        _autoEat.CheckedChanged += OnAutoEatChanged;
+        box.Controls.Add(_autoEat);
+
+        _eatPct.SetBounds(Theme.Px(272), Theme.Px(22), Theme.Px(64), Theme.Px(24));
+        _eatPct.Min = (int)NavTuning.SurvivalThresholdMinPct;
+        _eatPct.Max = (int)NavTuning.SurvivalThresholdMaxPct;
+        _eatPct.Step = 5;
+        _eatPct.SetValueQuiet((int)Math.Round(_cfg.Survival.LowThresholdPct));
+        box.Controls.Add(_eatPct);
+        Lab(box, "%", Theme.Px(342), Theme.Px(28), Theme.Px(20));
+
+        Lab(box, "Ô bánh:", Theme.Px(12), Theme.Px(60), Theme.Px(58));
+        Slot(box, _foodSlot1, Theme.Px(72));
+        Slot(box, _foodSlot2, Theme.Px(124));
+
+        Lab(box, "Ô nước:", Theme.Px(196), Theme.Px(60), Theme.Px(58));
+        Slot(box, _waterSlot1, Theme.Px(256));
+        Slot(box, _waterSlot2, Theme.Px(308));
+
+        Lab(box, $"Hotbar {SurvivalSettings.SlotMin}–{SurvivalSettings.SlotMax}. Ô thứ hai là ô dự phòng.",
+            Theme.Px(366), Theme.Px(60), w - Theme.Px(378));
+        Lab(box, "Chỉ chạy khi bật “Tự tìm điểm vàng…”. Mỗi lần dùng đồ đứng yên 10 giây; hết đồ thì tự bỏ.",
+            Theme.Px(12), Theme.Px(84), w - Theme.Px(24));
+
+        RefreshSlotUi();
+
+        // Gan sau khi da set gia tri de khoi ban ValueChanged luc dung UI.
+        _eatPct.ValueChanged += OnEatPctChanged;
+        _foodSlot1.ValueChanged += () => OnSlotChanged(food: true, first: true);
+        _foodSlot2.ValueChanged += () => OnSlotChanged(food: true, first: false);
+        _waterSlot1.ValueChanged += () => OnSlotChanged(food: false, first: true);
+        _waterSlot2.ValueChanged += () => OnSlotChanged(food: false, first: false);
+        return;
+
+        static void Slot(DarkGroup host, DarkSpin spin, int x)
+        {
+            spin.SetBounds(x, Theme.Px(56), Theme.Px(44), Theme.Px(24));
+            spin.Min = SurvivalSettings.SlotMin - '0';
+            spin.Max = SurvivalSettings.SlotMax - '0';
+            spin.Step = 1;
+            host.Controls.Add(spin);
+        }
     }
 
     private static void Lab(Control host, string text, int x, int y, int w)
@@ -255,7 +340,7 @@ internal sealed class ElectricPanel : UserControl
             new("nav-marker", "Đi đường — thấy mốc vàng dưới đất"),
             new("nav-prompt", "Đi đường — đang hiện nút E TƯƠNG TÁC"),
             new("hud-no", "Đồng hồ đói/khát — lúc còn no đủ"),
-            new("hud-doi", "Đồng hồ đói/khát — lúc đã dưới 50%")
+            new("hud-doi", "Đồng hồ đói/khát — lúc đã đói/khát")
         };
 
         public string Name { get; }
@@ -305,6 +390,7 @@ internal sealed class ElectricPanel : UserControl
     private void RefreshCalib()
     {
         _calib.Text = _profile.Describe();
+        RefreshEDistUi();
         _calib.ForeColor = Theme.GoodText;
     }
 
@@ -339,10 +425,134 @@ internal sealed class ElectricPanel : UserControl
             return;
         }
 
-        Append($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}; " +
-               "sai ô thì sửa FoodSlots/WaterSlots trong electric.json");
+        Append($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}, " +
+               $"ngưỡng {_cfg.Survival.LowThresholdPct:F0}%");
         if (!_cfg.AutoWalk)
             Append("lưu ý: ăn uống nằm trong bộ tự đi, phải bật “Tự tìm điểm vàng…” mới có tác dụng");
+    }
+
+    /// <summary>
+    /// Hệ số quy đổi giữa số hiện trên ô và số lưu trong config. Ô hiển thị PIXEL THẬT của màn đang
+    /// chọn để so thẳng với “dist=” trong khung Diễn biến; config lưu theo mốc 1080p như mọi ngưỡng
+    /// khoảng cách khác, nên đổi độ phân giải không phải chỉnh lại.
+    /// </summary>
+    private double EDistPxScale
+    {
+        get
+        {
+            double s = _cfg.Nav.ScreenPxScale;
+            return s > 0 ? s : (_screen?.Bounds.Width ?? 1920) / ElectricConfig.RefW;
+        }
+    }
+
+    private void RefreshEDistUi()
+    {
+        int shown = (int)Math.Round(_cfg.Nav.EMaxDistRef * EDistPxScale);
+        _eDist.SetValueQuiet(Math.Clamp(shown, _eDist.Min, _eDist.Max));
+    }
+
+    private void OnEDistChanged()
+    {
+        _cfg.Nav.EMaxDistRef = _eDist.Value / EDistPxScale;
+        _cfg.Nav.Normalize();
+        _cfg.Save();
+        RefreshEDistUi();
+        Append($"chỉ bấm E khi còn cách chấm vàng dưới {_cfg.Nav.EMaxDistRef * EDistPxScale:F0}px " +
+               $"({_cfg.Nav.EMaxDistRef:F1} mốc 1080p)");
+    }
+
+    /// <summary>Ô hiện phần trăm cho dễ đọc; config lưu hệ số (1.0 = đúng số bản Python).</summary>
+    private void RefreshPitchUi()
+    {
+        int shown = (int)Math.Round(_cfg.Nav.CameraPitchScale * 100);
+        _pitch.SetValueQuiet(Math.Clamp(shown, _pitch.Min, _pitch.Max));
+    }
+
+    private void OnPitchChanged()
+    {
+        _cfg.Nav.CameraPitchScale = _pitch.Value / 100.0;
+        _cfg.Nav.Normalize();
+        _cfg.Save();
+        RefreshPitchUi();
+
+        double counts = NavTuning.CameraResetUpRateCps * NavTuning.CameraResetUpS
+                        * _cfg.Nav.CameraPitchScale;
+        Append($"góc ngẩng sau minigame: {_pitch.Value}% — gửi {counts:F0} counts " +
+               $"(mặc định 100% = 1024). Soi dòng [SOI CAMERA] trong Diễn biến để biết đã đúng chưa.");
+    }
+
+    private void OnEatPctChanged()
+    {
+        _cfg.Survival.LowThresholdPct = _eatPct.Value;
+        _cfg.Survival.Normalize();
+        _cfg.Save();
+        Append($"ngưỡng ăn uống: dưới {_cfg.Survival.LowThresholdPct:F0}%");
+    }
+
+    /// <summary>
+    /// Đổi một ô hotbar. Hai ô cùng loại trùng nhau là mất ô dự phòng mà không ai thấy — nên ô kia
+    /// tự nhảy sang giá trị còn trống thay vì im lặng nuốt. Bánh trùng nước thì chỉ nhắc: có người
+    /// để bánh và nước chung một ô thật.
+    /// </summary>
+    private void OnSlotChanged(bool food, bool first)
+    {
+        if (_syncingSlots) return;
+
+        var a = food ? _foodSlot1 : _waterSlot1;
+        var b = food ? _foodSlot2 : _waterSlot2;
+        var moved = first ? a : b;
+        var other = first ? b : a;
+
+        if (moved.Value == other.Value)
+        {
+            int free = FreeSlot(moved.Value, first ? -1 : 1);
+            _syncingSlots = true;
+            try { other.SetValueQuiet(free); }
+            finally { _syncingSlots = false; }
+        }
+
+        if (food) _cfg.Survival.FoodSlots = $"{a.Value},{b.Value}";
+        else _cfg.Survival.WaterSlots = $"{a.Value},{b.Value}";
+
+        _cfg.Survival.Normalize();
+        _cfg.Save();
+        RefreshSlotUi();
+
+        Append($"ô {(food ? "bánh" : "nước")}: {(food ? _cfg.Survival.FoodSlots : _cfg.Survival.WaterSlots)}" +
+               " (ô đầu dùng trước, ô sau là dự phòng)");
+
+        var fk = SurvivalSettings.SlotKeys(_cfg.Survival.FoodSlots);
+        var wk = SurvivalSettings.SlotKeys(_cfg.Survival.WaterSlots);
+        if (fk.Intersect(wk).Any())
+            Append("lưu ý: có ô vừa khai là bánh vừa khai là nước — chắc chứ?");
+    }
+
+    /// <summary>Ô trống gần nhất trong dải hotbar, dò theo <paramref name="dir"/> rồi vòng lại.</summary>
+    private static int FreeSlot(int taken, int dir)
+    {
+        int lo = SurvivalSettings.SlotMin - '0', hi = SurvivalSettings.SlotMax - '0';
+        for (int step = 1; step <= hi - lo; step++)
+        {
+            int v = taken + dir * step;
+            if (v < lo) v += hi - lo + 1;
+            else if (v > hi) v -= hi - lo + 1;
+            if (v != taken) return v;
+        }
+        return taken == lo ? hi : lo;
+    }
+
+    /// <summary>Đẩy giá trị đã chuẩn hoá ngược lên bốn ô — config có thể đã kẹp khác cái vừa gõ.</summary>
+    private void RefreshSlotUi()
+    {
+        _syncingSlots = true;
+        try
+        {
+            var f = SurvivalSettings.SlotKeys(_cfg.Survival.FoodSlots);
+            var w = SurvivalSettings.SlotKeys(_cfg.Survival.WaterSlots);
+            if (f.Length == 2) { _foodSlot1.SetValueQuiet(f[0] - '0'); _foodSlot2.SetValueQuiet(f[1] - '0'); }
+            if (w.Length == 2) { _waterSlot1.SetValueQuiet(w[0] - '0'); _waterSlot2.SetValueQuiet(w[1] - '0'); }
+        }
+        finally { _syncingSlots = false; }
     }
 
     private void RefreshNote() =>
@@ -366,6 +576,10 @@ internal sealed class ElectricPanel : UserControl
                          "vàng dưới đất trong khung hình.",
             "nav-marker" => "GÓC 1. Đứng chỗ NHÌN THẤY mốc vàng dưới đất, nhưng CHƯA hiện nút E.",
             "nav-prompt" => "GÓC 1. Đứng vào mốc cho HIỆN nút [E] TƯƠNG TÁC — để kiểm bộ dò prompt.",
+            // Hai anh HUD phai chup NGOAI THE GIOI: dung trong minigame thi HUD bi che, ma bo doc
+            // dong ho lai can dung hai icon goc duoi trai.
+            "hud-no" => "Đứng ngoài thế giới cho HUD hiện, hai đồng hồ đói/khát còn ĐẦY.",
+            "hud-doi" => "Đứng ngoài thế giới cho HUD hiện, hai đồng hồ đói/khát đã VƠI đi rõ.",
             _ => "Mở panel đi dây trong game, để nguyên màn đó."
         };
 
@@ -388,6 +602,8 @@ internal sealed class ElectricPanel : UserControl
             {
                 "board" => "chạy “--verify-board” để kiểm tuyến đi trên ảnh này.",
                 _ when shot.Name.StartsWith("nav-") => "chạy “--verify-nav” để kiểm trên ảnh này.",
+                _ when shot.Name.StartsWith("hud-") =>
+                    "chạy “--verify-survival” để đối chiếu % đọc được với vạch trên ảnh này.",
                 _ => "chạy “--verify-wire” để kiểm nhận dạng slot trên ảnh này."
             });
         }
@@ -475,7 +691,14 @@ internal sealed class ElectricPanel : UserControl
         _modes.Enabled = !running;
         _autoWalk.Enabled = !running;
         _autoLoop.Enabled = !running;
+        _eDist.Enabled = !running;
+        _pitch.Enabled = !running;
         _autoEat.Enabled = !running;
+        _eatPct.Enabled = !running;
+        _foodSlot1.Enabled = !running;
+        _foodSlot2.Enabled = !running;
+        _waterSlot1.Enabled = !running;
+        _waterSlot2.Enabled = !running;
         RunningChanged?.Invoke(running);
     }
 

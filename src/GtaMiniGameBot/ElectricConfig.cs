@@ -79,8 +79,32 @@ internal sealed class ElectricProfile
     /// <summary>Vùng quét panel dây: ô đã khoanh, không thì 90% giữa màn.</summary>
     public FishingRect ScanWireBand() => WireBand.IsSet ? WireBand : Inset(0.05);
 
-    /// <summary>ROI bảng: ô đã khoanh, không thì quy đổi mốc 1080p.</summary>
-    public FishingRect ScanBoardRoi() => BoardRoi.IsSet ? BoardRoi : FromRef(280, 140, 1640, 930);
+    /// <summary>
+    /// ROI bảng: ô đã khoanh, không thì lấy theo PHÂN SỐ MÀN HÌNH.
+    ///
+    /// Đây không phải khẩu vị, và cũng không phải một ô đo ở 1080p — bản Python đang chạy thật lấy
+    /// nó theo phân số, và docstring của nó nói thẳng đây chỉ là "khung tìm kiếm không phụ thuộc độ
+    /// phân giải", KHÔNG phải layout bảng:
+    ///
+    /// <code>
+    /// CFG.SEARCH_X1_FRAC = 0.110   CFG.SEARCH_Y1_FRAC = 0.105
+    /// CFG.SEARCH_X2_FRAC = 0.910   CFG.SEARCH_Y2_FRAC = 0.915
+    /// </code>
+    ///
+    /// BẪY ĐÃ SẬP: <c>water_power_solver_core_v13.py</c> định nghĩa <c>get_board_roi</c> HAI LẦN —
+    /// bản ở dòng 1667 đè bản ở dòng 359. Bản C# trước đây port bản CHẾT ở dòng 359
+    /// (<c>FromRef(280, 140, 1640, 930)</c>), tức ô 1360×790 mốc 1080p. Ở 2560×1440 nó ra
+    /// 1814×1053 @373,187 trong khi bản sống ra 2048×1167 @282,151 — cắt mất 234px trái, 36px
+    /// trên, 143px phải, 78px dưới.
+    ///
+    /// Vì sao nó giết lượt: <c>LegalBounds</c>, <c>Envelope</c>, <c>CarvePorts</c> và
+    /// <c>ExtentAudit</c> đều suy từ ROI này. Với <c>BoundaryMarginRef 14</c> và
+    /// <c>PortCarveLenRef 54</c>, ROI cắt hụt làm đầu nối nằm sát mép hơn giả định, hầm cổng carve
+    /// không đủ, A* không thoát nổi khỏi terminal — và bot báo "không dựng được tuyến nào đủ an
+    /// toàn ở mọi bán kính nở" rồi đứng nhìn dây đâm tường. Ba lượt "giải 0 bảng" trong log
+    /// 04/09 đều có START hoặc GOAL nằm trong ~100px của mép ROI cũ.
+    /// </summary>
+    public FishingRect ScanBoardRoi() => BoardRoi.IsSet ? BoardRoi : FromFrac(0.110, 0.105, 0.910, 0.915);
 
     /// <summary>Dải tiêu đề: ô đã khoanh, không thì quy đổi mốc 1080p.</summary>
     public FishingRect ScanTitleBand() => TitleBand.IsSet ? TitleBand : FromRef(250, 5, 1400, 145);
@@ -97,6 +121,25 @@ internal sealed class ElectricProfile
         ry1 = Math.Clamp(ry1, 0, Height - 1);
         rx2 = Math.Clamp(rx2, rx1 + 1, Width);
         ry2 = Math.Clamp(ry2, ry1 + 1, Height);
+
+        return new FishingRect { X = rx1, Y = ry1, W = rx2 - rx1, H = ry2 - ry1 };
+    }
+
+    /// <summary>
+    /// Một ô theo PHÂN SỐ màn hình, kẹp giống hệt <c>core_v13.get_board_roi</c> bản sống
+    /// (clip x1 vào [0, w−2], x2 vào [x1+2, w]).
+    /// </summary>
+    private FishingRect FromFrac(double fx1, double fy1, double fx2, double fy2)
+    {
+        if (Width < 100 || Height < 100) return new FishingRect();
+
+        int rx1 = (int)Math.Round(Width * fx1), rx2 = (int)Math.Round(Width * fx2);
+        int ry1 = (int)Math.Round(Height * fy1), ry2 = (int)Math.Round(Height * fy2);
+
+        rx1 = Math.Clamp(rx1, 0, Width - 2);
+        ry1 = Math.Clamp(ry1, 0, Height - 2);
+        rx2 = Math.Clamp(rx2, rx1 + 2, Width);
+        ry2 = Math.Clamp(ry2, ry1 + 2, Height);
 
         return new FishingRect { X = rx1, Y = ry1, W = rx2 - rx1, H = ry2 - ry1 };
     }
@@ -446,17 +489,21 @@ internal sealed class BoardSettings
     public int DetectStableFrames { get; set; } = 2;
 
     /// <summary>
-    /// Số khung tường gần như y hệt nhau cần có trước khi đóng băng tuyến.
+    /// Số khung tường GIỮ LẠI để chấm ổn định. Đây là độ sâu lịch sử, không phải "phải đủ ngần
+    /// này khung mới đi" — <see cref="BoardPlanner.Stability"/> có ba làn và tự chọn làn mạnh nhất
+    /// mà số khung hiện có cho phép.
     ///
-    /// Bản Python đòi 3, nhưng nó chụp bằng dxcam ở nhịp ~2 ms nên ba khung của nó chỉ trải
-    /// khoảng 60–90 ms. Ở đây một khung tốn ~175 ms (đo trên ROI 2K, bản Release), nên HAI khung
-    /// đã trải ~350 ms — bằng chứng "bảng đã vẽ xong" mạnh hơn hẳn ba khung cách nhau 30 ms.
+    /// Vì sao là 3: bản Python đòi 3 khung cho làn thường, và nó còn hai làn nhanh hơn (2 khung
+    /// ngưỡng chặt, 1 khung vẽ rất đậm) để không phải chờ đủ 3 khi khung đã rõ ràng vẽ xong. Bản
+    /// C# trước đây bỏ cả ba làn đó, chỉ giữ MỘT làn 2 khung với ngưỡng lỏng nhất — và đó là chỗ
+    /// lọt khung vẽ dở: log 04/09 có lượt thua ở đúng iou=0.9953, mức mà làn 2 khung của Python
+    /// (≥0.988) sẽ từ chối.
     ///
-    /// Đây là chỗ đắt nhất trong ngân sách thời gian: sợi dây tự chạy và cú rẽ đầu tiên trên bảng
-    /// đo được chỉ cách START 130 px, tức khoảng 0.2–0.5 giây. Mỗi khung đòi thêm là một khung có
-    /// thể làm bot trễ chuyến.
+    /// Ngân sách thời gian vẫn được tôn trọng: một khung tốn ~175 ms (ROI 2K, bản Release) và cú
+    /// rẽ đầu tiên có thể chỉ cách START 0.2–0.5 giây, nên khung nào đủ đậm thì làn 1 khung cho đi
+    /// ngay bằng lối nhanh; chỉ khung còn động mới phải chờ tới khung thứ ba.
     /// </summary>
-    public int WallStableFrames { get; set; } = 2;
+    public int WallStableFrames { get; set; } = 3;
 
     /// <summary>Mất bảng ngần này khung thì coi như đã đóng. Python: <c>RESET_MISSING_FRAMES 20</c>.</summary>
     public int ResetMissingFrames { get; set; } = 20;
@@ -478,7 +525,8 @@ internal sealed class BoardSettings
 
         WatchPollMs = Math.Clamp(WatchPollMs <= 0 ? 120 : WatchPollMs, 20, 1_000);
         DetectStableFrames = Math.Clamp(DetectStableFrames <= 0 ? 2 : DetectStableFrames, 1, 20);
-        WallStableFrames = Math.Clamp(WallStableFrames <= 0 ? 2 : WallStableFrames, 2, 10);
+        // San 3 chu khong 2: config cu da luu 2, ma 2 thi lan ba khung khong bao gio chay duoc.
+        WallStableFrames = Math.Clamp(WallStableFrames <= 0 ? 3 : WallStableFrames, 3, 10);
         ResetMissingFrames = Math.Clamp(ResetMissingFrames <= 0 ? 20 : ResetMissingFrames, 1, 200);
         NoBoardMs = Math.Clamp(NoBoardMs <= 0 ? 20_000 : NoBoardMs, 2_000, 300_000);
     }

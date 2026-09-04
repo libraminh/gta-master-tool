@@ -34,6 +34,13 @@ internal sealed class ElectricBot
     /// </summary>
     private FishingConfig _discordCfg;
 
+    /// <summary>
+    /// Trạng thái ăn uống của cả lượt bật job. Phải sống ở đây chứ không trong <see cref="NavBot"/>:
+    /// <see cref="RunNav"/> dựng NavBot MỚI sau mỗi minigame, nên "đã kết luận hết bánh" hay "vành
+    /// cung nằm ở bán kính này" mà nhớ trong NavBot thì cứ giải xong một bảng là mất sạch.
+    /// </summary>
+    private SurvivalState _survival;
+
     public ElectricBot(ElectricConfig cfg, Screen screen, ElectricProfile profile)
     {
         _cfg = cfg;
@@ -120,6 +127,7 @@ internal sealed class ElectricBot
             }
 
             bool wantNav = _cfg.AutoWalk;
+            _survival = new SurvivalState();
             if (wantNav && _cfg.Survival.Enabled)
                 try { _discordCfg = FishingConfig.Load(); } catch { _discordCfg = null; }
 
@@ -137,6 +145,7 @@ internal sealed class ElectricBot
             // Bo dieu huong can biet no vua duoc goi lai SAU mot minigame (de reset camera, lay lai W)
             // va bang da bien mat bao lau: WireBot bao Solved sau PanelGoneMs, BoardBot sau 3 s.
             bool justSolved = false;
+            bool justLost = false;
             int panelGoneMs = 0;
 
             while (true)
@@ -156,16 +165,26 @@ internal sealed class ElectricBot
                 if (wantBoard && boardProbe.TryRead(out _) is not null)
                 {
                     Emit("thấy bảng nước/điện — giao cho bộ giải bảng.");
-                    if (!RunBoard(ct, out message, out bool solved)) return;
+                    if (!RunBoard(ct, out message, out bool cameFromBoard, out bool lost)) return;
                     if (StopAfterOneRound(ref message)) return;
-                    if (solved) { justSolved = true; panelGoneMs = BoardGoneMsAfterSolved; }
+                    if (cameFromBoard)
+                    {
+                        justLost = lost;
+                        // Hỏng GIỮA TUYẾN thì bảng vẫn còn mở lúc BoardBot trả về. Không chờ nó
+                        // đóng thì vòng này thấy bảng ngay và giao lại — dựng ra một tuyến "sạch"
+                        // trên một bảng đã chết, rồi chết oan lần nữa vì dây không còn phóng.
+                        WaitBoardGone(ct, () => boardProbe.TryRead(out _) is not null);
+                        justSolved = true;
+                        panelGoneMs = BoardGoneMsAfterSolved;
+                    }
                     continue;
                 }
 
                 if (wantNav)
                 {
-                    if (!RunNav(ct, PanelVisible, justSolved, panelGoneMs, out message)) return;
+                    if (!RunNav(ct, PanelVisible, justSolved, panelGoneMs, justLost, out message)) return;
                     justSolved = false;
+                    justLost = false;
                     WaitPanelAfterArrival(ct, PanelVisible);
                     continue;
                 }
@@ -215,7 +234,8 @@ internal sealed class ElectricBot
     /// trả false khi không gửi được input hoặc lỗi. Tới nơi rồi thì quay lại vòng điều phối: chính
     /// hai bộ thăm dò ở trên sẽ thấy minigame.
     /// </summary>
-    private bool RunNav(CancellationToken ct, Func<bool> panelVisible, bool afterMinigame, int panelGoneMs, out string message)
+    private bool RunNav(CancellationToken ct, Func<bool> panelVisible, bool afterMinigame, int panelGoneMs,
+                        bool afterLoss, out string message)
     {
         var done = new ManualResetEventSlim(false);
         NavStopReason reason = NavStopReason.UserStopped;
@@ -225,7 +245,9 @@ internal sealed class ElectricBot
         {
             PanelVisible = panelVisible,
             AfterMinigame = afterMinigame,
-            PanelGoneAgoMs = panelGoneMs
+            AfterLoss = afterLoss,
+            PanelGoneAgoMs = panelGoneMs,
+            SurvivalState = _survival ??= new SurvivalState()
         };
         _navBot.Log += Emit;
         _navBot.Alert += (title, body) =>
@@ -256,6 +278,24 @@ internal sealed class ElectricBot
             Sleep(ct, 125);
         }
         Emit("bộ điều hướng báo có minigame nhưng thăm dò không thấy — quay lại điều hướng.");
+    }
+
+    /// <summary>
+    /// Chờ bảng biến mất hẳn sau một lượt hỏng giữa tuyến, tối đa 12 s (game tự đóng bảng thua
+    /// nhanh hơn thế nhiều). Hết giờ mà bảng vẫn còn thì cứ đi tiếp — thà giao lại một lần thừa
+    /// còn hơn đứng chờ mãi.
+    /// </summary>
+    private void WaitBoardGone(CancellationToken ct, Func<bool> boardVisible)
+    {
+        if (!boardVisible()) return;
+
+        Emit("bảng còn mở sau lượt hỏng — chờ nó đóng rồi mới đi tiếp");
+        for (int i = 0; i < 60; i++)
+        {
+            Sleep(ct, 200);
+            if (!boardVisible()) return;
+        }
+        Emit("chờ 12s mà bảng chưa đóng — đi tiếp");
     }
 
     private void WaitNav(CancellationToken ct, ManualResetEventSlim done)
@@ -299,7 +339,14 @@ internal sealed class ElectricBot
         return keepGoing;
     }
 
-    private bool RunBoard(CancellationToken ct, out string message, out bool solved)
+    /// <summary>
+    /// <paramref name="cameFromBoard"/> nghĩa là "vừa có một bảng trên màn và nó đã đóng", KHÔNG
+    /// phải "đã thắng". Bộ điều hướng dùng cờ này để chạy pha hậu minigame (reset camera, lấy lại
+    /// W) — mà pha đó cần thiết y như nhau dù lượt vừa rồi thắng hay thua: nhân vật vẫn đang đứng
+    /// ở đầu nối, camera vẫn ở góc bảng, W vẫn đang bị nhả. Đếm số lượt thắng đi đường khác
+    /// (<see cref="BoardBot.RoundsChanged"/>), nên gộp ở đây không làm sai thống kê.
+    /// </summary>
+    private bool RunBoard(CancellationToken ct, out string message, out bool cameFromBoard, out bool lost)
     {
         var done = new ManualResetEventSlim(false);
         BoardStopReason reason = BoardStopReason.UserStopped;
@@ -314,8 +361,48 @@ internal sealed class ElectricBot
         Wait(ct, done);
         _board = null;
 
-        solved = reason == BoardStopReason.Solved;
-        bool keepGoing = reason is BoardStopReason.Solved or BoardStopReason.NoBoard;
+        cameFromBoard = reason is BoardStopReason.Solved
+                               or BoardStopReason.BoardFailed
+                               or BoardStopReason.NoProgress
+                               or BoardStopReason.TurnNotConfirmed
+                               or BoardStopReason.LateStart
+                               or BoardStopReason.WireDidNotStart;
+
+        // THUA: diem lam viec van o dau noi nay, bo dieu huong phai dung tai cho E lai thay vi di
+        // tim diem ke (xem NavBot.AfterLoss).
+        lost = reason is BoardStopReason.BoardFailed
+                      or BoardStopReason.NoProgress
+                      or BoardStopReason.TurnNotConfirmed
+                      or BoardStopReason.LateStart
+                      or BoardStopReason.WireDidNotStart;
+
+        // MẤT MỘT BẢNG KHÔNG ĐƯỢC PHÉP THÀNH MẤT CẢ PHIÊN.
+        //
+        // Trước đây danh sách này chỉ có Solved/NoBoard, nên mọi lý do khác đều giết job — và đó
+        // đúng là thứ khớp với "chạy được ~20 lượt rồi tự dừng". Ba lý do dưới đây đều là "lượt
+        // này hỏng", không phải "có gì đó sai về cấu hình":
+        //   - BoardFailed      : bảng đóng mà chưa giải được lượt nào (planner giữ tới hết giờ);
+        //   - NoProgress       : dây va tường giữa tuyến;
+        //   - TurnNotConfirmed : gõ phím rẽ mà dây không rẽ;
+        //   - LateStart        : dựng tuyến xong thì dây đã vượt ngã rẽ đầu — bản đồ này rắc rối
+        //                        hơn nên dựng lâu hơn, KHÔNG phải cấu hình sai;
+        //   - WireDidNotStart  : dây không phóng khỏi đầu nối (bảng đã chết trước khi ta vào).
+        // Bảng sau là một bản đồ khác, nên thử lại là hợp lý.
+        //
+        // LateStart nằm đây là bài học đắt ngày 04/09: hai bảng 17:05 chết vì nó và mỗi cái GIẾT CẢ
+        // PHIÊN — người dùng thấy "fail liên tục, tệ hơn cả bản cũ" trong khi 6/8 bảng vẫn thắng.
+        // Chỉ InputFailed (mất focus / SendInput hỏng) và Error mới là dấu hiệu sai thật.
+        bool keepGoing = reason is BoardStopReason.Solved
+                                or BoardStopReason.NoBoard
+                                or BoardStopReason.BoardFailed
+                                or BoardStopReason.NoProgress
+                                or BoardStopReason.TurnNotConfirmed
+                                or BoardStopReason.LateStart
+                                or BoardStopReason.WireDidNotStart;
+
+        if (keepGoing && reason != BoardStopReason.Solved && reason != BoardStopReason.NoBoard)
+            Emit($"lượt bảng hỏng — {BoardBot.TenLyDo(reason)}: {detail} → đi tìm bảng kế, không dừng job");
+
         message = keepGoing ? "" : $"bộ giải bảng dừng — {BoardBot.TenLyDo(reason)}: {detail}";
         if (!keepGoing) Emit("dừng: " + message);
         return keepGoing;

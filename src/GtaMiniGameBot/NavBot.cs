@@ -37,11 +37,24 @@ internal sealed class NavBot
     /// <summary>Vừa giải xong một minigame — vào thẳng hậu minigame (kiểm prompt, reset camera, W reclaim).</summary>
     public bool AfterMinigame { get; init; }
 
+    /// <summary>
+    /// Lượt bảng vừa rồi THUA (bảng đóng mà chưa giải, hoặc dây va tường). Khác với thắng ở một
+    /// điểm quyết định: điểm làm việc VẪN ở đúng đầu nối này và game cho bấm E lại tại chỗ — nên
+    /// không reset camera, không SEARCH360, không đi reset nghề; đứng yên chờ prompt rồi E.
+    /// </summary>
+    public bool AfterLoss { get; init; }
+
     /// <summary>Bảng/panel đã biến mất bao lâu trước khi bot này bắt đầu (BoardBot báo Solved sau 3 s, WireBot 1.5 s).</summary>
     public int PanelGoneAgoMs { get; init; }
 
     /// <summary>Do <see cref="ElectricBot"/> cấp: minigame có đang hiện không. CHỈ gọi từ luồng nav chính.</summary>
     public Func<bool> PanelVisible { get; set; }
+
+    /// <summary>
+    /// Trạng thái ăn uống dùng chung cho cả lượt bật job — do <see cref="ElectricBot"/> giữ, vì bot
+    /// này bị dựng lại sau mỗi minigame. Không cấp thì tự tạo (đường dùng trong test).
+    /// </summary>
+    public SurvivalState SurvivalState { get; init; } = new();
 
     public bool Running => _thread is { IsAlive: true };
 
@@ -110,8 +123,26 @@ internal sealed class NavBot
     private string _simplePhase = "WORLD";
     private int _promptStreak, _promptAbsentStreak;
     private bool _promptConsumed;
-    private double _waitBoardUntil, _closeUntil, _postCheckUntil, _wait10Until;
+    private double _waitBoardUntil, _closeUntil, _postCheckUntil;
+    private int _promptSeq = -1;
+    private double _farELogT;
+
+    /// <summary>
+    /// Khoảng cách tới chấm vàng của lần đo gần nhất, và lúc đo. <see cref="SimpleFlowStep"/> chạy
+    /// TRƯỚC khối nhận dạng nên trong tick của nó chưa có số mới — nhưng số của tick trước chỉ già
+    /// 25 ms, thừa tươi để quyết định có đáng bấm E không.
+    /// </summary>
+    private double _lastDist = double.NaN;
+
+    private double _lastDistT;
     private double _recentBoardExitUntil;
+
+    // sau khi THUA bang: dung tai cho, E lai
+    /// <summary>Hạn chờ prompt để E lại; 0 = không ở chế độ sau-thua.</summary>
+    private double _lossHoldUntil;
+    private int _lossRetriesLeft;
+    /// <summary>Không cho reset nghề trước mốc này — điểm làm việc đang ở dưới chân.</summary>
+    private double _lossJobGuardUntil;
     private bool _eDown;
     private double _eUpAt;
     private double _lastPanelPoll;
@@ -129,6 +160,9 @@ internal sealed class NavBot
     private double _cameraPhaseStart;
     private string _cameraReason;
 
+    /// <summary>Hạn của cửa sổ soi lại góc camera sau reset; 0 = không đang soi.</summary>
+    private double _cameraAuditUntil;
+
     // W reclaim
     private bool _wReclaimPending;
     private int _wReclaimStage;
@@ -141,7 +175,6 @@ internal sealed class NavBot
     private double _survivalPhaseStart;
     private readonly Queue<SurvivalItem> _survivalQueue = new();
     private SurvivalItem _survivalCurrent;
-    private double _survivalFoodBlockUntil, _survivalWaterBlockUntil;
     private bool _survivalKeyDown;
     private double _survivalKeyUpAt;
     private ushort _survivalKeyVk;
@@ -195,7 +228,7 @@ internal sealed class NavBot
             _job = new JobRecovery(_s, _screen, _input, _ctl, _watchdog, _tracker, _capture, _originX, _originY);
             _job.Log += Emit;
             _job.Finished += OnJobFinished;
-            _gauge = new SurvivalGauge(_cfg.Survival, _s);
+            _gauge = new SurvivalGauge(_cfg.Survival, _s, SurvivalState);
 
             Emit($"điều hướng: màn {_s.ScreenW}×{_s.ScreenH}, sx={_s.Sx:F3}, px×{_s.Px:F3}, chuột ×{_cfg.Nav.MouseSpeedMultiplier:F1}, " +
                  $"gốc mũi tên ({_originX:F0},{_originY:F0}), minimap {_capture.MinimapRegion.Width}×{_capture.MinimapRegion.Height}, " +
@@ -208,8 +241,12 @@ internal sealed class NavBot
             _lastShiftKeepaliveT = now0;
 
             if (_cfg.Survival.Enabled)
+            {
                 Emit($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}, " +
-                     $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% thì đứng yên {NavTuning.SurvivalFixedWaitS:F0}s để dùng");
+                     $"dưới {_cfg.Survival.LowThresholdPct:F0}% thì đứng yên {NavTuning.SurvivalFixedWaitS:F0}s để dùng");
+                if (SurvivalState.FoodOff) Emit("[ĂN UỐNG] BÁNH vẫn đang tắt (hết đồ ở lượt trước trong phiên này)");
+                if (SurvivalState.WaterOff) Emit("[ĂN UỐNG] NƯỚC vẫn đang tắt (hết đồ ở lượt trước trong phiên này)");
+            }
 
             if (AfterMinigame) EnterPostMinigame(now0);
 
@@ -261,6 +298,23 @@ internal sealed class NavBot
         double gone = Math.Max(0.0, PanelGoneAgoMs / 1000.0);
         _promptStreak = _promptAbsentStreak = 0;
         _promptConsumed = false;
+
+        if (AfterLoss)
+        {
+            // THUA thi diem van o dau noi nay (nguoi dung xac nhan: bam E lai tai cho la choi lai).
+            // Duong cua luot THANG — reset camera → SEARCH360 → 7 s mu → reset nghe — la sai duong
+            // hoan toan: log 16:29 ngay 04/09 cho thay bot bo diem dang dung tren, chay toi NPC tia
+            // set bam E hai lan. Khien 8 s chan E cung bo: o day ta MUON bam E.
+            _recentBoardExitUntil = 0;
+            _lossRetriesLeft = NavTuning.LossRetryMaxE;
+            _lossHoldUntil = now + NavTuning.LossRetryHoldS;
+            _lossJobGuardUntil = now + NavTuning.LossJobRecoveryGuardS;
+            _simplePhase = "LOSS_RETRY";
+            Emit($"[THUA BẢNG] điểm vẫn ở đầu nối này → đứng yên chờ prompt → E lại " +
+                 $"(tối đa {NavTuning.LossRetryMaxE} lần, chờ {NavTuning.LossRetryHoldS:F0}s)");
+            return;
+        }
+
         _recentBoardExitUntil = now + Math.Max(0.0, NavTuning.SimpleRecentBoardExitGuardS - gone);
         double remaining = NavTuning.SimpleCloseSettleS + NavTuning.SimplePostCheckS - gone;
         if (gone < NavTuning.SimpleCloseSettleS)
@@ -375,6 +429,8 @@ internal sealed class NavBot
             }
         }
 
+        CameraAuditStep(now, snap);
+
         // Mo bua moi: dung sau moi may trang thai tren va truoc dieu huong — cau "camera reset /
         // minigame > survival > navigation" cua ban Python.
         if (SurvivalMaybeStart(now, focused))
@@ -389,7 +445,8 @@ internal sealed class NavBot
         var target = _tracker.Update(candidates, _originX, _originY, now, fragments);
         var world = snap.Marker;
 
-        if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
+        // Vua thua bang thi diem lam viec dang o duoi chan — mu 7 s o day khong phai "mat hang diem".
+        if (now >= _lossJobGuardUntil && _job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
         {
             _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
             if (_job.Step(mini, snap, now, focused)) return false;
@@ -403,6 +460,11 @@ internal sealed class NavBot
             dist = Math.Sqrt(dx * dx + dy * dy);
             rel = NavController.Wrap(Math.Atan2(dx, -dy) * 180.0 / Math.PI);
             _watchdog.Add(now, dx, dy);
+
+            // Cong khoang cach cua E doc o day: SimpleFlowStep chay truoc khoi nay nen no lay so
+            // cua tick truoc, gia 25 ms.
+            _lastDist = dist;
+            _lastDistT = now;
         }
         bool forwardRequested = _input.IsHeld(NavKey.W) && !_input.IsHeld(NavKey.S);
 
@@ -589,17 +651,41 @@ internal sealed class NavBot
 
     // ================================================================ prompt -> E -> cho bang
 
-    private bool PromptStable(bool visible)
+    /// <summary>
+    /// Prompt đã hiện ổn định chưa. Đếm theo KHUNG QUÉT THẬT (<see cref="WorldSnapshot.Seq"/>) chứ
+    /// không theo tick: luồng chính chạy 25 ms còn bộ quét world chỉ ~22–27 Hz (37–45 ms/khung), nên
+    /// hai tick liên tiếp thường đọc CÙNG một snapshot — đếm theo tick thì "ổn định 2 khung" thực
+    /// chất là một lần dò duy nhất, và một dương tính giả đủ để kéo cả chuỗi bấm E.
+    /// </summary>
+    private bool PromptStable(WorldSnapshot snap)
     {
-        if (visible) { _promptStreak++; _promptAbsentStreak = 0; }
-        else
+        bool visible = snap.PromptVisible;
+        if (snap.Seq != _promptSeq)
         {
-            _promptStreak = 0;
-            _promptAbsentStreak++;
-            if (_promptAbsentStreak >= NavTuning.SimplePromptRearmAbsentFrames) _promptConsumed = false;
+            _promptSeq = snap.Seq;
+            if (visible) { _promptStreak++; _promptAbsentStreak = 0; }
+            else
+            {
+                _promptStreak = 0;
+                _promptAbsentStreak++;
+                if (_promptAbsentStreak >= NavTuning.SimplePromptRearmAbsentFrames) _promptConsumed = false;
+            }
         }
         return visible && _promptStreak >= NavTuning.SimplePromptStableFrames;
     }
+
+    /// <summary>
+    /// Còn quá xa chấm vàng để cái prompt này là của điểm làm việc.
+    ///
+    /// Chưa đo được lần nào, hoặc số đo đã quá cũ → trả false (CHO bấm). Mất bám chấm vàng phần lớn
+    /// là vì chấm khuất dưới mũi tên người chơi, tức là đã đứng ngay trên điểm — chặn ở đó là chặn
+    /// đúng lúc cần bấm nhất.
+    /// </summary>
+    private bool TooFarForE(double now) => FarForE(_lastDist, now - _lastDistT, _cfg.Nav.EMaxDistRef * _s.Px);
+
+    /// <summary>Phần thuần của <see cref="TooFarForE"/> — tách ra để <c>--verify-nav</c> kiểm được.</summary>
+    public static bool FarForE(double dist, double age, double maxDist)
+        => double.IsFinite(dist) && age <= NavTuning.SimpleEDistMaxAgeS && dist > maxDist;
 
     private void ReleaseETick(double now)
     {
@@ -636,22 +722,19 @@ internal sealed class NavBot
         Emit($"[GIỮ] {reason}");
     }
 
-    private bool BeginPostEWait(double now, string source)
+    /// <summary>Một dòng mỗi giây cho những thứ xảy ra mỗi tick — đừng làm ngập khung Diễn biến.</summary>
+    private void EmitThrottled(double now, ref double last, string line)
     {
-        _cameraPhase = null;
-        _simplePhase = "POST_WAIT10";
-        _wait10Until = now + NavTuning.SimplePostEWaitS;
-        _input.StopMouseStream(immediate: true);
-        _input.ReleaseOwnedOnce();
-        Emit($"[SAU E] {source} → chờ {NavTuning.SimplePostEWaitS:F0}s, không E");
-        return true;
+        if (now - last < 1.0) return;
+        last = now;
+        Emit(line);
     }
 
     private void ResumeWorld(double now, string reason)
     {
         _simplePhase = "WORLD";
-        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
-        bool finalExit = reason is "BOARD_CLOSED_NO_E" or "POST_E_GONE";
+        _closeUntil = _postCheckUntil = _waitBoardUntil = 0;
+        bool finalExit = reason is "BOARD_CLOSED_NO_E";
         if (finalExit)
         {
             ArmRestartWatch(now, "SIMPLE_" + reason);
@@ -688,7 +771,58 @@ internal sealed class NavBot
                 }
             }
             if (now < _waitBoardUntil) return true;
+
+            if (_lossHoldUntil > 0)
+            {
+                if (_lossRetriesLeft > 0)
+                {
+                    // Sau thua: cu E vua roi khong mo duoc bang (log 16:29:14→19 dung ca nay: co the
+                    // E dau chi tat overlay do, hoac game con cooldown). Prompt VAN dang hien nen chot
+                    // "da bam cho prompt nay" se chan E ke — ep mo lai roi thu tiep.
+                    _promptConsumed = false;
+                    _promptStreak = 0;
+                    _lossHoldUntil = now + NavTuning.SimpleWaitBoardS;
+                    _simplePhase = "LOSS_RETRY";
+                    Emit($"[THUA BẢNG] E chưa mở được bảng → chờ prompt rồi E lại (còn {_lossRetriesLeft} lần)");
+                    return true;
+                }
+
+                _lossHoldUntil = 0;
+                Emit("[THUA BẢNG] hết lượt E lại → về đường thường: reset camera, tìm lại điểm");
+                ResumeWorld(now, "BOARD_CLOSED_NO_E");
+                return false;
+            }
+
             ResumeWorld(now, "ONE_E_NO_BOARD");
+            return false;
+        }
+
+        if (phase == "LOSS_RETRY")
+        {
+            // Dung yen: khong W, khong chuot. Diem lam viec o duoi chan, moi thu dong dau la thua.
+            _input.ReleaseOwnedOnce();
+            if (!focused) return true;
+
+            if (_lossRetriesLeft > 0 && PromptStable(snap) && !_promptConsumed)
+            {
+                HoldEnter("PROMPT E (thử lại sau thua)");
+                if (PressEOnce(now, "E_THU_LAI"))
+                {
+                    _lossRetriesLeft--;
+                    _simplePhase = "WAIT_BOARD";
+                    _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
+                    _lastPanelPoll = 0;
+                }
+                return true;
+            }
+
+            if (_lossRetriesLeft > 0 && now < _lossHoldUntil) return true;
+
+            _lossHoldUntil = 0;
+            Emit(_lossRetriesLeft > 0
+                ? $"[THUA BẢNG] {NavTuning.LossRetryHoldS:F0}s không thấy prompt → về đường thường: reset camera, tìm lại điểm"
+                : "[THUA BẢNG] hết lượt E lại → về đường thường: reset camera, tìm lại điểm");
+            ResumeWorld(now, "BOARD_CLOSED_NO_E");
             return false;
         }
 
@@ -701,29 +835,14 @@ internal sealed class NavBot
             return true;
         }
 
+        // Chi la mot khoang lang cho bang bien han khoi man. CO Y khong doi gi voi prompt o day:
+        // day la ~0.5 s dau cua mot NavBot MOI, chua he do khoang cach lan nao, nen khong co co so
+        // gi de ket luan cai prompt dang thay la cua diem lam viec ke tiep hay cua cai bang vua dong.
+        // Cu de het gio roi ra WORLD — luc ay da co khoang cach that de quyet.
         if (phase == "POST_CHECK")
         {
-            if (!_promptConsumed && PromptStable(snap.PromptVisible)) return BeginPostEWait(now, "POST_CHECK_E");
             if (now < _postCheckUntil) return true;
             ResumeWorld(now, "BOARD_CLOSED_NO_E");
-            return false;
-        }
-
-        if (phase == "POST_WAIT10")
-        {
-            if (now < _wait10Until) return true;
-            if (PromptStable(snap.PromptVisible))
-            {
-                if (PressEOnce(now, "POST_MINIGAME_10S"))
-                {
-                    _recentBoardExitUntil = 0;
-                    _simplePhase = "WAIT_BOARD";
-                    _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
-                }
-                return true;
-            }
-            _recentBoardExitUntil = 0;
-            ResumeWorld(now, "POST_E_GONE");
             return false;
         }
 
@@ -764,13 +883,30 @@ internal sealed class NavBot
             else return false;
         }
 
-        if (!PromptStable(snap.PromptVisible)) return false;
+        if (!PromptStable(snap)) return false;
         if (_promptConsumed) return false;
 
+        // Con xa cham vang thi prompt nay khong phai cua diem lam viec. Bo do dò prompt nhan MOI
+        // prompt tuong tac (xe, cua, thung, NPC) nen doc duong luc nao cung co cai de bam; moi cu
+        // bam hong tra gia bang SimpleWaitBoardS giay dung im.
+        //
+        // return false, KHONG HoldEnter: frame khong bi nuot nen bot chay tiep — dung khuon
+        // "khien E NPC" ngay tren.
+        if (TooFarForE(now))
+        {
+            EmitThrottled(now, ref _farELogT,
+                $"[BỎ QUA PROMPT] còn cách chấm vàng {_lastDist:F1}px " +
+                $"(> {_cfg.Nav.EMaxDistRef * _s.Px:F0}px) → đi tiếp, không bấm E");
+            return false;
+        }
+
+        // Vua thoat bang: game cam E vai giay. Van DI TIEP chu khong dung cho — prompt cua chinh cai
+        // bang vua lam chi tat khi nhan vat di ra xa, dung yen thi no khong bao gio tat.
         if (now < _recentBoardExitUntil)
         {
-            HoldEnter("E MUỘN SAU BẢNG");
-            return BeginPostEWait(now, "LATE_WORLD_E_AFTER_BOARD");
+            EmitThrottled(now, ref _farELogT,
+                $"[BỎ QUA PROMPT] vừa thoát bảng {(_recentBoardExitUntil - now):F1}s trước → đi tiếp, không bấm E");
+            return false;
         }
 
         HoldEnter("PROMPT E");
@@ -803,12 +939,27 @@ internal sealed class NavBot
         _cameraPhase = "SETTLE";
         _cameraPhaseStart = now;
         _cameraReason = reason;
+        _cameraAuditUntil = 0;
         _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
         _watchdog.Reset();
         _ctl.ResetTransient();
         _capture.ResetWorld();
-        Emit($"[RESET CAMERA] bắt đầu ({reason})");
+
+        Emit($"[RESET CAMERA] bắt đầu ({reason}) — xuống {CameraDownCounts:F0} counts, " +
+             $"lên {CameraUpCounts:F0} counts (hệ số ngẩng ×{_cfg.Nav.CameraPitchScale:F2})");
     }
+
+    /// <summary>Số counts pha chúi xuống gửi ra — chỉ để in log, pha này luôn chạm chốt dưới.</summary>
+    private static double CameraDownCounts =>
+        NavTuning.CameraResetDownRateCps * NavTuning.CameraResetDownS;
+
+    /// <summary>
+    /// Số counts pha ngẩng lên. ĐÂY là con số quyết định góc camera cuối cùng, vì pha chúi xuống
+    /// chạm chốt nên mọi thứ trước đó bị quên. In ra để dò được bằng mắt khi chỉnh
+    /// <see cref="NavSettings.CameraPitchScale"/>.
+    /// </summary>
+    private double CameraUpCounts =>
+        NavTuning.CameraResetUpRateCps * NavTuning.CameraResetUpS * _cfg.Nav.CameraPitchScale;
 
     /// <summary><c>_camera_reset_step</c>: SETTLE → DOWN (3300 cps, 780 ms) → GROUND_HOLD → UP (1950 cps, 525 ms) → FINAL. Nhả hết phím mỗi khung.</summary>
     private bool CameraResetStep(double now)
@@ -848,7 +999,7 @@ internal sealed class NavBot
                     _input.ReleaseAll();
                     return true;
                 }
-                _input.SetMouseYRate(-NavTuning.CameraResetUpRateCps);
+                _input.SetMouseYRate(-NavTuning.CameraResetUpRateCps * _cfg.Nav.CameraPitchScale);
                 return true;
             case "FINAL_SETTLE":
                 if (elapsed < NavTuning.CameraResetFinalSettleS) return true;
@@ -860,6 +1011,7 @@ internal sealed class NavBot
                 _input.ReleaseAll();
                 ScheduleWReclaim(now);
                 AutorunResetTimer(now);
+                _cameraAuditUntil = now + NavTuning.CameraResetAuditS;
                 Emit("[RESET CAMERA XONG] → lấy lại W → chạy tiếp");
                 return false;
         }
@@ -869,6 +1021,40 @@ internal sealed class NavBot
         _input.DoublePressWStart(NavTuning.InputWPostMinigameTakeoverGapMs, NavTuning.InputWPostMinigameSoftRearmS);
         AutorunResetTimer(now);
         return false;
+    }
+
+    /// <summary>
+    /// Soi lại góc camera sau khi reset xong — CHỈ ghi log, không động vào chuột.
+    ///
+    /// Reset camera là vòng hở: chúi xuống chạm chốt dưới rồi ngẩng lên một lượng cố định. Không
+    /// có phép đo nào nói lượng đó có đúng với độ nhạy chuột của máy này không, và ngẩng quá tay
+    /// thì <see cref="WorldMarkerDetector"/> loại hết khối (nó đòi đáy khối thấp hơn
+    /// <see cref="NavTuning.WorldMinBboxBottomRef"/>) — biểu hiện là WQ=WORLD_NONE kéo dài rồi
+    /// SEARCH360 và KET1 quần nhau, đúng như log 04/09.
+    ///
+    /// CỐ Ý KHÔNG tự chúi lại: điểm 3D vắng mặt còn có lý do chính đáng (điểm ở sau lưng, bị nhà
+    /// che), nên tự động bẻ camera ở đây là đẻ thêm một kiểu hỏng mới. Việc của hàm này là nói
+    /// thẳng ra để chỉnh <see cref="NavSettings.CameraPitchScale"/> cho đúng.
+    /// </summary>
+    private void CameraAuditStep(double now, WorldSnapshot snap)
+    {
+        if (_cameraAuditUntil <= 0) return;
+
+        if (snap?.Marker is { Present: true })
+        {
+            _cameraAuditUntil = 0;
+            return;
+        }
+
+        if (now < _cameraAuditUntil) return;
+        _cameraAuditUntil = 0;
+
+        // Diem 3D vang mat con co ly do chinh dang: diem ke o sau lung, hoac (sau thua) ngay duoi
+        // chan — 16:29 ngay 04/09 dong nay da bao gia dung ca do. Nen chi noi "co the".
+        Emit($"[SOI CAMERA] {NavTuning.CameraResetAuditS:F1}s sau reset chưa thấy điểm 3D (WQ=WORLD_NONE) — " +
+             $"đang gửi {CameraUpCounts:F0} counts (hệ số ×{_cfg.Nav.CameraPitchScale:F2}). Điểm ở sau lưng " +
+             $"hay dưới chân thì bình thường; còn nếu điểm ở trước mặt mà lượt nào cũng thấy dòng này " +
+             $"thì góc ngẩng đang sai: nhìn lên trời → hạ hệ số, cắm mặt đất → nâng lên.");
     }
 
     private void ScheduleWReclaim(double now)
@@ -1019,6 +1205,10 @@ internal sealed class NavBot
     {
         if (_survivalActive || !focused || !_cfg.Survival.Enabled) return false;
 
+        // Het ca banh lan nuoc thi thoi han: khong Due, khong chup man, khong dung cho. Day la cai
+        // ma nguoi dung thay ro nhat — giai xong mot bang la lai dung im quet do an trong tui rong.
+        if (SurvivalState.AllOff) return false;
+
         // Vi tri trong chuoi da lo WAIT_BOARD/POST_*/camera (nhung nhanh do deu nuot frame, va ba
         // duong ra "return false" cua SimpleFlow deu goi ResumeWorld truoc). Reset nghe thi KHONG:
         // _job.Step co the tra false ma pha van con, va chen mot bua 10-20 s vao giua chuyen di tim
@@ -1027,9 +1217,17 @@ internal sealed class NavBot
 
         if (!_gauge.Due(now)) return false;
 
-        var reading = _gauge.Update(_capture.GrabSurvival(now), now);
+        var reading = ScanGauge(now);
         if (!reading.FoodLow && !reading.WaterLow) return false;
         return StartSurvival(now, reading);
+    }
+
+    /// <summary>Quét một lượt và nhả ra những ghi chú bộ đọc để lại (dòng hiệu chuẩn vành).</summary>
+    private SurvivalReading ScanGauge(double now)
+    {
+        var reading = _gauge.Update(_capture.GrabSurvival(now), now);
+        while (SurvivalState.TakeNote() is { } note) Emit(note);
+        return reading;
     }
 
     /// <summary><c>_start_survival</c>: dựng hàng đợi rồi giành quyền điều khiển.</summary>
@@ -1037,14 +1235,14 @@ internal sealed class NavBot
     {
         var items = new List<SurvivalItem>(2);
 
-        if (r.FoodLow && now >= _survivalFoodBlockUntil)
+        if (r.FoodLow && !SurvivalState.FoodOff && now >= SurvivalState.FoodBlockUntil)
         {
             var slots = SurvivalSettings.SlotKeys(_cfg.Survival.FoodSlots);
             if (slots.Length > 0)
                 items.Add(new SurvivalItem { Name = "BÁNH", Slots = slots, Baseline = r.FoodPct });
         }
 
-        if (r.WaterLow && now >= _survivalWaterBlockUntil)
+        if (r.WaterLow && !SurvivalState.WaterOff && now >= SurvivalState.WaterBlockUntil)
         {
             var slots = SurvivalSettings.SlotKeys(_cfg.Survival.WaterSlots);
             if (slots.Length > 0)
@@ -1119,17 +1317,21 @@ internal sealed class NavBot
         _input.ReleaseAll();
 
         // Van quet trong luc cho de EMA song lai sau khi Reset — nhung KHONG cham diem som.
-        if (_gauge.Due(now)) _gauge.Update(_capture.GrabSurvival(now), now);
+        if (_gauge.Due(now)) ScanGauge(now);
         if (elapsed < NavTuning.SurvivalFixedWaitS) return true;
 
         double? after = SurvivalValue(_gauge.Last, item.Name);
         double before = item.Baseline;
         bool ok = after is not null
                   && (after.Value >= before + NavTuning.SurvivalSuccessDeltaPct
-                      || after.Value >= NavTuning.SurvivalLowThresholdPct);
+                      || after.Value >= _cfg.Survival.LowThresholdPct);
 
         if (ok)
         {
+            // An duoc la tui van con hang: xoa chuoi bua hong de lan sau lai duoc tron hai bua thu.
+            if (item.Name == "BÁNH") SurvivalState.FoodFails = 0;
+            else SurvivalState.WaterFails = 0;
+
             Emit($"[ĂN UỐNG] {item.Name} ĐƯỢC phím {item.KeyText}: {before:F1}% → {after.Value:F1}%");
             return SurvivalAdvance(now);
         }
@@ -1147,18 +1349,53 @@ internal sealed class NavBot
         }
 
         // Ca hai o deu truot. Gan nhu chac chan la het do trong tui: bot khong nhin duoc tui do, no
-        // chi bam phim roi nhin dong ho ma doan. Chan tai nguyen do mot lat roi VAN di tiep.
-        double block = NavTuning.SurvivalFailedBlockS;
-        if (item.Name == "BÁNH") _survivalFoodBlockUntil = now + block;
-        else _survivalWaterBlockUntil = now + block;
-
-        Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô ({before:F1}% → {aft}) → " +
-             $"trả lại quyền đi, chặn {block:F0}s");
-        Alert?.Invoke($"⚠️ Job Điện — có thể hết {item.Name.ToLowerInvariant()}",
-            $"Đã thử ô {string.Join(" và ", item.Slots.Select(k => (char)k))} mà đồng hồ không nhúc nhích " +
-            $"({before:F1}% → {aft}). Nhân vật vẫn đi tiếp, nhưng cứ {block:F0}s lại mất " +
-            $"{NavTuning.SurvivalFixedWaitS:F0}s đứng thử lại — nên tiếp tế sớm.");
+        // chi bam phim roi nhin dong ho ma doan.
+        SurvivalGaveUp(now, item, before, aft);
         return SurvivalAdvance(now);
+    }
+
+    /// <summary>
+    /// Một bữa bấm hết ô mà đồng hồ đứng yên. Bữa đầu chỉ chặn <see cref="NavTuning.SurvivalFailedBlockS"/>
+    /// rồi thử lại một lần nữa; bữa thứ hai là thôi hẳn loại đó cho tới khi tắt/bật lại job.
+    ///
+    /// Vì sao phải thôi hẳn chứ không chặn rồi thử mãi như bản Python: mỗi vòng thử tốn 2 lần đứng
+    /// chết 10 giây, mà <see cref="ElectricBot"/> dựng NavBot mới sau mỗi minigame nên cứ giải xong
+    /// một bảng là mốc chặn lại về 0 và bot lại đứng thử. Túi rỗng thì thử bao nhiêu lần cũng thế.
+    /// </summary>
+    private void SurvivalGaveUp(double now, SurvivalItem item, double before, string aft)
+    {
+        bool food = item.Name == "BÁNH";
+        int fails = food ? ++SurvivalState.FoodFails : ++SurvivalState.WaterFails;
+        string slots = string.Join(" và ", item.Slots.Select(k => (char)k));
+        string mon = item.Name.ToLowerInvariant();
+
+        if (fails < NavTuning.SurvivalMaxMealAttempts)
+        {
+            double block = NavTuning.SurvivalFailedBlockS;
+            if (food) SurvivalState.FoodBlockUntil = now + block;
+            else SurvivalState.WaterBlockUntil = now + block;
+
+            Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô ({before:F1}% → {aft}) → " +
+                 $"trả lại quyền đi, chặn {block:F0}s rồi thử thêm ĐÚNG một bữa nữa");
+            Alert?.Invoke($"⚠️ Job Điện — có thể hết {mon}",
+                $"Đã thử ô {slots} mà đồng hồ không nhúc nhích ({before:F1}% → {aft}). " +
+                $"Sau {block:F0}s bot thử thêm một bữa nữa; hỏng tiếp là nó tự bỏ {mon} — nên tiếp tế sớm.");
+            return;
+        }
+
+        if (food) SurvivalState.FoodOff = true;
+        else SurvivalState.WaterOff = true;
+
+        Emit($"[ĂN UỐNG] {item.Name} HỎNG CẢ HAI Ô lần {fails} ({before:F1}% → {aft}) → " +
+             $"TẮT tự dùng {item.Name} cho lượt chạy này");
+        Alert?.Invoke($"⛔ Job Điện — đã tắt tự dùng {mon}",
+            $"Thử {fails} bữa ở ô {slots} mà đồng hồ không nhúc nhích — coi như hết {mon}. " +
+            "Bot chạy tiếp và không đứng chờ nữa. Tiếp tế xong thì tắt/bật lại job để dùng lại.");
+
+        if (!SurvivalState.AllOff) return;
+
+        Emit("[ĂN UỐNG] hết cả bánh lẫn nước → tắt hẳn ăn uống cho lượt chạy này " +
+             "(tắt/bật lại job sau khi tiếp tế để chạy lại)");
     }
 
     private static double? SurvivalValue(SurvivalReading r, string name)
@@ -1218,7 +1455,7 @@ internal sealed class NavBot
         _input.ReleaseOwnedOnce();
         _cameraPhase = null;
         _simplePhase = "WORLD";
-        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
+        _closeUntil = _postCheckUntil = _waitBoardUntil = 0;
         _tracker.Reset();
         _watchdog.Reset();
         _ctl.ResetTransient();
@@ -1262,7 +1499,17 @@ internal sealed class NavBot
                 if (approach) { progress = true; _wdAnchorWorld = sig; }
             }
         }
-        if (progress) { _wdLastProgressT = now; return false; }
+        if (progress)
+        {
+            _wdLastProgressT = now;
+
+            // WATCH 30 s do "da bao lau chua co minigame moi", khong do tien bo — ma di bo toi diem
+            // moi lau hon 30 s la chuyen thuong. De nguyen thi cu 30 s no lai cat ngang mot chuyen
+            // di dang tot: RestartPrepareCore xoa bam cham vang VA arm lai E. Bot dang tien that thi
+            // lui moc cua no theo.
+            _watchStarted = now;
+            return false;
+        }
 
         double idle = now - _wdLastProgressT;
         if (idle >= NavTuning.AutorunIdleWatchdogS)
