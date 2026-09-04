@@ -215,7 +215,7 @@ Get-ChildItem -Path $Staging -Filter '*.pdb' -File | Remove-Item -Force
 # publish *im lang* bo qua - ra ban exe khong do duoc "dang trong xe". Chan o day.
 $carTemplate = Join-Path $Staging 'car-template.png'
 if (-not (Test-Path $carTemplate)) {
-    throw "Thieu car-template.png trong ban publish. Kiem tra src\GtaMiniGameBot\car-template.png."
+    throw "Thieu car-template.png trong ban publish. Kiem tra src\GtaMiniGameBot\Jobs\Oil\car-template.png."
 }
 
 Copy-Item -Path (Join-Path $Packaging 'HUONG-DAN.txt') -Destination $Staging -Force

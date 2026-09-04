@@ -50,7 +50,11 @@ Build ra `app\` rồi bảo user chạy `app\GtaMiniGameBot.exe`. Không verify 
 
 | Thư mục | Việc gì |
 |---|---|
-| `src/GtaMiniGameBot/` | Code |
+| `src/GtaMiniGameBot/` | Vỏ app: `Program.cs`, `HomeForm.cs` |
+| `src/GtaMiniGameBot/Jobs/` | Từng job: Oil, Fishing, Miner, Wood, Electric (+ Nav) |
+| `src/GtaMiniGameBot/Utils/` | Tab Tiện ích |
+| `src/GtaMiniGameBot/Core/` | Input, vision, log, discord, overlay |
+| `src/GtaMiniGameBot/Ui/` | Theme / control dùng chung |
 | `app/` | Exe chạy hàng ngày |
 | `packaging/defaults/` | ROI / icon mang đi share |
 | `tools/` | Script build / kiểm tra exe đang chạy |
