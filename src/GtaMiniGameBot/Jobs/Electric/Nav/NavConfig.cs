@@ -320,6 +320,18 @@ internal static class NavTuning
     public const double SimplePostEWaitS = 10.0;
     public const double SimpleRecentBoardExitGuardS = 8.0;
 
+    /// <summary>
+    /// Bán kính arm E, cùng thang <see cref="ArrivalShieldEntryDistPx"/> — không tạo bộ khoảng cách
+    /// tới đích thứ hai. Prompt chỉ được bấm khi minimap đã vào vòng này (hoặc pass-through/world).
+    /// </summary>
+    public const double InteractionArmDistPx = ArrivalShieldEntryDistPx;
+
+    /// <summary>Đứng yên sau E để game nhận phím, rồi trả W ngay — không khóa 4 s.</summary>
+    public const double InteractionSettleS = 0.22;
+
+    /// <summary>E thất bại thì không thử lại trước khoảng này, dù prompt còn hiện.</summary>
+    public const double InteractionRetryS = 1.0;
+
     // ================================================================ reset camera + W reclaim
     public const double CameraResetSettleS = 0.070;
     public const double CameraResetDownS = 0.780, CameraResetDownRateCps = 3300.0;

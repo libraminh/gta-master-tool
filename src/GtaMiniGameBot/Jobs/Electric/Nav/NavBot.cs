@@ -109,13 +109,20 @@ internal sealed class NavBot
     // simple flow
     private string _simplePhase = "WORLD";
     private int _promptStreak, _promptAbsentStreak;
+    private int _promptSeq = -1;
     private bool _promptConsumed;
-    private double _waitBoardUntil, _closeUntil, _postCheckUntil, _wait10Until;
+    private double _closeUntil, _postCheckUntil, _wait10Until;
     private double _recentBoardExitUntil;
     private bool _eDown;
     private double _eUpAt;
     private double _lastPanelPoll;
     private bool _arrived;
+
+    // E song song voi dieu huong: SETTLE ngan roi WATCH (lai + tham do panel).
+    private string _ixPhase;
+    private double _ixSettleUntil, _ixWatchUntil, _eRetryUntil;
+    private string _lastCtlState;
+    private double _lastPromptSkipLog;
 
     // khien bo E cua NPC sau khi xin viec
     private bool _postJobIgnoreNpcE;
@@ -260,7 +267,10 @@ internal sealed class NavBot
     {
         double gone = Math.Max(0.0, PanelGoneAgoMs / 1000.0);
         _promptStreak = _promptAbsentStreak = 0;
+        _promptSeq = -1;
         _promptConsumed = false;
+        _eRetryUntil = 0;
+        ClearPendingE();
         _recentBoardExitUntil = now + Math.Max(0.0, NavTuning.SimpleRecentBoardExitGuardS - gone);
         double remaining = NavTuning.SimpleCloseSettleS + NavTuning.SimplePostCheckS - gone;
         if (gone < NavTuning.SimpleCloseSettleS)
@@ -351,6 +361,13 @@ internal sealed class NavBot
             return false;
         }
 
+        if (PendingSettleStep(now, focused, out arrived))
+        {
+            if (arrived) { _arrived = true; return true; }
+            StatusLine(now, $"[PROMPT/E] pha={_ixPhase}", snap);
+            return false;
+        }
+
         if (RestartWatchStep(now, focused)) return false;
 
         if (_wReclaimPending && _cameraPhase is null)
@@ -383,6 +400,12 @@ internal sealed class NavBot
             return false;
         }
 
+        if (PendingWatchPoll(now, focused, out arrived))
+        {
+            _arrived = true;
+            return true;
+        }
+
         // ---------------- nhan dang ----------------
         var candidates = YellowDotDetector.Detect(mini, _s, _originX, _originY);
         var fragments = YellowDotDetector.DetectNearFragments(mini, _s, _originX, _originY);
@@ -405,6 +428,12 @@ internal sealed class NavBot
             _watchdog.Add(now, dx, dy);
         }
         bool forwardRequested = _input.IsHeld(NavKey.W) && !_input.IsHeld(NavKey.S);
+
+        if (TryArmWorldE(now, focused, snap, target, world, dist, rel))
+        {
+            StatusLine(now, $"[PROMPT/E] pha={_ixPhase ?? _simplePhase}", snap);
+            return false;
+        }
 
         // ---------------- ket ----------------
         bool isStuck = false;
@@ -488,6 +517,8 @@ internal sealed class NavBot
             state = r.state;
             if (isStuck) _watchdog.Cooldown(now);
         }
+
+        _lastCtlState = state;
 
         _tickMsEma = _tickMsEma <= 0 ? _tickSw.Elapsed.TotalMilliseconds : 0.9 * _tickMsEma + 0.1 * _tickSw.Elapsed.TotalMilliseconds;
         if (now - _lastStatusLog >= _cfg.Nav.LogEveryMs / 1000.0)
@@ -589,17 +620,9 @@ internal sealed class NavBot
 
     // ================================================================ prompt -> E -> cho bang
 
-    private bool PromptStable(bool visible)
-    {
-        if (visible) { _promptStreak++; _promptAbsentStreak = 0; }
-        else
-        {
-            _promptStreak = 0;
-            _promptAbsentStreak++;
-            if (_promptAbsentStreak >= NavTuning.SimplePromptRearmAbsentFrames) _promptConsumed = false;
-        }
-        return visible && _promptStreak >= NavTuning.SimplePromptStableFrames;
-    }
+    private bool PromptStable(WorldSnapshot snap, double now) =>
+        NavInteraction.NotePrompt(snap.PromptVisible, snap.Seq, ref _promptSeq, ref _promptStreak,
+                                  ref _promptAbsentStreak, ref _promptConsumed, now, _eRetryUntil);
 
     private void ReleaseETick(double now)
     {
@@ -647,10 +670,119 @@ internal sealed class NavBot
         return true;
     }
 
+    private void ClearPendingE()
+    {
+        _ixPhase = null;
+        _ixSettleUntil = _ixWatchUntil = 0;
+    }
+
+    private void StartPendingE(double now)
+    {
+        _ixPhase = NavInteraction.Settle;
+        _ixSettleUntil = now + NavTuning.InteractionSettleS;
+        _ixWatchUntil = 0;
+        _lastPanelPoll = 0;
+        _eRetryUntil = now + NavTuning.InteractionRetryS;
+    }
+
+    private bool PollPanel(double now, bool focused)
+    {
+        if (!focused || now - _lastPanelPoll < 0.125) return false;
+        _lastPanelPoll = now;
+        return PanelVisible?.Invoke() == true;
+    }
+
+    private bool MarkArrived()
+    {
+        ReleaseETick(double.MaxValue);
+        _input.ReleaseOwnedOnce();
+        ClearPendingE();
+        Emit("[MINIGAME MỞ] giao cho bộ giải");
+        return true;
+    }
+
+    /// <summary>SETTLE: đứng yên nhận phím E. Hết settle mà chưa có bảng → WATCH (lai tiếp).</summary>
+    private bool PendingSettleStep(double now, bool focused, out bool arrived)
+    {
+        arrived = false;
+        ReleaseETick(now);
+        if (_ixPhase != NavInteraction.Settle) return false;
+        if (PollPanel(now, focused)) { arrived = true; return MarkArrived(); }
+        if (now < _ixSettleUntil)
+        {
+            _input.StopMouseStream(immediate: true);
+            _input.ReleaseOwnedOnce();
+            return true;
+        }
+        _ixPhase = NavInteraction.Watch;
+        _ixWatchUntil = now + NavTuning.SimpleWaitBoardS;
+        _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
+        _input.DoublePressWStart(NavTuning.InputWPostMinigameTakeoverGapMs, NavTuning.InputWPostMinigameSoftRearmS);
+        AutorunResetTimer(now);
+        Emit("[SAU E] hết settle → lái tiếp, thăm dò panel trong nền");
+        return false;
+    }
+
+    /// <summary>WATCH: không chiếm frame — chỉ thăm dò panel hoặc hết hạn.</summary>
+    private bool PendingWatchPoll(double now, bool focused, out bool arrived)
+    {
+        arrived = false;
+        if (_ixPhase != NavInteraction.Watch) return false;
+        if (PollPanel(now, focused)) { arrived = true; return MarkArrived(); }
+        if (now < _ixWatchUntil) return false;
+        _promptConsumed = false;
+        _eRetryUntil = now + NavTuning.InteractionRetryS;
+        ClearPendingE();
+        Emit("[VỀ WORLD] ONE_E_NO_BOARD → tiếp tục lái, không đứng chờ");
+        return false;
+    }
+
+    /// <summary>WORLD: prompt + tiếp cận điểm vàng mới được bấm E. Trả true = occupy tick.</summary>
+    private bool TryArmWorldE(double now, bool focused, WorldSnapshot snap, TargetOutput target,
+                              WorldMarker world, double dist, double rel)
+    {
+        if (_ixPhase == NavInteraction.Settle || _simplePhase != "WORLD" || !focused || _postJobIgnoreNpcE) return false;
+        ReleaseETick(now);
+
+        bool stable = PromptStable(snap, now);
+        // consumed chi chan spam cung mot lan hien prompt; E that bai van duoc thu lai sau
+        // cooldown du prompt con hien — ApproachReady moi la cong sat diem vang.
+        if (!stable || !NavInteraction.RetryReady(now, _eRetryUntil)) return false;
+
+        bool ready = NavInteraction.ApproachReady(dist, rel, _s.Px, target.Quality, target.Confidence,
+            world.Present, world.Confidence, world.Area, _lastCtlState, _ctl.ArrivalShieldUntil, now);
+        string ds = double.IsNaN(dist) ? "---" : $"{dist:0.0}";
+        string re = double.IsNaN(rel) ? "---" : $"{rel:+0.0;-0.0}";
+        string why = $"Q={target.Quality} dist={ds} rel={re} WQ={world.Quality} WC={world.Confidence:F2}";
+
+        if (!ready)
+        {
+            if (now - _lastPromptSkipLog >= 0.5)
+            {
+                _lastPromptSkipLog = now;
+                Emit($"[BỎ PROMPT] chưa sát điểm vàng — {why}");
+            }
+            return false;
+        }
+
+        if (now < _recentBoardExitUntil)
+        {
+            HoldEnter("E MUỘN SAU BẢNG");
+            return BeginPostEWait(now, "LATE_WORLD_E_AFTER_BOARD");
+        }
+
+        HoldEnter("PROMPT E");
+        if (!PressEOnce(now, "E_TUONG_TAC")) return false;
+        Emit($"[E ARM] {why}");
+        StartPendingE(now);
+        return true;
+    }
+
     private void ResumeWorld(double now, string reason)
     {
         _simplePhase = "WORLD";
-        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
+        _closeUntil = _postCheckUntil = _wait10Until = 0;
+        ClearPendingE();
         bool finalExit = reason is "BOARD_CLOSED_NO_E" or "POST_E_GONE";
         if (finalExit)
         {
@@ -666,31 +798,14 @@ internal sealed class NavBot
         Emit($"[VỀ WORLD] {reason} → lấy lại W, không reset camera");
     }
 
-    /// <summary><c>_simple_flow_step</c> ánh xạ sang C#: bảng mở = <see cref="PanelVisible"/> → tới nơi.</summary>
+    /// <summary>
+    /// Pha hậu minigame và khiên NPC. E lúc WORLD do <see cref="TryArmWorldE"/> sau nhận dạng.
+    /// </summary>
     private bool SimpleFlowStep(double now, bool focused, WorldSnapshot snap, out bool arrived)
     {
         arrived = false;
         ReleaseETick(now);
         string phase = _simplePhase;
-
-        if (phase == "WAIT_BOARD")
-        {
-            if (focused && now - _lastPanelPoll >= 0.125)
-            {
-                _lastPanelPoll = now;
-                if (PanelVisible?.Invoke() == true)
-                {
-                    ReleaseETick(double.MaxValue);
-                    _input.ReleaseOwnedOnce();
-                    Emit("[MINIGAME MỞ] giao cho bộ giải");
-                    arrived = true;
-                    return true;
-                }
-            }
-            if (now < _waitBoardUntil) return true;
-            ResumeWorld(now, "ONE_E_NO_BOARD");
-            return false;
-        }
 
         if (phase == "CLOSE_SETTLE")
         {
@@ -698,12 +813,13 @@ internal sealed class NavBot
             _simplePhase = "POST_CHECK";
             _postCheckUntil = now + NavTuning.SimplePostCheckS;
             _promptStreak = 0;
+            _promptSeq = -1;
             return true;
         }
 
         if (phase == "POST_CHECK")
         {
-            if (!_promptConsumed && PromptStable(snap.PromptVisible)) return BeginPostEWait(now, "POST_CHECK_E");
+            if (!_promptConsumed && PromptStable(snap, now)) return BeginPostEWait(now, "POST_CHECK_E");
             if (now < _postCheckUntil) return true;
             ResumeWorld(now, "BOARD_CLOSED_NO_E");
             return false;
@@ -712,13 +828,13 @@ internal sealed class NavBot
         if (phase == "POST_WAIT10")
         {
             if (now < _wait10Until) return true;
-            if (PromptStable(snap.PromptVisible))
+            if (PromptStable(snap, now))
             {
                 if (PressEOnce(now, "POST_MINIGAME_10S"))
                 {
                     _recentBoardExitUntil = 0;
-                    _simplePhase = "WAIT_BOARD";
-                    _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
+                    _simplePhase = "WORLD";
+                    StartPendingE(now);
                 }
                 return true;
             }
@@ -739,6 +855,7 @@ internal sealed class NavBot
                 _postJobAbsentFrames = 0;
                 _promptConsumed = true;
                 _promptStreak = _promptAbsentStreak = 0;
+                _promptSeq = -1;
                 if (now - _postJobLastLog >= 1.0)
                 {
                     _postJobLastLog = now;
@@ -759,28 +876,13 @@ internal sealed class NavBot
                 _postJobAbsentFrames = 0;
                 _promptConsumed = false;
                 _promptStreak = _promptAbsentStreak = 0;
+                _promptSeq = -1;
                 Emit("[KHIÊN E NPC GỠ] prompt NPC đã mất → E sẵn sàng cho điểm vàng");
             }
             else return false;
         }
 
-        if (!PromptStable(snap.PromptVisible)) return false;
-        if (_promptConsumed) return false;
-
-        if (now < _recentBoardExitUntil)
-        {
-            HoldEnter("E MUỘN SAU BẢNG");
-            return BeginPostEWait(now, "LATE_WORLD_E_AFTER_BOARD");
-        }
-
-        HoldEnter("PROMPT E");
-        if (PressEOnce(now, "E_TUONG_TAC"))
-        {
-            _simplePhase = "WAIT_BOARD";
-            _waitBoardUntil = now + NavTuning.SimpleWaitBoardS;
-            _lastPanelPoll = 0;
-        }
-        return true;
+        return false;
     }
 
     private void OnJobFinished()
@@ -792,6 +894,9 @@ internal sealed class NavBot
         _postJobLastLog = 0;
         _promptConsumed = true;
         _promptStreak = _promptAbsentStreak = 0;
+        _promptSeq = -1;
+        _eRetryUntil = 0;
+        ClearPendingE();
         Emit("[KHIÊN E NPC] xin việc xong → bỏ prompt NPC, đi về điểm vàng");
     }
 
@@ -966,11 +1071,10 @@ internal sealed class NavBot
     /// <summary>
     /// Bữa ĐANG DỞ sở hữu frame, gọi sớm trong <see cref="Tick"/> — ngay sau backout S.
     ///
-    /// Vì sao phải sớm chứ không đứng chung chỗ với nhánh mở bữa: <see cref="SimpleFlowStep"/> chạy
-    /// trước và nó bấm E ngay khi thấy prompt. Nhân vật đứng chết 10 giây cạnh một vật tương tác
-    /// được là đủ để prompt hiện lên; SimpleFlow sẽ bấm E giữa bữa rồi chuyển sang WAIT_BOARD, và từ
-    /// đó nó nuốt mọi frame nên bữa KHÔNG BAO GIỜ chạy tiếp — <c>_survivalActive</c> kẹt true, mà cờ
-    /// đó lại vừa tắt cả hai watchdog 30 giây. Đúng một cái treo cứng.
+    /// Vì sao phải sớm chứ không đứng chung chỗ với nhánh mở bữa: prompt E (kể cả SETTLE ngắn) từng
+    /// nuốt frame trước bữa. Nhân vật đứng chết 10 giây cạnh một vật tương tác được là đủ để prompt
+    /// hiện lên; E giữa bữa rồi đứng chờ panel thì bữa KHÔNG BAO GIỜ chạy tiếp — <c>_survivalActive</c>
+    /// kẹt true, mà cờ đó lại vừa tắt cả hai watchdog 30 giây. Đúng một cái treo cứng.
     ///
     /// Bản Python chặn cùng chuyện này bằng <c>set_e_suppressed(True)</c> suốt bữa; ở đây quyền ưu
     /// tiên frame làm luôn việc đó, gọn hơn một lá cờ nữa.
@@ -1019,11 +1123,11 @@ internal sealed class NavBot
     {
         if (_survivalActive || !focused || !_cfg.Survival.Enabled) return false;
 
-        // Vi tri trong chuoi da lo WAIT_BOARD/POST_*/camera (nhung nhanh do deu nuot frame, va ba
+        // Vi tri trong chuoi da lo SETTLE/POST_*/camera (nhung nhanh do deu nuot frame, va ba
         // duong ra "return false" cua SimpleFlow deu goi ResumeWorld truoc). Reset nghe thi KHONG:
         // _job.Step co the tra false ma pha van con, va chen mot bua 10-20 s vao giua chuyen di tim
         // NPC xin viec la lam hai thu tuc dai dan chan nhau.
-        if (_job.Phase is not null || _simplePhase != "WORLD") return false;
+        if (_job.Phase is not null || _simplePhase != "WORLD" || _ixPhase == NavInteraction.Settle) return false;
 
         if (!_gauge.Due(now)) return false;
 
@@ -1218,7 +1322,12 @@ internal sealed class NavBot
         _input.ReleaseOwnedOnce();
         _cameraPhase = null;
         _simplePhase = "WORLD";
-        _closeUntil = _postCheckUntil = _wait10Until = _waitBoardUntil = 0;
+        _closeUntil = _postCheckUntil = _wait10Until = 0;
+        _promptConsumed = false;
+        _eRetryUntil = 0;
+        _promptStreak = _promptAbsentStreak = 0;
+        _promptSeq = -1;
+        ClearPendingE();
         _tracker.Reset();
         _watchdog.Reset();
         _ctl.ResetTransient();
@@ -1236,7 +1345,8 @@ internal sealed class NavBot
     private bool AutorunWatchdogStep(double now, bool focused, double dist, TargetOutput target, WorldMarker world)
     {
         if (!focused) { AutorunResetTimer(now); return false; }
-        bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null || _survivalActive;
+        bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null || _survivalActive
+                                || _ixPhase == NavInteraction.Settle;
         if (intentionalBlock) { AutorunResetTimer(now); return false; }
 
         bool progress = false;
@@ -1296,7 +1406,10 @@ internal sealed class NavBot
         _tracker.Reset();
         _capture.ResetWorld();
         _promptStreak = _promptAbsentStreak = 0;
+        _promptSeq = -1;
         _promptConsumed = false;
+        _eRetryUntil = 0;
+        ClearPendingE();
     }
 
     /// <summary><c>_post_mini_restart_watch_step</c>: 30 s không có minigame mới → reset camera + W; từ lần thứ 3 giữ S 2 s trước.</summary>
@@ -1332,7 +1445,7 @@ internal sealed class NavBot
         if (elapsed < timeout && !_watchPending) return false;
 
         bool unsafeNow = _simplePhase != "WORLD" || _cameraPhase is not null || _job.Phase is not null
-                         || _survivalActive;
+                         || _survivalActive || _ixPhase == NavInteraction.Settle;
         if (unsafeNow)
         {
             if (!_watchPending)

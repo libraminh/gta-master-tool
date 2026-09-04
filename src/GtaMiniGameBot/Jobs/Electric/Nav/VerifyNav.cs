@@ -81,6 +81,7 @@ internal static class VerifyNav
         fail += MouseCases();
         fail += WatchdogCases();
         fail += PromptCases();
+        fail += InteractionCases();
         fail += WorldCases();
         fail += BoardCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
@@ -381,6 +382,45 @@ internal static class VerifyNav
             for (int i = 0; i < 5; i++) Box(bmp, 300 + 30 + 12 + i * 12, 568, 8, 14, Color.White);
             Check(ref fail, !PromptHeuristic.Visible(Frame(bmp), W, H), "prompt ngoài vùng 0.45–0.73 → bỏ qua", "");
         }
+        return fail;
+    }
+
+    private static int InteractionCases()
+    {
+        int fail = 0;
+        int lastSeq = -1, streak = 0, absent = 0;
+        bool consumed = false;
+        bool s1 = NavInteraction.NotePrompt(true, 1, ref lastSeq, ref streak, ref absent, ref consumed, 0, 0);
+        bool s1b = NavInteraction.NotePrompt(true, 1, ref lastSeq, ref streak, ref absent, ref consumed, 0.025, 0);
+        Check(ref fail, !s1 && !s1b && streak == 1, "cùng snapshot không đủ 2 frame", $"s1={s1} s1b={s1b} streak={streak}");
+        bool s2 = NavInteraction.NotePrompt(true, 2, ref lastSeq, ref streak, ref absent, ref consumed, 0.050, 0);
+        Check(ref fail, s2 && streak == 2, "hai snapshot khác nhau → prompt ổn định", $"s2={s2} streak={streak}");
+
+        double px = 1.333;
+        bool far = NavInteraction.ApproachReady(40, 5, px, "FULL_LOCK", 0.9, false, 0, 0, "RAM_V63_FAST_TARGET_SNAP_W", 0, 10);
+        bool near = NavInteraction.ApproachReady(12, 5, px, "FULL_LOCK", 0.9, false, 0, 0, "RAM_V63_AIM_CENTERED_W", 0, 10);
+        bool pass = NavInteraction.ApproachReady(40, 20, px, "NEAR_FRAGMENT", 0.86, false, 0, 0, "RAM_V63_PASS_THROUGH_W", 0, 10);
+        bool pred = NavInteraction.ApproachReady(12, 5, px, "PREDICT_ONLY", 0.9, false, 0, 0, "RAM_V63_AIM_CENTERED_W", 0, 10);
+        Check(ref fail, !far, "prompt xa không arm E", "");
+        Check(ref fail, near, "sát điểm + thẳng hướng → arm E", "");
+        Check(ref fail, pass, "pass-through hợp lệ → arm E dù dist lớn", "");
+        Check(ref fail, !pred, "PREDICT_ONLY gần không arm E", "");
+
+        Check(ref fail, !NavInteraction.RetryReady(10.5, 11.0) && NavInteraction.RetryReady(11.0, 11.0),
+              "E thất bại: cooldown 1 s trước lần thử sau", "");
+        Check(ref fail, NavTuning.InteractionSettleS < 0.5 && NavTuning.InteractionSettleS < NavTuning.SimpleWaitBoardS,
+              "settle sau E ngắn hơn cửa sổ chờ panel (không đứng 4 s)",
+              $"settle={NavTuning.InteractionSettleS:F2}s wait={NavTuning.SimpleWaitBoardS:F1}s");
+
+        consumed = true;
+        bool stillOn = NavInteraction.NotePrompt(true, 3, ref lastSeq, ref streak, ref absent, ref consumed, 2.0, 1.0);
+        Check(ref fail, stillOn && consumed, "prompt còn hiện sau E: không re-arm chỉ vì cùng streak", $"consumed={consumed}");
+        bool gone1 = NavInteraction.NotePrompt(false, 4, ref lastSeq, ref streak, ref absent, ref consumed, 2.1, 1.0);
+        bool gone2 = NavInteraction.NotePrompt(false, 5, ref lastSeq, ref streak, ref absent, ref consumed, 2.2, 1.0);
+        bool gone3 = NavInteraction.NotePrompt(false, 6, ref lastSeq, ref streak, ref absent, ref consumed, 2.3, 1.0);
+        Check(ref fail, !gone1 && !gone2 && !gone3 && !consumed && absent >= NavTuning.SimplePromptRearmAbsentFrames,
+              "prompt tắt đủ frame + hết cooldown → mở lại E",
+              $"consumed={consumed} absent={absent}");
         return fail;
     }
 
