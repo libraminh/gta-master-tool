@@ -90,6 +90,7 @@ internal sealed class FishingBot
     /// <summary>Số lượt đổ cốp THÀNH CÔNG của phiên — chỉ đếm DumpResult.Ok, cho tin Discord.</summary>
     private int _dumpsDone;
     private int _released;
+    private int _sold;
 
     /// <summary>KG ba lô lần cân trước, chỉ dùng ở chặng cuối phiên. -1 = chưa cân lần nào.</summary>
     private double _endgameLastKg = -1;
@@ -258,6 +259,7 @@ internal sealed class FishingBot
                      $"#{reader.KeepColor.R:X2}{reader.KeepColor.G:X2}{reader.KeepColor.B:X2} ±{_cfg.KeepColorTol}");
 
             EmitReleasePlan();
+            EmitSellPlan();
 
             Emit($"bắt đầu. chờ cắn {_cfg.WaitBiteMs} ms, giữ S tối đa {_cfg.FightTimeoutMs} ms, " +
                  $"xong khi fill ≥ {_cfg.DoneFill01:0.00}");
@@ -672,9 +674,12 @@ internal sealed class FishingBot
         if (TryAutoRelease(found, reader, ct))
             return;
 
+        if (TryAutoSell(found, reader, ct))
+            return;
+
         SetPhase(FishingPhase.ClickingKeep);
         ClickKeep(found.KeepClick, ct);
-        RetryClicks(reader, found.KeepRect, keep: true, ct);
+        RetryClicks(reader, found.KeepRect, CatchClick.Keep, ct);
         AfterKept(reader, ct);
     }
 
@@ -687,19 +692,47 @@ internal sealed class FishingBot
         if (_cfg.AutoReleaseEnabled != true) return false;
         if (_profile.AutoReleaseItems is not { Count: > 0 }) return false;
 
-        var guess = CatchIdentifier.Identify(_cfg, _screen, _profile);
+        var guess = CatchIdentifier.Identify(_cfg, _screen, _profile, _profile.AutoReleaseItems);
         if (guess.Name is null)
         {
-            Emit("giữ — " + (guess.Note ?? "không nhận được tên"));
+            Emit("thả: " + (guess.Note ?? "không nhận được tên"));
             return false;
         }
 
         Emit($"thả {guess.Name} (ncc={guess.Score:F2})");
         SetPhase(FishingPhase.ClickingRelease);
         ClickRelease(ReleasePoint(found), ct);
-        RetryClicks(reader, found.KeepRect, keep: false, ct);
+        RetryClicks(reader, found.KeepRect, CatchClick.Release, ct);
 
         _released++;
+        try { SnapshotReady?.Invoke(reader.Read()); } catch { }
+        Sleep(ct, _cfg.AfterKeepCastMs);
+        Cast(ct, "thả câu", waitRelease: false);
+        return true;
+    }
+
+    /// <summary>
+    /// Chỉ bán khi đã dò được hàng nút và tên khớp danh sách bán.
+    /// Thả Ra đã xét trước — loài nằm cả hai danh sách không vào đây.
+    /// </summary>
+    private bool TryAutoSell(FishingSnapshot found, FishingReader reader, CancellationToken ct)
+    {
+        if (_cfg.AutoSellEnabled != true) return false;
+        if (_profile.AutoSellItems is not { Count: > 0 }) return false;
+
+        var guess = CatchIdentifier.Identify(_cfg, _screen, _profile, _profile.AutoSellItems);
+        if (guess.Name is null)
+        {
+            Emit("giữ — " + (guess.Note ?? "không nhận được tên"));
+            return false;
+        }
+
+        Emit($"bán {guess.Name} (ncc={guess.Score:F2})");
+        SetPhase(FishingPhase.ClickingSell);
+        ClickSell(SellPoint(found), ct);
+        RetryClicks(reader, found.KeepRect, CatchClick.Sell, ct);
+
+        _sold++;
         try { SnapshotReady?.Invoke(reader.Read()); } catch { }
         Sleep(ct, _cfg.AfterKeepCastMs);
         Cast(ct, "thả câu", waitRelease: false);
@@ -731,15 +764,21 @@ internal sealed class FishingBot
         Cast(ct, "thả câu", waitRelease: false);
     }
 
-    private void RetryClicks(FishingReader reader, Rectangle anchor, bool keep, CancellationToken ct)
+    private enum CatchClick { Keep, Release, Sell }
+
+    private void RetryClicks(FishingReader reader, Rectangle anchor, CatchClick action, CancellationToken ct)
     {
         for (int i = 0; i < _cfg.KeepClickRetries; i++)
         {
             var still = WaitForKeepGone(reader, anchor, ct);
             if (still is null) break;
             Emit($"nút vẫn còn sau {_cfg.KeepGoneMs} ms — click lại (lần {i + 1}/{_cfg.KeepClickRetries})");
-            if (keep) ClickKeep(still.KeepClick, ct);
-            else ClickRelease(ReleasePoint(still), ct);
+            switch (action)
+            {
+                case CatchClick.Keep: ClickKeep(still.KeepClick, ct); break;
+                case CatchClick.Release: ClickRelease(ReleasePoint(still), ct); break;
+                default: ClickSell(SellPoint(still), ct); break;
+            }
             anchor = still.KeepRect;
         }
     }
@@ -749,6 +788,15 @@ internal sealed class FishingBot
         var r = snap.KeepRect;
         int gap = _cfg.ReleaseGapPx;
         int x = r.Right + gap + r.Width / 2;
+        int y = snap.KeepClick.IsEmpty ? r.Top + r.Height / 2 : snap.KeepClick.Y;
+        return new Point(x, y);
+    }
+
+    private Point SellPoint(FishingSnapshot snap)
+    {
+        var r = snap.KeepRect;
+        int gap = _cfg.ReleaseGapPx;
+        int x = r.Right + 2 * gap + r.Width + r.Width / 2;
         int y = snap.KeepClick.IsEmpty ? r.Top + r.Height / 2 : snap.KeepClick.Y;
         return new Point(x, y);
     }
@@ -774,6 +822,29 @@ internal sealed class FishingBot
             Emit("tự thả: chưa khoanh ô tên cá — sẽ cất vào như cũ (mở Loại thả ra để khoanh)");
         else if (have == 0)
             Emit("tự thả: chưa có mẫu tên — sẽ cất vào như cũ (chụp mẫu lúc panel đang hiện)");
+    }
+
+    private void EmitSellPlan()
+    {
+        if (_cfg.AutoSellEnabled != true)
+        {
+            Emit("tự bán: tắt");
+            return;
+        }
+
+        var items = _profile.AutoSellItems ?? new List<string>();
+        if (items.Count == 0)
+        {
+            Emit("tự bán: bật nhưng chưa chọn loại — không bán ngay");
+            return;
+        }
+
+        int have = items.Count(n => FishingConfig.HasCatchTitleTemplate(_profile.Key, n));
+        Emit($"tự bán: {string.Join(", ", items)} ({have}/{items.Count} có mẫu tên)");
+        if (!_profile.CatchTitle.IsSet)
+            Emit("tự bán: chưa khoanh ô tên cá — sẽ cất vào như cũ (mở Loại bán ngay để khoanh)");
+        else if (have == 0)
+            Emit("tự bán: chưa có mẫu tên — sẽ cất vào như cũ (chụp mẫu lúc panel đang hiện)");
     }
 
     private void SetUpDumper()
@@ -1094,6 +1165,17 @@ internal sealed class FishingBot
         InputSender.LeftUp();
     }
 
+    private void ClickSell(Point p, CancellationToken ct)
+    {
+        WaitWindow(ct);
+        Emit($"click BÁN NGAY @ {p.X},{p.Y}");
+        InputSender.MoveCursorOnlySmooth(p.X, p.Y, _cfg.KeepMoveSteps);
+        Sleep(ct, _cfg.KeepHoverMs);
+        InputSender.LeftDown();
+        Sleep(ct, 60);
+        InputSender.LeftUp();
+    }
+
     /// <summary>
     /// Mot cua duy nhat cho moi cu tha — ca bay cho goi deu qua day, nen dat pha
     /// Casting va dem _casts o day la du, khong phai rai ra bay cho.
@@ -1199,6 +1281,7 @@ internal sealed class FishingBot
             Catches = _catches,
             CatchesSinceDump = _catchesSinceDump,
             Released = _released,
+            Sold = _sold,
             CastRetries = _castRetries,
             CastConfirmRetries = _cfg.CastConfirmRetries,
             Fill01 = _lastFill,

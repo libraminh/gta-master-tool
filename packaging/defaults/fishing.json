@@ -183,6 +183,7 @@
   "WaitKeepMs": 8000,
   "BlindKeepClick": true,
   "AutoReleaseEnabled": true,
+  "AutoSellEnabled": true,
   "ReleaseGapPx": 8,
   "CatchTitleNccMin": 0.75,
   "CatchTitleMarginMin": 0.05,

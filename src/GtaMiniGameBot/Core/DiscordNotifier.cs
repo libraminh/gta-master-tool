@@ -88,11 +88,12 @@ internal static class DiscordNotifier
 
         // Moi o duoi day chi hien khi co so that. -1 la "chua biet" chu khong phai gia tri —
         // in ra la nguoi doc tuong bot dem duoc am mot con ca.
-        if (st.Catches > 0 || st.Released > 0)
+        if (st.Catches > 0 || st.Released > 0 || st.Sold > 0)
         {
             var sb = new StringBuilder();
             sb.Append(st.Catches).Append(" con");
             if (st.Released > 0) sb.Append(" (thả ").Append(st.Released).Append(')');
+            if (st.Sold > 0) sb.Append(" (bán ").Append(st.Sold).Append(')');
             if (st.CatchesPerHour >= 0) sb.Append(" · ").Append(st.CatchesPerHour.ToString("F0")).Append(" con/giờ");
             fields.Add(Field("Cá giữ", sb.ToString(), inline: true));
         }

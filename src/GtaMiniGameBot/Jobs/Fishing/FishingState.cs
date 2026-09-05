@@ -15,6 +15,7 @@ internal enum FishingPhase
     WaitingForKeep,
     ClickingKeep,
     ClickingRelease,
+    ClickingSell,
     CheckingWeight,
     Dumping,
     EndgameWeighing,
@@ -70,6 +71,9 @@ internal sealed class FishingState
     /// <summary>Ca da an THẢ RA — khong vao ba lo, khong tinh vao Catches.</summary>
     public int Released { get; init; }
 
+    /// <summary>Ca da an BÁN NGAY — khong vao ba lo, khong tinh vao Catches.</summary>
+    public int Sold { get; init; }
+
     /// <summary>Lan tha lai vi thanh khong hien, trong dung cu tha nay.</summary>
     public int CastRetries { get; init; }
     public int CastConfirmRetries { get; init; }
@@ -104,6 +108,7 @@ internal sealed class FishingState
         FishingPhase.WaitingForKeep => "Chờ nút",
         FishingPhase.ClickingKeep => "Cất vào",
         FishingPhase.ClickingRelease => "Thả ra",
+        FishingPhase.ClickingSell => "Bán ngay",
         FishingPhase.CheckingWeight => "Cân ba lô",
         FishingPhase.Dumping => "Đổ cốp",
         FishingPhase.EndgameWeighing => "Cân cuối phiên",
@@ -117,7 +122,8 @@ internal sealed class FishingState
         FishingPhase.Casting => 0,
         FishingPhase.WaitingForBite => 1,
         FishingPhase.Fighting => 2,
-        FishingPhase.WaitingForKeep or FishingPhase.ClickingKeep or FishingPhase.ClickingRelease => 3,
+        FishingPhase.WaitingForKeep or FishingPhase.ClickingKeep
+            or FishingPhase.ClickingRelease or FishingPhase.ClickingSell => 3,
         FishingPhase.CheckingWeight or FishingPhase.Dumping or FishingPhase.EndgameWeighing => 4,
         _ => -1
     };

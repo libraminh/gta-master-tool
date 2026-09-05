@@ -176,8 +176,14 @@ internal sealed class FishingProfile
     public List<string> AutoReleaseItems { get; set; }
 
     /// <summary>
+    /// Loài tự ấn BÁN NGAY khi câu được. Null = json cũ thiếu field, <see cref="Normalize"/>
+    /// điền <c>[]</c> — không bán gì. Thả Ra được xét trước: loài nằm cả hai danh sách thì thả.
+    /// </summary>
+    public List<string> AutoSellItems { get; set; }
+
+    /// <summary>
     /// Ô chữ tên loài trên panel nhận cá (vd. "TÔM CÀNG"). Panel neo nên chữ không trượt
-    /// theo độ dài mô tả — khác hàng nút CẤT VÀO / THẢ RA.
+    /// theo độ dài mô tả — khác hàng nút CẤT VÀO / THẢ RA / BÁN NGAY.
     /// </summary>
     public FishingRect CatchTitle { get; set; } = new();
 
@@ -264,14 +270,25 @@ internal sealed class FishingProfile
         // Null = json cũ thiếu field. [] đã lưu phải giữ nguyên — đó là "không thả gì".
         AutoReleaseItems ??= new List<string> { "crayfish" };
         AutoReleaseItems.RemoveAll(s => string.IsNullOrWhiteSpace(s));
+
+        // Null = json cũ. [] = cố ý không bán. Không điền loài mặc định — bán là chọn tay.
+        AutoSellItems ??= new List<string>();
+        AutoSellItems.RemoveAll(s => string.IsNullOrWhiteSpace(s));
     }
 
     /// <summary>Một dòng cho panel: đã chọn gì, đã có mẫu tên chưa.</summary>
-    public string DescribeReleaseStatus(string key)
+    public string DescribeReleaseStatus(string key) =>
+        DescribeCatchActionStatus(key, AutoReleaseItems, "mọi con sẽ cất vào");
+
+    /// <summary>Một dòng cho panel bán ngay — cùng mẫu tên với thả ra.</summary>
+    public string DescribeSellStatus(string key) =>
+        DescribeCatchActionStatus(key, AutoSellItems, "không bán ngay");
+
+    private string DescribeCatchActionStatus(string key, List<string> items, string emptyNote)
     {
-        var items = AutoReleaseItems ?? new List<string>();
+        items ??= new List<string>();
         if (items.Count == 0)
-            return "chưa chọn loại nào — mọi con sẽ cất vào";
+            return "chưa chọn loại nào — " + emptyNote;
 
         int have = items.Count(n => FishingConfig.HasCatchTitleTemplate(key, n));
         string names = string.Join(", ", items);
@@ -504,7 +521,15 @@ internal sealed class FishingConfig
     public bool? AutoReleaseEnabled { get; set; }
 
     /// <summary>
-    /// Khe giữa CẤT VÀO và THẢ RA (px). Click THẢ RA = mép phải CẤT VÀO + khe + nửa bề rộng nút.
+    /// Tự ấn BÁN NGAY khi tên khớp <see cref="FishingProfile.AutoSellItems"/>.
+    /// Thả Ra xét trước. Nullable — json cũ thiếu field thì <see cref="Normalize"/> bật;
+    /// danh sách rỗng thì không bán gì.
+    /// </summary>
+    public bool? AutoSellEnabled { get; set; }
+
+    /// <summary>
+    /// Khe giữa CẤT VÀO và THẢ RA (px). Cùng khe dùng cho BÁN NGAY (nút phải của THẢ RA).
+    /// Click THẢ RA = mép phải CẤT VÀO + khe + nửa bề rộng nút.
     /// Để thấp hơn khe thật một chút thì vẫn trúng nửa trái THẢ RA, tránh lệch sang BÁN NGAY.
     /// </summary>
     public int ReleaseGapPx { get; set; } = 8;
@@ -950,6 +975,7 @@ internal sealed class FishingConfig
         if (WaitKeepMs <= 0) WaitKeepMs = 8_000;
         BlindKeepClick ??= true;
         AutoReleaseEnabled ??= true;
+        AutoSellEnabled ??= true;
         if (ReleaseGapPx < 0) ReleaseGapPx = 8;
         if (CatchTitleNccMin is <= 0 or > 1) CatchTitleNccMin = 0.75;
         if (CatchTitleMarginMin is < 0 or > 1) CatchTitleMarginMin = 0.05;
