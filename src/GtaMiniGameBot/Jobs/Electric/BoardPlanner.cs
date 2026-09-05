@@ -65,7 +65,8 @@ internal sealed class BoardPlan
 ///
 /// Nguyên tắc bất di bất dịch, giữ nguyên từ bản Python: tuyến được ĐÓNG BĂNG trước khi bấm phím
 /// đầu tiên và lúc chạy KHÔNG bao giờ đổi. Nếu không dựng nổi tuyến đủ an toàn thì GIỮ, không
-/// bấm — thà đứng im còn hơn lao vào tường.
+/// bấm tuyến chưa chứng nhận; đường live chuyển ngay sang tầng fallback ít bảo thủ hơn trên cùng
+/// frame sạch, không chụp lại ảnh đã có vệt dây.
 ///
 /// Khác có ý thức so với bản Python:
 ///   - Lối nhanh cho cú rẽ đầu gần vẫn tồn tại, nhưng dùng chung A* phân cấp/hành lang với đường
@@ -120,6 +121,7 @@ internal static class BoardPlanner
     // dai 21 luot full-grid cua thuat toan cu, cong them phan du cho luoi tho thuong rat re.
     private const int MaxCandidateStates = 4_000_000;
     private static readonly double[] InflationRadiiRef = { 18, 16, 14, 12, 10, 8, 6 };
+    private static readonly double[] TightInflationRadiiRef = { 5, 4, 3, 2 };
     private static readonly double[] GridFallbackRefs = { 12.0, 10.0, 8.0 };
     private static readonly double[] CoarseGridRefs = { 32.0, 28.0, 24.0 };
     private const double CorridorPadRef = 72.0;
@@ -194,17 +196,17 @@ internal static class BoardPlanner
     /// nên xoá mất những mấu chữ nhật nhỏ vốn là tường thật, và A* coi chúng là đường trống rồi
     /// lao thẳng vào.
     /// </summary>
-    public static WallScan ScanWalls(BoardFrame f)
+    public static WallScan ScanWalls(BoardFrame f, bool includeSecondary = true)
     {
         // Tường chỉ cần độ chính xác theo khe rộng, trong khi chạy morphology/label trên gần hai
         // triệu pixel chiếm phần lớn độ trễ trước cú rẽ đầu. Thu nhỏ 2x bằng mẫu xanh mạnh nhất
         // trong mỗi ô 2x2: tường mảnh 6–8px (đủ qua cửa mật độ ở full-res) không bị mất vì một
         // pixel mép. Nhiễu một pixel vẫn bị ScanWallsCore loại ở cửa sổ mật độ.
-        if (f.Width < 1000 || f.Height < 600) return ScanWallsCore(f);
+        if (f.Width < 1000 || f.Height < 600) return ScanWallsCore(f, includeSecondary);
 
         var sw = Stopwatch.StartNew();
         var reduced = ReduceForWallScan(f, 2);
-        var small = ScanWallsCore(reduced);
+        var small = ScanWallsCore(reduced, includeSecondary);
         var fullWall = ImageOps.ResizeNearest(small.Wall, f.Width, f.Height);
         var thumb = ImageOps.ResizeNearest(fullWall, 128, 72);
 
@@ -222,7 +224,8 @@ internal static class BoardPlanner
         };
     }
 
-    internal static WallScan ScanWallsFullResolutionForVerify(BoardFrame f) => ScanWallsCore(f);
+    internal static WallScan ScanWallsFullResolution(BoardFrame f, bool includeSecondary = true) =>
+        ScanWallsCore(f, includeSecondary);
 
     private static BoardFrame ReduceForWallScan(BoardFrame source, int factor)
     {
@@ -285,7 +288,7 @@ internal static class BoardPlanner
         };
     }
 
-    private static WallScan ScanWallsCore(BoardFrame f)
+    private static WallScan ScanWallsCore(BoardFrame f, bool includeSecondary)
     {
         int w = f.Width, h = f.Height;
         var hsv = f.Hsv;
@@ -342,12 +345,15 @@ internal static class BoardPlanner
         // Lop bao thu hai: nguong xanh mem hon + cua so mat do LON hon. No co the MO RONG mot
         // buc tuong da duoc chung minh, nhung khong duoc tu tao ra tuong moi — day la gioi han
         // ban Python dat ra de tranh nhan tranh tri mach dam thanh tuong.
-        var (secondary, secondaryKept) = SecondaryWalls(hsv, vt, scale);
+        var (secondary, secondaryKept) = includeSecondary
+            ? SecondaryWalls(hsv, vt, scale)
+            : (new Mask(w, h), 0);
         Lap("lop-bao");
 
         int nearK = Odd(Math.Max(3, (int)Math.Round(SecondaryNearRef * scale)));
         var near = ImageOps.Dilate(clean, nearK, nearK);
-        clean = ImageOps.Or(clean, ImageOps.And(secondary, near));
+        if (includeSecondary)
+            clean = ImageOps.Or(clean, ImageOps.And(secondary, near));
         Lap("gop-bao");
 
         // Than dau noi LUON la tuong. Duong ham o hai cong duoc khoet lai sau, va chi o hai
@@ -1398,13 +1404,52 @@ internal static class BoardPlanner
     }
 
     /// <summary>
-    /// Dựng tuyến hoàn chỉnh. Null nghĩa là CHƯA có tuyến nào được chứng nhận — bot phải giữ và
-    /// chờ khung sạch hơn, tuyệt đối không bấm phím.
+    /// Dựng tuyến hoàn chỉnh. Null nghĩa là tầng hiện tại chưa có tuyến được chứng nhận; đường
+    /// live phải chuyển ngay sang tầng fallback trên cùng frame sạch, tuyệt đối không chụp lại
+    /// frame đã có vệt dây rồi thử từ đầu.
     ///
     /// Thử lần lượt các bán kính nở từ RỘNG tới HẸP (18→6): lấy được tuyến với lề rộng thì tốt
     /// hơn hẳn, chỉ khi bản đồ chật mới hạ lề xuống. Với mỗi bán kính thử ba cỡ lưới 12/10/8px.
     /// </summary>
     public static BoardPlan Plan(BoardFrame f, BoardRole role, WallScan scan, out string why)
+        => PlanWithRadii(f, role, scan, InflationRadiiRef, "tinh-chinh",
+                         MaxCandidateStates, out why);
+
+    /// <summary>
+    /// Cùng luật chứng nhận với <see cref="Plan"/>, nhưng chặn ngân sách tìm kiếm để dây không
+    /// vượt góc đầu trong lúc planner vét một bản đồ không có đường.
+    /// </summary>
+    public static BoardPlan PlanLive(BoardFrame f, BoardRole role, WallScan scan, out string why)
+        => PlanWithRadii(f, role, scan, InflationRadiiRef, "tinh-chinh",
+                         1_500_000, out why);
+
+    /// <summary>
+    /// Lối cứu hộ cho bảng chật: vẫn giữ nguyên chứng chỉ tường vật lý, chỉ giảm phần lề nở thêm.
+    /// Chỉ gọi sau khi chuỗi 18→6 không tìm được đường.
+    /// </summary>
+    public static BoardPlan PlanTight(BoardFrame f, BoardRole role, WallScan scan, out string why)
+        => PlanWithRadii(f, role, scan, TightInflationRadiiRef, "fallback-chat",
+                         1_500_000, out why);
+
+    internal static IReadOnlyDictionary<string, Mask> DiagnosticMasks(
+        BoardFrame f, BoardRole role, WallScan scan)
+    {
+        var result = new Dictionary<string, Mask>
+        {
+            ["00-wall"] = scan.Wall
+        };
+        var legal = LegalBounds(scan.Wall, f);
+        var cert = ApplyEnvelope(scan.Wall, f, role, legal);
+        result["01-certified"] = cert;
+        var clear = ImageOps.Clearance(cert);
+        foreach (double radius in InflationRadiiRef.Concat(TightInflationRadiiRef))
+            result[$"inflate-{radius:F0}"] = InflateFrom(clear, f, role, radius);
+        return result;
+    }
+
+    private static BoardPlan PlanWithRadii(BoardFrame f, BoardRole role, WallScan scan,
+                                           IReadOnlyList<double> radiiRef, string modePrefix,
+                                           int maxCandidateStates, out string why)
     {
         var sw = Stopwatch.StartNew();
         var wall = scan.Wall;
@@ -1418,7 +1463,7 @@ internal static class BoardPlanner
         var phaseWatch = Stopwatch.StartNew();
         var certClear = ImageOps.Clearance(certMask);
         trace.Add($"DT chính xác #1: {phaseWatch.Elapsed.TotalMilliseconds:F1}ms");
-        int candidateBudget = MaxCandidateStates;
+        int candidateBudget = maxCandidateStates;
         RouteChoice selected = null;
         Mask selectedInf = null;
         double selectedRadius = 0;
@@ -1426,7 +1471,7 @@ internal static class BoardPlanner
         Mask shortInf = null;
         double shortRadius = 0;
 
-        foreach (double radiusRef in InflationRadiiRef)
+        foreach (double radiusRef in radiiRef)
         {
             if (candidateBudget <= 0)
             {
@@ -1472,7 +1517,8 @@ internal static class BoardPlanner
 
         if (selected is null)
         {
-            why = "không dựng được tuyến nào đủ an toàn ở mọi bán kính nở";
+            why = $"không dựng được tuyến ở tầng {modePrefix} " +
+                  $"(nở {string.Join("→", radiiRef.Select(x => x.ToString("F0")))})";
             return null;
         }
 
@@ -1482,7 +1528,7 @@ internal static class BoardPlanner
         // khác không tăng chứng cứ an toàn, chỉ trả thêm ~50ms ở ROI 2K.
         var bestSegs = selected.Segs;
         double bestMinClear = selected.MinClear, bestTotal = selected.Total;
-        string mode = selected.IsUrgent ? "lan-nhanh" : "tinh-chinh";
+        string mode = selected.IsUrgent ? modePrefix + "-nhanh" : modePrefix;
 
         if (selected.IsUrgent)
         {
@@ -1536,7 +1582,7 @@ internal static class BoardPlanner
         // KHONG chan theo DO DAI tuyen. Xem ghi chu o cuoi class de biet vi sao cho chan cu da
         // giet oan nhung ban do that.
         why = "ok";
-        trace.Add($"A* trạng thái: {MaxCandidateStates - candidateBudget}");
+        trace.Add($"A* trạng thái: {maxCandidateStates - candidateBudget}/{maxCandidateStates}");
         return Finish(f, role, scan, wall, selectedInf, legal, bestSegs, bestMinClear, bestTotal,
                       selectedRadius, selected.Cell, sw, trace, mode);
     }

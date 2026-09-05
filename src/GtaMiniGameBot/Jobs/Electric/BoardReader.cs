@@ -501,6 +501,63 @@ internal sealed class BoardReader : IDisposable
         catch { return false; }
     }
 
+    /// <summary>
+    /// Dò banner đỏ giữa bảng khi game báo <c>KHÔNG THÀNH CÔNG</c>. Chỉ nhìn dải giữa ROI và
+    /// đòi màu đỏ trải qua nhiều cột, nên đèn đỏ nhỏ ở đầu nối GOAL không thể tự kích hoạt.
+    /// </summary>
+    public bool FailOverlayVisible()
+    {
+        if (_capture is not null)
+        {
+            if (!_capture.TryCapture(_roiRegion, _roiBgra, 60, out var captured)) return false;
+            _roiBgra = captured.Bgra;
+            return FailOverlayPresent(captured.Bgra, captured.Region.Width, captured.Region.Height,
+                                      captured.Stride);
+        }
+        if (_roi is null) return false;
+        try
+        {
+            _roi.Refresh();
+            return FailOverlayPresentBgr(_roi.BgrBuffer(), _roi.Region.Width, _roi.Region.Height);
+        }
+        catch { return false; }
+    }
+
+    internal static bool FailOverlayPresent(byte[] bgra, int w, int h, int stride)
+        => FailOverlayPresentCore(bgra, w, h, stride, 4);
+
+    internal static bool FailOverlayPresentBgr(byte[] bgr, int w, int h)
+        => FailOverlayPresentCore(bgr, w, h, w * 3, 3);
+
+    private static bool FailOverlayPresentCore(byte[] pixels, int w, int h, int stride, int channels)
+    {
+        if (pixels is null || w < 40 || h < 40 || stride < w * channels) return false;
+
+        int x0 = (int)(w * 0.20), x1 = (int)(w * 0.80);
+        int y0 = (int)(h * 0.40), y1 = (int)(h * 0.64);
+        const int bins = 12;
+        var perBin = new int[bins];
+        int red = 0;
+
+        for (int y = y0; y < y1; y++)
+        {
+            int row = y * stride;
+            for (int x = x0; x < x1; x++)
+            {
+                int i = row + x * channels;
+                var (hh, ss, vv) = ImageOps.HsvOf(pixels[i], pixels[i + 1], pixels[i + 2]);
+                if ((hh > 10 && hh < 170) || ss < 100 || vv < 55) continue;
+                red++;
+                int bin = Math.Min(bins - 1, (x - x0) * bins / Math.Max(1, x1 - x0));
+                perBin[bin]++;
+            }
+        }
+
+        int area = Math.Max(1, (x1 - x0) * (y1 - y0));
+        int occupied = perBin.Count(n => n >= Math.Max(8, h / 90));
+        return red >= Math.Max(500, area / 260) && occupied >= 6;
+    }
+
     // ---------------------------------------------------------------- cua so nho di theo dau day
 
     /// <summary>Đệm của cửa sổ nhỏ, BGR row-major. Có giá trị sau mỗi <see cref="GrabPatch"/>.</summary>

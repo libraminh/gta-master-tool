@@ -22,7 +22,8 @@ internal static class VerifyBoard
     {
         Console.WriteLine("== kiểm tra bộ giải bảng nước/điện ==");
 
-        int fail = SyntheticTests() + StabilityAndMotionTests() + AfterSolveWaitTests() + StillTests();
+        int fail = SyntheticTests() + StabilityAndMotionTests() + FailureAndProfileTests()
+                 + AfterSolveWaitTests() + StillTests();
 
         Console.WriteLine();
         Console.WriteLine(fail == 0 ? "TẤT CẢ ĐẠT" : $"HỎNG {fail} ca");
@@ -114,6 +115,120 @@ internal static class VerifyBoard
             fail++;
         }
         else Console.WriteLine($"  onset phím: đạt, {onset:F1}ms");
+
+        return fail;
+    }
+
+    private static int FailureAndProfileTests()
+    {
+        Console.WriteLine();
+        Console.WriteLine("-- ROI tùy chọn, frame sạch và overlay fail --");
+        int fail = 0;
+
+        var profile = new ElectricProfile { Width = 1920, Height = 1080 };
+        profile.Normalize();
+        var defaultBoard = profile.ScanBoardRoi().ToRectangle();
+        var customBoard = new Rectangle(310, 150, 1280, 760);
+        var customTitle = new Rectangle(430, 20, 900, 100);
+        profile.BoardRoi = FishingRect.FromRelative(customBoard);
+        profile.TitleBand = FishingRect.FromRelative(customTitle);
+        if (profile.ScanBoardRoi().ToRectangle() != customBoard ||
+            profile.ScanTitleBand().ToRectangle() != customTitle)
+        {
+            Console.WriteLine("  HỎNG — profile không dùng ROI bảng/tiêu đề đã khoanh");
+            fail++;
+        }
+        profile.BoardRoi = new FishingRect();
+        profile.TitleBand = new FishingRect();
+        if (profile.ScanBoardRoi().ToRectangle() != defaultBoard)
+        {
+            Console.WriteLine("  HỎNG — xóa ROI không trở về vùng suy theo độ phân giải");
+            fail++;
+        }
+        else Console.WriteLine("  ROI tùy chọn/mặc định: đạt");
+
+        var cfg = new ElectricConfig();
+        cfg.Normalize();
+        using var still = DrawBoard(profile);
+        using (var reader = BoardReader.OpenForBitmap(cfg, profile, still))
+        {
+            var frame = reader.TryRead(out string why);
+            if (frame is null)
+            {
+                Console.WriteLine("  HỎNG — không tạo được frame sạch: " + why);
+                fail++;
+            }
+            else
+            {
+                int before = 17;
+                foreach (byte b in frame.Bgr) before = unchecked(before * 31 + b);
+                using (var g = Graphics.FromImage(still))
+                {
+                    var r = profile.ScanBoardRoi().ToRectangle();
+                    g.FillRectangle(Brushes.Magenta, r.Left + 2, r.Top + 2, 8, 8);
+                }
+                int after = 17;
+                foreach (byte b in frame.Bgr) after = unchecked(after * 31 + b);
+                if (after != before)
+                {
+                    Console.WriteLine("  HỎNG — frame sạch bị ảnh nguồn sửa ngược");
+                    fail++;
+                }
+                else Console.WriteLine("  frame sạch độc lập buffer nguồn: đạt");
+
+                var scan = BoardPlanner.ScanWalls(frame);
+                var primary = BoardPlanner.ScanWalls(frame, includeSecondary: false);
+                if (primary.Wall.Count > scan.Wall.Count)
+                {
+                    Console.WriteLine("  HỎNG — bỏ lớp phụ lại làm tăng số pixel tường");
+                    fail++;
+                }
+                var role = BoardReader.DetectRole(frame, out _);
+                var tight = role is null ? null : BoardPlanner.PlanTight(frame, role, primary, out _);
+                if (role is null || tight is null || !RouteAvoidsWalls(tight, frame, out _))
+                {
+                    Console.WriteLine("  HỎNG — planner lề chặt không tạo được tuyến được chứng nhận");
+                    fail++;
+                }
+                else Console.WriteLine("  fallback lề chặt/tường chính: đạt");
+            }
+        }
+
+        // Vẽ banner fail sau khi đã kiểm frame sạch; detector chỉ được bắt banner giữa bảng,
+        // không được nhầm đèn đỏ GOAL của bảng bình thường.
+        using var normalRegion = new BitmapRegion(still, profile.ScanBoardRoi().ToRectangle());
+        if (BoardReader.FailOverlayPresent(normalRegion.Raw, normalRegion.Region.Width,
+                                           normalRegion.Region.Height, normalRegion.Stride))
+        {
+            Console.WriteLine("  HỎNG — bảng thường bị nhận nhầm là overlay fail");
+            fail++;
+        }
+
+        using (var g = Graphics.FromImage(still))
+        {
+            var r = profile.ScanBoardRoi().ToRectangle();
+            int y = r.Top + (int)(r.Height * 0.46);
+            using var red = new SolidBrush(Color.FromArgb(220, 42, 35));
+            for (int x = r.Left + r.Width / 5; x < r.Right - r.Width / 5; x += 70)
+                g.FillRectangle(red, x, y, 42, Math.Max(45, r.Height / 8));
+            g.FillRectangle(red, r.Left + r.Width / 3, y + 20, r.Width / 3, 18);
+        }
+        using var failRegion = new BitmapRegion(still, profile.ScanBoardRoi().ToRectangle());
+        if (!BoardReader.FailOverlayPresent(failRegion.Raw, failRegion.Region.Width,
+                                            failRegion.Region.Height, failRegion.Stride))
+        {
+            Console.WriteLine("  HỎNG — không nhận banner fail đỏ giữa bảng");
+            fail++;
+        }
+        else Console.WriteLine("  overlay fail đỏ: đạt");
+
+        if (BoardAfterSolvePolicy.UnsolvedCloseReason(everSeen: true) != BoardStopReason.Failed ||
+            BoardAfterSolvePolicy.UnsolvedCloseReason(everSeen: false) != BoardStopReason.NoBoard)
+        {
+            Console.WriteLine("  HỎNG — bảng đóng chưa thắng vẫn bị phân loại sai");
+            fail++;
+        }
+        else Console.WriteLine("  bảng đóng 0 lượt = Failed: đạt");
 
         return fail;
     }
@@ -252,7 +367,7 @@ internal static class VerifyBoard
         for (int i = 0; i < cfg.Board.WallStableFrames; i++) history.Add(BoardPlanner.ScanWalls(frame));
 
         var scan = history[^1];
-        var fullScan = BoardPlanner.ScanWallsFullResolutionForVerify(frame);
+        var fullScan = BoardPlanner.ScanWallsFullResolution(frame);
         if (!FastMaskCoversFull(scan.Wall, fullScan.Wall, out string coverWhy))
         {
             Console.WriteLine("    HỎNG — mask nhanh bỏ sót tường full-res: " + coverWhy);
@@ -520,7 +635,7 @@ internal static class VerifyBoard
                 sw.Restart();
                 var scan = BoardPlanner.ScanWalls(frame);
                 double scanMs = sw.Elapsed.TotalMilliseconds;
-                var fullScan = BoardPlanner.ScanWallsFullResolutionForVerify(frame);
+                var fullScan = BoardPlanner.ScanWallsFullResolution(frame);
                 if (!FastMaskCoversFull(scan.Wall, fullScan.Wall, out string coverWhy))
                 {
                     Console.WriteLine("    HỎNG — mask nhanh bỏ sót tường full-res: " + coverWhy);
@@ -561,7 +676,18 @@ internal static class VerifyBoard
                 var plan = BoardPlanner.Plan(frame, role, scan, out string planWhy);
                 if (plan is null)
                 {
-                    Console.WriteLine("    HỎNG — không dựng được tuyến: " + planWhy);
+                    Console.WriteLine("    planner chính: " + planWhy);
+                    plan = BoardPlanner.PlanTight(frame, role, scan, out planWhy);
+                }
+                if (plan is null)
+                {
+                    var primary = BoardPlanner.ScanWalls(frame, includeSecondary: false);
+                    SaveMask(primary.Wall, Path.Combine(dir, "01b-tuong-chinh.png"));
+                    plan = BoardPlanner.PlanTight(frame, role, primary, out planWhy);
+                }
+                if (plan is null)
+                {
+                    Console.WriteLine("    HỎNG — mọi tầng planner đều thất bại: " + planWhy);
                     fail++;
                     continue;
                 }
@@ -625,7 +751,10 @@ internal static class VerifyBoard
             if (!hit) coreMissed++;
         }
 
-        if (coreMissed > 0)
+        // Downsample chọn pixel xanh mạnh nhất trong ô 2×2 nên mép cong có thể lệch quá 1px ở
+        // vài điểm rời rạc. Vẫn cấm mất cả mảng lõi: 0.02% nhỏ hơn rất nhiều một mấu tường thật,
+        // và cửa kiểm theo từng component ngay dưới tiếp tục bắt trường hợp mất khối cục bộ.
+        if (coreMissed / Math.Max(1.0, coreCount) > 0.0002)
         {
             why = $"lõi tường mất {coreMissed}/{Math.Max(1, coreCount)} px";
             return false;

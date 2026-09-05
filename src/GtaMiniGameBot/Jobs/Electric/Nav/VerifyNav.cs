@@ -516,6 +516,50 @@ internal static class VerifyNav
         Check(ref fail, !gone1 && !gone2 && !gone3 && !consumed && absent >= NavTuning.SimplePromptRearmAbsentFrames,
               "prompt tắt đủ frame + hết cooldown → mở lại E",
               $"consumed={consumed} absent={absent}");
+
+        bool lost = NavInteraction.LostTargetArm(true, "SEARCH360_MOVING", 2);
+        Check(ref fail, lost && NavInteraction.PostJobBlocksWorldE(true, true, lost, false),
+              "khiên ON + LostTargetArm → vẫn chặn E", "");
+        Check(ref fail, NavInteraction.PostJobBlocksWorldE(true, true, lost, true),
+              "khiên ON dù ApproachReady → vẫn chặn E", "");
+        Check(ref fail, NavInteraction.PostJobBlocksWorldE(false, true, lost, false),
+              "khiên OFF + needYellow + SEARCH360 + chưa sát điểm → vẫn chặn", "");
+        Check(ref fail, !NavInteraction.PostJobBlocksWorldE(false, true, lost, true),
+              "sát điểm vàng → cho E dù needYellow", "");
+        Check(ref fail, !NavInteraction.PostJobBlocksWorldE(false, false, lost, false),
+              "đã khóa vàng rồi → LostTargetArm được bấm", "");
+
+        Check(ref fail, NavInteraction.PostJobPromptHoldsShield(false, true),
+              "ROI chặt đơn độc vẫn giữ khiên", "");
+        Check(ref fail, NavInteraction.PostJobPromptHoldsShield(true, false),
+              "ROI rộng đơn độc vẫn giữ khiên", "");
+        Check(ref fail, !NavInteraction.PostJobPromptHoldsShield(false, false),
+              "cả hai ROI tắt → không giữ khiên", "");
+
+        int clear = NavTuning.JobPostRehirePromptClearFrames;
+        Check(ref fail, !NavInteraction.PostJobClearShield(true, clear - 1, 2.0, clear,
+                  NavTuning.JobPostRehireMinGuardS, NavTuning.JobPostRehireNoPromptTimeoutS),
+              "đã thấy nhưng chưa đủ frame tắt → giữ khiên", "");
+        Check(ref fail, NavInteraction.PostJobClearShield(true, clear, NavTuning.JobPostRehireMinGuardS, clear,
+                  NavTuning.JobPostRehireMinGuardS, NavTuning.JobPostRehireNoPromptTimeoutS),
+              "đã thấy + minGuard + đủ frame → gỡ khiên", "");
+        Check(ref fail, !NavInteraction.PostJobClearShield(false, clear, NavTuning.JobPostRehireNoPromptTimeoutS - 0.1,
+                  clear, NavTuning.JobPostRehireMinGuardS, NavTuning.JobPostRehireNoPromptTimeoutS),
+              "chưa thấy, chưa đủ timeout → giữ khiên", "");
+        Check(ref fail, NavInteraction.PostJobClearShield(false, clear, NavTuning.JobPostRehireNoPromptTimeoutS,
+                  clear, NavTuning.JobPostRehireMinGuardS, NavTuning.JobPostRehireNoPromptTimeoutS),
+              "chưa thấy + timeout + đủ frame → gỡ khiên", "");
+
+        Check(ref fail, NavInteraction.AfterEEscAccidentalNpc(false, true),
+              "sau E: bảng nghề + còn điểm vàng → ESC", "");
+        Check(ref fail, !NavInteraction.AfterEEscAccidentalNpc(true, true),
+              "sau E: đang reset nghề → không ESC nhầm", "");
+        Check(ref fail, NavInteraction.AfterEEnterOpenBoard(false, false),
+              "sau E: bảng nghề + mất vàng → vào WaitBoard", "");
+        Check(ref fail, !NavInteraction.AfterEEnterOpenBoard(true, false),
+              "sau E: đang reset nghề → JobRecovery giữ bảng", "");
+        Check(ref fail, !NavInteraction.AfterEEnterOpenBoard(false, true),
+              "sau E: còn điểm vàng → không nghỉ việc", "");
         return fail;
     }
 
@@ -634,12 +678,12 @@ internal static class VerifyNav
         int fail = 0;
         fail += ShotFar(p, s, ox, oy);
         fail += ShotMarker(p, s, ox, oy);
-        fail += ShotPrompt(p, s);
+        fail += ShotPrompt(p);
         foreach (var name in new[] { "board", "wire3", "wire5" })
         {
             using var shot = Load(p, name, out string why);
             if (shot is null) { Console.WriteLine($"  [{name}] bỏ qua: {why}"); continue; }
-            Check(ref fail, !PromptHeuristic.Visible(Frame(shot), s.ScreenW, s.ScreenH), $"[{name}] không có prompt E", "");
+            fail += AssertNoCalibratedPrompt(p, shot, name);
         }
         return fail;
     }
@@ -666,7 +710,7 @@ internal static class VerifyNav
         var det = new WorldMarkerDetector(s);
         var wc = det.Candidate(f);
         Check(ref fail, wc is null || wc.Value.score < NavTuning.WorldAcceptScore, "[nav-far] chưa có đầu nối 3D nhận được", det.LastCandidateNote ?? "không có khối vàng");
-        Check(ref fail, !PromptHeuristic.Visible(f, s.ScreenW, s.ScreenH), "[nav-far] không có prompt E", "");
+        fail += AssertNoCalibratedPrompt(p, shot, "nav-far");
         fail += ArrowCheck("nav-far", f, s, ox, oy);
         return fail;
     }
@@ -688,22 +732,45 @@ internal static class VerifyNav
         det.Update(f, 0.0);
         var m = det.Update(f, 0.025);
         Check(ref fail, m.Locked && m.Present, "[nav-marker] khoá sau 2 khung", $"{m.Quality} conf={m.Confidence:F2}");
-        Check(ref fail, !PromptHeuristic.Visible(f, s.ScreenW, s.ScreenH), "[nav-marker] không có prompt E", "");
+        fail += AssertNoCalibratedPrompt(p, shot, "nav-marker");
         var cands = YellowDotDetector.Detect(f, s, ox, oy);
         Console.WriteLine($"      minimap: {cands.Count} chấm" + (cands.Count > 0 ? $" — {cands[0]}" : ""));
         fail += ArrowCheck("nav-marker", f, s, ox, oy);
         return fail;
     }
 
-    private static int ShotPrompt(ElectricProfile p, NavScale s)
+    private static int ShotPrompt(ElectricProfile p)
     {
         using var shot = Load(p, "nav-prompt", out string why);
         if (shot is null) { Console.WriteLine($"  [nav-prompt] bỏ qua: {why}"); return 0; }
+        if (!p.IsPromptCalibrated)
+        {
+            Console.WriteLine("  [nav-prompt] bỏ qua locator: chưa khoanh [E] TƯƠNG TÁC");
+            return 0;
+        }
         int fail = 0;
-        var f = Frame(shot);
-        Check(ref fail, PromptHeuristic.Visible(f, s.ScreenW, s.ScreenH), "[nav-prompt] heuristic thấy prompt [E]", "");
-        Check(ref fail, PromptHeuristic.WorkVisible(f, s.ScreenW, s.ScreenH),
-              "[nav-prompt] ROI chặt thấy [E] TƯƠNG TÁC", "");
+        using var loc = ElectricLocator.CreateForBitmap(p, shot, out string problem);
+        Check(ref fail, loc is not null, "[nav-prompt] mở được locator", problem ?? "");
+        if (loc is not null)
+            Check(ref fail, loc.Visible(), "[nav-prompt] mẫu [E] TƯƠNG TÁC khớp trong ô khoanh", "");
+        return fail;
+    }
+
+    private static int AssertNoCalibratedPrompt(ElectricProfile p, Bitmap shot, string name)
+    {
+        int fail = 0;
+        if (!p.IsPromptCalibrated)
+        {
+            Console.WriteLine($"  [{name}] bỏ qua locator: chưa khoanh [E] TƯƠNG TÁC");
+            return 0;
+        }
+        using var loc = ElectricLocator.CreateForBitmap(p, shot, out string problem);
+        if (loc is null)
+        {
+            Check(ref fail, false, $"[{name}] mở locator", problem ?? "");
+            return fail;
+        }
+        Check(ref fail, !loc.Visible(), $"[{name}] không có [E] TƯƠNG TÁC", "");
         return fail;
     }
 

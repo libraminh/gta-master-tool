@@ -4,9 +4,10 @@ namespace GtaMiniGameBot;
 internal sealed class WorldSnapshot
 {
     public WorldMarker Marker { get; init; } = WorldMarker.None;
+    /// <summary>Scanner để false; NavBot ghi đè từ locator mỗi tick.</summary>
     public bool PromptVisible { get; init; }
 
-    /// <summary>ROI chặt: cụm HUD <c>[E] TƯƠNG TÁC</c> — bằng chứng bấm E khi SEARCH360 mất đích.</summary>
+    /// <summary>Cùng <see cref="PromptVisible"/> — NavBot ghi đè từ <see cref="ElectricLocator"/> mỗi tick.</summary>
     public bool WorkPromptVisible { get; init; }
 
     public JobBoardInfo Board { get; init; }
@@ -25,9 +26,9 @@ internal sealed class WorldSnapshot
 /// 25 ms mà bộ lọc theo frame của bản Python cần. Nên tách hai đường:
 ///   - Luồng chính chụp riêng ROI MINIMAP (403×341 ở 2K, ≈ 3.3 ms — đo ở <see cref="RegionReader.MoveWindow"/>)
 ///     mỗi tick; ROI này chứa luôn gốc mũi tên và vùng mảnh.
-///   - Một luồng <c>WorldScanner</c> chụp ROI WORLD (2560×1187) liên tục, chạy bộ dò đầu nối 3D, prompt,
-///     bảng nghề (khi cần), và quan sát vật cản; công bố <see cref="WorldSnapshot"/> mới nhất. Luồng
-///     chính lấy snapshot — đúng mô hình "lấy khung mới nhất" của dxcam.
+///   - Một luồng <c>WorldScanner</c> chụp ROI WORLD (2560×1187) liên tục, chạy bộ dò đầu nối 3D,
+///     bảng nghề (khi cần), và quan sát vật cản; công bố <see cref="WorldSnapshot"/> mới nhất.
+///     Prompt <c>[E] TƯƠNG TÁC</c> do <see cref="ElectricLocator"/> quét ô đã khoanh trên luồng nav.
 ///
 /// Hai <see cref="RegionReader"/> là hai instance riêng nên chụp song song an toàn; DWM có thể xếp
 /// hàng hai cú CopyFromScreen, vì thế luồng chính đo và in thời gian tick của mình.
@@ -155,8 +156,6 @@ internal sealed class NavCapture : IDisposable
 
                 if (_resetWorldRequested) { World.Reset(); _resetWorldRequested = false; }
                 var marker = World.Update(frame, t0);
-                bool prompt = PromptHeuristic.Visible(frame, _s.ScreenW, _s.ScreenH);
-                bool work = PromptHeuristic.WorkVisible(frame, _s.ScreenW, _s.ScreenH);
                 JobBoardInfo board = WantBoard ? JobBoardReader.Read(frame, _s) : null;
                 Obstacle.Observe(frame, t0);
 
@@ -165,7 +164,7 @@ internal sealed class NavCapture : IDisposable
                 _seq++;
                 Volatile.Write(ref _snap, new WorldSnapshot
                 {
-                    Marker = marker, PromptVisible = prompt, WorkPromptVisible = work,
+                    Marker = marker, PromptVisible = false, WorkPromptVisible = false,
                     Board = board, T = t0, Hz = hz, Seq = _seq
                 });
 

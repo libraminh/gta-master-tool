@@ -167,8 +167,12 @@ internal sealed class ElectricBot
                     wireGate.Reset();
                     Emit("thấy panel đi dây — giao cho bộ giải dây.");
                     if (!RunWire(ct, out message, out bool solved)) return;
-                    if (StopAfterOneRound(ref message)) return;
-                    if (solved) { justSolved = true; panelGoneMs = _cfg.Wire.PanelGoneMs; }
+                    if (solved)
+                    {
+                        if (StopAfterOneRound(ref message)) return;
+                        justSolved = true;
+                        panelGoneMs = _cfg.Wire.PanelGoneMs;
+                    }
                     continue;
                 }
 
@@ -176,8 +180,12 @@ internal sealed class ElectricBot
                 {
                     Emit("thấy bảng nước/điện — giao cho bộ giải bảng.");
                     if (!RunBoard(ct, out message, out bool solved)) return;
-                    if (StopAfterOneRound(ref message)) return;
-                    if (solved) { justSolved = true; panelGoneMs = BoardGoneMsAfterSolved; }
+                    if (solved)
+                    {
+                        if (StopAfterOneRound(ref message)) return;
+                        justSolved = true;
+                        panelGoneMs = BoardGoneMsAfterSolved;
+                    }
                     continue;
                 }
 
@@ -239,6 +247,13 @@ internal sealed class ElectricBot
     /// </summary>
     private bool RunNav(CancellationToken ct, Func<bool> panelVisible, bool afterMinigame, int panelGoneMs, out string message)
     {
+        if (!_profile.IsPromptCalibrated)
+        {
+            message = "chưa khoanh [E] TƯƠNG TÁC";
+            Emit("dừng: " + message + " — bấm “Khoanh [E] TƯƠNG TÁC” lúc prompt đang hiện.");
+            return false;
+        }
+
         var done = new ManualResetEventSlim(false);
         NavStopReason reason = NavStopReason.UserStopped;
         string detail = "";
@@ -337,8 +352,10 @@ internal sealed class ElectricBot
         _board = null;
 
         solved = reason == BoardStopReason.Solved;
-        bool keepGoing = reason is BoardStopReason.Solved or BoardStopReason.NoBoard;
+        bool retry = reason == BoardStopReason.Failed;
+        bool keepGoing = reason is BoardStopReason.Solved or BoardStopReason.NoBoard or BoardStopReason.Failed;
         message = keepGoing ? "" : $"bộ giải bảng dừng — {BoardBot.TenLyDo(reason)}: {detail}";
+        if (retry) Emit("lượt WATER & POWER không thành công — giữ nguyên điểm làm việc và mở lại để chơi tiếp");
         if (!keepGoing) Emit("dừng: " + message);
         return keepGoing;
     }

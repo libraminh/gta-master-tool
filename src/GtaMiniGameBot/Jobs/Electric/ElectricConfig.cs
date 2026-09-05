@@ -10,12 +10,9 @@ namespace GtaMiniGameBot;
 /// nhật toạ độ TƯƠNG ĐỐI góc màn, mà <see cref="FishingConfig.ToAbsolute"/> lẫn
 /// <see cref="StillCropForm"/> đã nói cùng thứ tiếng đó rồi.
 ///
-/// Khác các job cũ ở một chỗ quan trọng: job này KHÔNG bắt buộc phải khoanh tay. Cả ba vùng dưới
-/// đây đều SUY RA được từ độ phân giải, vì:
-///   - Panel đi dây là hộp thoại nổi, tìm bằng MÀU chứ không bằng toạ độ (xem <see cref="WireReader"/>).
-///   - Bảng Water &amp; Power là HUD toàn màn cố định, và bản Python đã đo ROI ở mốc 1920×1080 rồi
-///     nhân tỉ lệ — cách đó chạy đúng ở 2560×1440 mà không cần đo lại.
-/// Khoanh tay chỉ là đường CHỮA khi máy người dùng có safezone/HUD scale lạ.
+/// Panel dây và bảng Water &amp; Power vẫn SUY từ độ phân giải (khoanh tay chỉ là đường chữa
+/// safezone). Prompt <c>[E] TƯƠNG TÁC</c> thì không: nó gắn vật thể 3D, phải khoanh tay — ô đó
+/// vừa là mẫu chữ vừa là vùng quét. Thiếu khoanh thì không tự đi.
 /// </summary>
 internal sealed class ElectricProfile
 {
@@ -45,13 +42,24 @@ internal sealed class ElectricProfile
     /// </summary>
     public FishingRect TitleBand { get; set; } = new();
 
-    // KHONG con Minimap / PromptBand / PromptTextH / PromptGapSplit o day. Bo dieu huong (NavBot)
-    // suy vung minimap tu target_roi_ref cua ban Python (18,770)-(320,1026) nhan ti le, va do prompt
-    // "[E] ..." bang heuristic hinh hoc (PromptHeuristic) — khong con mau anh TUONG TAC. Cac khoa cu
-    // con trong electric.json tren may nguoi dung bi bo qua khi doc va rung khi Save.
+    /// <summary>
+    /// Ô người dùng khoanh trùm <c>[E] TƯƠNG TÁC</c> — vừa cắt mẫu chữ, vừa là ROI live.
+    /// Không suy giữa màn. Rỗng = chưa hiệu chuẩn prompt.
+    /// </summary>
+    public FishingRect PromptBand { get; set; } = new();
+
+    /// <summary>Chiều cao mực nhóm chữ, đo lúc khoanh — lọc cảnh vật sáng.</summary>
+    public int PromptTextH { get; set; }
+
+    /// <summary>Khe (px) tách ô phím khỏi chữ, đo lúc khoanh.</summary>
+    public int PromptGapSplit { get; set; }
 
     [JsonIgnore]
     public string Key => $"{Width}x{Height}";
+
+    [JsonIgnore]
+    public bool IsPromptCalibrated =>
+        PromptBand.IsSet && PromptTextH >= 6 && File.Exists(ElectricConfig.PromptTemplatePath(Key));
 
     /// <summary>
     /// Hệ số quy đổi từ mốc 1920×1080 sang màn này — <c>(sx + sy) / 2</c>, đúng công thức
@@ -72,6 +80,7 @@ internal sealed class ElectricProfile
         WireBand ??= new FishingRect();
         BoardRoi ??= new FishingRect();
         TitleBand ??= new FishingRect();
+        PromptBand ??= new FishingRect();
     }
 
     // ---------------- vung thuc te ----------------
@@ -115,7 +124,10 @@ internal sealed class ElectricProfile
         if (!board.IsSet || !wire.IsSet) return $"{Key} — độ phân giải quá nhỏ, không suy được vùng";
 
         string how = BoardRoi.IsSet || WireBand.IsSet ? "đã khoanh tay" : "suy từ độ phân giải";
-        return $"{Key} — đủ ({how}; bảng {board.W}×{board.H}, quét dây {wire.W}×{wire.H}, tỉ lệ {Scale:F3})";
+        string prompt = IsPromptCalibrated
+            ? $"prompt {PromptBand.W}×{PromptBand.H} chữ {PromptTextH}px"
+            : "chưa khoanh [E] TƯƠNG TÁC";
+        return $"{Key} — {how}; bảng {board.W}×{board.H}, quét dây {wire.W}×{wire.H}; {prompt}";
     }
 }
 
@@ -600,6 +612,10 @@ internal sealed class ElectricConfig
 
     public static string ShotPath(string key, string name) =>
         Path.Combine(ShotDir(key), name + ".png");
+
+    /// <summary>Mẫu chữ “TƯƠNG TÁC” (không gồm ô phím) — cắt lúc khoanh.</summary>
+    public static string PromptTemplatePath(string key) =>
+        Path.Combine(ProfileDir(key), "tuong-tac.png");
 
     /// <summary>Nơi <c>--verify-wire</c> / <c>--verify-board</c> đổ ảnh trung gian.</summary>
     public static string DebugDir(string key) => Path.Combine(ProfileDir(key), "debug");

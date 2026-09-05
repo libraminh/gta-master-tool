@@ -82,6 +82,43 @@ internal static class NavInteraction
         if (search360Round > 0) return true;
         return lastState is not null && lastState.StartsWith("SEARCH360", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Sau xin việc NPC hiện cùng HUD <c>[E] TƯƠNG TÁC</c>. Khiên chặn mọi E (kể cả
+    /// <see cref="LostTargetArm"/>); hết khiên thì vẫn chặn lost-arm cho tới khi sát điểm vàng.
+    /// </summary>
+    public static bool PostJobBlocksWorldE(bool shield, bool needYellow, bool lostArm, bool approachReady)
+    {
+        if (shield) return true;
+        return needYellow && lostArm && !approachReady;
+    }
+
+    /// <summary>Prompt rộng hoặc ROI chặt đều nghĩa là còn đứng cạnh NPC.</summary>
+    public static bool PostJobPromptHoldsShield(bool wideVisible, bool workVisible) =>
+        wideVisible || workVisible;
+
+    /// <summary>
+    /// Gỡ khiên khi prompt đã tắt đủ lâu: đã thấy thì ≥ minGuard + clearFrames;
+    /// chưa thấy thì ≥ noPromptTimeout + clearFrames.
+    /// </summary>
+    public static bool PostJobClearShield(bool seen, int absentFrames, double elapsed,
+                                         int clearFrames, double minGuardS, double noPromptTimeoutS)
+    {
+        if (absentFrames < clearFrames) return false;
+        if (seen) return elapsed >= minGuardS;
+        return elapsed >= noPromptTimeoutS;
+    }
+
+    /// <summary>
+    /// Sau E nhanh: bảng nghề mở trong khi minimap còn điểm vàng → đi ngang NPC, ESC.
+    /// Đang reset nghề thì JobRecovery giữ bảng.
+    /// </summary>
+    public static bool AfterEEscAccidentalNpc(bool inJobRecovery, bool yellowVisible) =>
+        !inJobRecovery && yellowVisible;
+
+    /// <summary>Bảng nghề mở, không còn điểm vàng, chưa trong recovery → vào WaitBoard.</summary>
+    public static bool AfterEEnterOpenBoard(bool inJobRecovery, bool yellowVisible) =>
+        !inJobRecovery && !yellowVisible;
 }
 
 /// <summary>

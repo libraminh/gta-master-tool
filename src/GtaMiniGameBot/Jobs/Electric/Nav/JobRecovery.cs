@@ -165,12 +165,34 @@ internal sealed class JobRecovery
     public void Start(double now, string reason, bool manual = false)
     {
         if (Phase is not null) return;
+        ResetSession(now, manual);
+        Phase = "SEEK_LIGHTNING";
+        _capture.WantBoard = false;
+        Emit($"[RESET NGHỀ BẮT ĐẦU] {reason}{(manual ? " (tay)" : "")} → tia sét → bảng NPC → có việc");
+    }
+
+    /// <summary>Bảng nghề đã mở sau E — bỏ SEEK_LIGHTNING, vào WaitBoard.</summary>
+    public void EnterAtOpenBoard(double now, string reason)
+    {
+        if (Phase is "WAIT_EMPLOYED_BOARD" or "WAIT_UNEMPLOYED_BOARD") return;
+        if (Phase is null) ResetSession(now, manual: false);
+        Phase = "WAIT_EMPLOYED_BOARD";
+        _phaseStarted = now;
+        ClearBoardState();
+        _eStreak = 0;
+        _capture.WantBoard = true;
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        Emit($"[RESET NGHỀ] {reason} → bảng đã mở, bỏ tìm tia sét");
+    }
+
+    private void ResetSession(double now, bool manual)
+    {
         _input.StopMouseStream(immediate: true);
         _input.ReleaseOwnedOnce();
         _ctl.ResetTransient();
         _watchdog.Reset();
         _tracker.Reset();
-        Phase = "SEEK_LIGHTNING";
         _started = _phaseStarted = now;
         _eStreak = _restoreStreak = _clickRetry = 0;
         _lightningLast = null;
@@ -184,8 +206,6 @@ internal sealed class JobRecovery
         _navBestDist = null;
         _navLastProgressT = now; _navLastEscapeT = -999.0; _nav30sCycleStarted = now;
         _navBlindSince = null;
-        _capture.WantBoard = false;
-        Emit($"[RESET NGHỀ BẮT ĐẦU] {reason}{(manual ? " (tay)" : "")} → tia sét → bảng NPC → có việc");
     }
 
     /// <summary><c>_job_recovery_cancel</c>. <paramref name="finished"/> true = hoàn tất → cooldown 20 s + khiên bỏ E NPC.</summary>
@@ -212,6 +232,7 @@ internal sealed class JobRecovery
         _navBlindSince = null;
         _capture.WantBoard = false;
         _ctl.ResetTransient();
+        _ctl.ResetSearch360();
         _watchdog.Reset();
         _tracker.Reset();
         if (finished)

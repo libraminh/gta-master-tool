@@ -1,3 +1,5 @@
+using System.Drawing.Imaging;
+
 namespace GtaMiniGameBot;
 
 /// <summary>
@@ -5,9 +7,8 @@ namespace GtaMiniGameBot;
 /// — thêm bộ chọn màn hình như <see cref="FishingPanel"/> và một chỗ chụp ảnh tĩnh để chạy
 /// <c>--verify-wire</c> / <c>--verify-board</c>.
 ///
-/// Khác các job cũ ở một điểm dễ gây bất ngờ: job này KHÔNG cần khoanh vùng tay. Cả ROI bảng lẫn
-/// vùng quét panel dây đều suy được từ độ phân giải (xem <see cref="ElectricProfile"/>), nên bật
-/// là chạy. Ảnh tĩnh chỉ dùng để KIỂM TRA ngoài game, không phải để hiệu chuẩn.
+/// Tự đi bắt buộc khoanh <c>[E] TƯƠNG TÁC</c> (ảnh tĩnh rồi crop). ROI bảng / panel dây vẫn suy
+/// từ độ phân giải.
 /// </summary>
 internal sealed class ElectricPanel : UserControl
 {
@@ -23,6 +24,9 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkPick _modes = new();
     private readonly DarkPick _shots = new();
     private readonly DarkButton _btnShot = new();
+    private readonly DarkButton _btnBoardRoi = new();
+    private readonly DarkButton _btnBoardDefault = new();
+    private readonly DarkButton _btnPrompt = new();
     private readonly DarkButton _btnToggle = new();
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
@@ -51,8 +55,8 @@ internal sealed class ElectricPanel : UserControl
         Append($"màn hình: {_profile.Key} ({_screen.DeviceName})");
         Append(_profile.Describe());
         Append($"{_jobKey} = bật/tắt.");
-        Append("Job này không cần khoanh vùng: vùng đọc suy từ độ phân giải. " +
-               "Đứng vào panel/bảng rồi bật.");
+        Append("Tự đi: khoanh [E] TƯƠNG TÁC lúc prompt đang hiện. " +
+               "Chỉ giải minigame thì đứng sẵn ở bảng rồi bật.");
 
         RefreshCalib();
     }
@@ -100,7 +104,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(378),
+            Height = Theme.Px(436),
             BackColor = Theme.Ground
         };
 
@@ -136,7 +140,7 @@ internal sealed class ElectricPanel : UserControl
         var shotBox = new DarkGroup
         {
             Title = "Ảnh tĩnh để kiểm tra ngoài game",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(128), w, Theme.Px(76))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(128), w, Theme.Px(108))
         };
         host.Controls.Add(shotBox);
 
@@ -150,13 +154,23 @@ internal sealed class ElectricPanel : UserControl
         _btnShot.Click += (_, _) => CaptureShot();
         shotBox.Controls.Add(_btnShot);
 
-        Lab(shotBox, "Chụp xong chạy:  --verify-wire / --verify-board / --verify-nav / --verify-survival",
-            Theme.Px(12), Theme.Px(54), w - Theme.Px(24));
+        _btnBoardRoi.Text = "Khoanh vùng bảng…";
+        _btnBoardRoi.SetBounds(Theme.Px(12), Theme.Px(54), Theme.Px(196), Theme.Px(26));
+        _btnBoardRoi.Click += (_, _) => CalibrateBoardRegions();
+        shotBox.Controls.Add(_btnBoardRoi);
+
+        _btnBoardDefault.Text = "Dùng vùng mặc định";
+        _btnBoardDefault.SetBounds(Theme.Px(218), Theme.Px(54), Theme.Px(194), Theme.Px(26));
+        _btnBoardDefault.Click += (_, _) => ResetBoardRegions();
+        shotBox.Controls.Add(_btnBoardDefault);
+
+        Lab(shotBox, "Khoanh bảng chỉ là tùy chọn; bỏ trống vẫn suy đúng theo độ phân giải.",
+            Theme.Px(12), Theme.Px(86), w - Theme.Px(24));
 
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(212), w, Theme.Px(114))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(244), w, Theme.Px(140))
         };
         host.Controls.Add(navBox);
 
@@ -178,19 +192,22 @@ internal sealed class ElectricPanel : UserControl
         _autoEat.CheckedChanged += OnAutoEatChanged;
         navBox.Controls.Add(_autoEat);
 
-        // Khong con nut "Khoanh mau TUONG TAC": prompt [E] duoc do bang hinh hoc (o phim trang + chu
-        // ben phai) nhu ban Python, khong can mau anh. Minimap va vung world cung suy tu do phan giai.
-        Lab(navBox, "Không cần khoanh gì: minimap, mốc vàng, prompt [E] đều suy từ độ phân giải.",
-            Theme.Px(330), Theme.Px(26), w - Theme.Px(342));
-        Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log; bật lại để thử reset camera sau minigame.",
-            Theme.Px(330), Theme.Px(50), w - Theme.Px(342));
-        Lab(navBox, "Ăn uống chỉ chạy khi tự đi; mỗi lần dùng đồ đứng yên 10 giây.",
+        _btnPrompt.Text = "Khoanh [E] TƯƠNG TÁC…";
+        _btnPrompt.SetBounds(Theme.Px(330), Theme.Px(22), Theme.Px(260), Theme.Px(26));
+        _btnPrompt.Click += (_, _) => CalibratePrompt();
+        navBox.Controls.Add(_btnPrompt);
+
+        Lab(navBox, "Chụp lúc prompt hiện, khoanh trùm ô E lẫn chữ. Ô đó là vùng quét.",
+            Theme.Px(330), Theme.Px(54), w - Theme.Px(342));
+        Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log.",
             Theme.Px(330), Theme.Px(76), w - Theme.Px(342));
+        Lab(navBox, "Ăn uống chỉ chạy khi tự đi; mỗi lần dùng đồ đứng yên 10 giây.",
+            Theme.Px(330), Theme.Px(98), w - Theme.Px(342));
 
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(334), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(392), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -305,7 +322,7 @@ internal sealed class ElectricPanel : UserControl
     private void RefreshCalib()
     {
         _calib.Text = _profile.Describe();
-        _calib.ForeColor = Theme.GoodText;
+        _calib.ForeColor = _cfg.AutoWalk && !_profile.IsPromptCalibrated ? Theme.WarnText : Theme.GoodText;
     }
 
     /// <summary>Tự đi không cần hiệu chuẩn gì: mọi vùng đọc và bộ dò prompt đều suy từ độ phân giải.</summary>
@@ -314,8 +331,11 @@ internal sealed class ElectricPanel : UserControl
         _cfg.AutoWalk = _autoWalk.Checked;
         _cfg.Save();
         Append(_cfg.AutoWalk
-            ? "tự đi tới điểm làm việc: BẬT"
+            ? (_profile.IsPromptCalibrated
+                ? "tự đi tới điểm làm việc: BẬT"
+                : "tự đi: BẬT — chưa khoanh [E] TƯƠNG TÁC, bấm nút khoanh trước khi chạy")
             : "tự đi tới điểm làm việc: TẮT (đứng sẵn ở bảng rồi bật job)");
+        RefreshCalib();
         RefreshNote();
     }
 
@@ -347,7 +367,125 @@ internal sealed class ElectricPanel : UserControl
 
     private void RefreshNote() =>
         _note.Text = $"{_jobKey} bật/tắt ngay trong game. Chế độ: {ElectricBot.TenCheDo(_cfg.Mode)}. " +
-                     (_cfg.AutoWalk ? "Tự đi tới điểm." : "Đứng sẵn ở bảng rồi bật.");
+                     (_cfg.AutoWalk
+                         ? (_profile.IsPromptCalibrated ? "Tự đi tới điểm." : "Tự đi — chưa khoanh [E] TƯƠNG TÁC.")
+                         : "Đứng sẵn ở bảng rồi bật.");
+
+    // ---------------------------------------------------------------- khoanh prompt
+
+    private void CalibratePrompt()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi khoanh"); return; }
+
+        var bmp = StillPicker.CaptureWithCountdown(
+            FindForm(), _screen,
+            "GÓC 1. Đứng vào mốc cho HIỆN nút [E] TƯƠNG TÁC. Giữ nguyên đến hết đếm ngược.",
+            _cfg.ShotCountdownSec, _cfg.WindowMatch, out string problem);
+
+        if (bmp is null)
+        {
+            Append("không chụp được: " + (problem ?? "không rõ"));
+            return;
+        }
+
+        try
+        {
+            StillPicker.Save(bmp, ElectricConfig.ShotPath(_profile.Key, "nav-prompt"));
+            var current = _profile.PromptBand.IsSet
+                ? _profile.PromptBand.ToRectangle()
+                : Rectangle.Empty;
+            var res = StillCropForm.Run(FindForm(), bmp, "[E] TƯƠNG TÁC",
+                "Khoanh trùm CẢ ô vuông chữ E LẪN chữ TƯƠNG TÁC. Lấy dư nền cũng được nếu prompt trôi theo camera. " +
+                "App tự tách ô phím; mẫu nhận dạng là phần CHỮ. Ô khoanh chính là vùng quét lúc chạy.",
+                current);
+            if (res is null) { Append("đã huỷ khoanh [E] TƯƠNG TÁC"); return; }
+            ApplyPrompt(bmp, res.Rect);
+            _cfg.Save();
+            RefreshCalib();
+            RefreshNote();
+        }
+        catch (Exception ex) { Append("khoanh prompt lỗi: " + ex.Message); }
+        finally { bmp.Dispose(); }
+    }
+
+    private void ApplyPrompt(Bitmap still, Rectangle rect)
+    {
+        var src = Rectangle.Intersect(rect, new Rectangle(0, 0, still.Width, still.Height));
+        if (src.Width < 20 || src.Height < 10)
+            throw new InvalidOperationException("vùng quá nhỏ — khoanh trùm cả ô phím lẫn chữ");
+
+        using var crop = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(crop))
+            g.DrawImage(still, new Rectangle(0, 0, src.Width, src.Height), src, GraphicsUnit.Pixel);
+
+        var parts = ElectricLocator.ExtractText(crop, out string problem);
+        if (parts is null) throw new InvalidOperationException(problem);
+
+        var tpl = GrayTemplate.FromBitmapCrop(crop, parts.Text);
+        if (tpl.IsFlat)
+            throw new InvalidOperationException("ô chữ phẳng tuyệt đối — khoanh trúng chỗ trống");
+
+        tpl.Save(ElectricConfig.PromptTemplatePath(_profile.Key));
+        _profile.PromptBand = FishingRect.FromRelative(src);
+        _profile.PromptTextH = parts.Text.Height;
+        _profile.PromptGapSplit = parts.GapSplit;
+        Append($"[E] TƯƠNG TÁC: {parts.Note} → tuong-tac.png  vùng {src.Width}×{src.Height} @ {src.X},{src.Y}");
+    }
+
+    private void CalibrateBoardRegions()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi khoanh bảng"); return; }
+
+        var bmp = StillPicker.CaptureWithCountdown(
+            FindForm(), _screen,
+            "Mở bảng WATER & POWER ở trạng thái mới bắt đầu, chưa có overlay KHÔNG THÀNH CÔNG.",
+            _cfg.ShotCountdownSec, _cfg.WindowMatch, out string problem);
+        if (bmp is null)
+        {
+            Append("không chụp được: " + (problem ?? "không rõ"));
+            return;
+        }
+
+        try
+        {
+            StillPicker.Save(bmp, ElectricConfig.ShotPath(_profile.Key, "board"));
+
+            var board = StillCropForm.Run(
+                FindForm(), bmp, "VÙNG MÊ CUNG WATER & POWER",
+                "Khoanh sát phần bảng xanh chứa toàn bộ tường và hai đầu nối. Không lấy tiêu đề, cụm WASD hay logo bên phải.",
+                _profile.ScanBoardRoi().ToRectangle());
+            if (board is null) { Append("đã huỷ khoanh vùng bảng"); return; }
+            if (board.Rect.Width < 300 || board.Rect.Height < 200)
+                throw new InvalidOperationException("vùng mê cung quá nhỏ");
+
+            var title = StillCropForm.Run(
+                FindForm(), bmp, "TIÊU ĐỀ WATER & POWER",
+                "Khoanh riêng hai dòng tiêu đề xanh phía trên. Dải này chỉ dùng để biết panel đang mở hay đã đóng.",
+                _profile.ScanTitleBand().ToRectangle());
+            if (title is null) { Append("đã huỷ khoanh tiêu đề; chưa lưu thay đổi"); return; }
+            if (title.Rect.Width < 120 || title.Rect.Height < 20)
+                throw new InvalidOperationException("vùng tiêu đề quá nhỏ");
+
+            _profile.BoardRoi = FishingRect.FromRelative(board.Rect);
+            _profile.TitleBand = FishingRect.FromRelative(title.Rect);
+            _cfg.Save();
+            RefreshCalib();
+            Append($"đã khoanh bảng {board.Rect.Width}×{board.Rect.Height} @ {board.Rect.X},{board.Rect.Y}; " +
+                   $"tiêu đề {title.Rect.Width}×{title.Rect.Height} @ {title.Rect.X},{title.Rect.Y}");
+        }
+        catch (Exception ex) { Append("khoanh bảng lỗi: " + ex.Message); }
+        finally { bmp.Dispose(); }
+    }
+
+    private void ResetBoardRegions()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi đổi vùng bảng"); return; }
+        _profile.BoardRoi = new FishingRect();
+        _profile.TitleBand = new FishingRect();
+        _cfg.Save();
+        RefreshCalib();
+        Append("vùng bảng và tiêu đề: đã trả về suy theo độ phân giải");
+    }
 
     // ---------------------------------------------------------------- anh tinh
 
@@ -435,6 +573,13 @@ internal sealed class ElectricPanel : UserControl
         _cfg.Save();
         RefreshCalib();
 
+        if (_cfg.AutoWalk && !_profile.IsPromptCalibrated)
+        {
+            Append("chưa khoanh [E] TƯƠNG TÁC — không tự đi được. " +
+                   "Bấm “Khoanh [E] TƯƠNG TÁC” lúc prompt đang hiện, hoặc tắt tự đi.");
+            return;
+        }
+
         _rounds = 0;
         _bot = new ElectricBot(_cfg, _screen, _profile);
         _bot.Log += s => Post(() => Append(s));
@@ -471,6 +616,9 @@ internal sealed class ElectricPanel : UserControl
     {
         _btnToggle.Text = running ? $"Tắt  ({_jobKey})" : $"Bật  ({_jobKey})";
         _btnShot.Enabled = !running;
+        _btnBoardRoi.Enabled = !running;
+        _btnBoardDefault.Enabled = !running;
+        _btnPrompt.Enabled = !running;
         _screens.Enabled = !running;
         _modes.Enabled = !running;
         _autoWalk.Enabled = !running;

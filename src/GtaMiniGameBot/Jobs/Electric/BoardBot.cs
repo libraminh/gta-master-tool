@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 
 namespace GtaMiniGameBot;
 
@@ -334,6 +336,9 @@ internal enum BoardStopReason
     /// <summary>Đi hết tuyến và cắm được vào đầu nối GOAL.</summary>
     Solved,
 
+    /// <summary>Game đã báo KHÔNG THÀNH CÔNG, hoặc bảng đóng khi chưa cắm được GOAL.</summary>
+    Failed,
+
     /// <summary>Không thấy bảng nào: đứng sai chỗ, hoặc chưa mở minigame.</summary>
     NoBoard,
 
@@ -369,6 +374,9 @@ internal sealed class BoardAfterSolvePolicy
 
     private long? _goneSinceMs;
 
+    public static BoardStopReason UnsolvedCloseReason(bool everSeen) =>
+        everSeen ? BoardStopReason.Failed : BoardStopReason.NoBoard;
+
     public void OnRouteSuccess()
     {
         AllowPlan = false;
@@ -398,8 +406,8 @@ internal sealed class BoardAfterSolvePolicy
 /// Ba pha, và thứ tự này là bất di bất dịch:
 ///   1. CHỜ ỔN ĐỊNH — các chữ ký 128×72 từ những frame khác nhau phải gần như y hệt
 ///      (<see cref="BoardWallSignature"/>), rồi mới quét tường đầy đủ đúng một lần.
-///   2. DỰNG TUYẾN — A* + chứng chỉ an toàn + tinh chỉnh ngã rẽ. Không dựng nổi thì GIỮ, không
-///      bấm phím nào.
+///   2. DỰNG TUYẾN — A* + chứng chỉ an toàn + tinh chỉnh ngã rẽ. Không ra ở tầng chính thì hạ lề
+///      và bỏ lớp bảo mềm trên CHÍNH frame sạch đó; không chụp lại ảnh đã có vệt dây.
 ///   3. CHẠY — tuyến đã ĐÓNG BĂNG, lúc chạy không bao giờ tính lại.
 ///
 /// PHÍM CHỈ ĐỂ RẼ, KHÔNG PHẢI ĐỂ ĐI. Đây là điều duy nhất cần hiểu về pha 3, và là chỗ bản trước
@@ -530,6 +538,7 @@ internal sealed class BoardBot
     {
         BoardStopReason.UserStopped => "người dùng bấm dừng",
         BoardStopReason.Solved => "đã cắm tới đầu nối đích",
+        BoardStopReason.Failed => "minigame báo không thành công",
         BoardStopReason.NoBoard => "không thấy bảng nước/điện",
         BoardStopReason.NoProgress => "đầu dây đứng im (thường là va tường)",
         BoardStopReason.WireDidNotStart => "dây không tự phóng khỏi đầu nối",
@@ -598,9 +607,9 @@ internal sealed class BoardBot
                     boardLatency = null;
                     if (sinceSeen.ElapsedMilliseconds >= (everSeen ? BoardAfterSolvePolicy.BoardGoneMs : _cfg.Board.NoBoardMs))
                     {
-                        reason = everSeen ? BoardStopReason.Solved : BoardStopReason.NoBoard;
+                        reason = BoardAfterSolvePolicy.UnsolvedCloseReason(everSeen);
                         message = everSeen
-                            ? $"bảng đã đóng — giải {_rounds} bảng"
+                            ? "bảng đã đóng khi chưa cắm được GOAL"
                             : $"{_cfg.Board.NoBoardMs / 1000}s không thấy bảng ({why})";
                         Emit(message);
                         return;
@@ -655,6 +664,7 @@ internal sealed class BoardBot
                 string cacheKey = BoardRouteCache.MakeKey(frame, role, scan.Wall);
                 BoardPlan plan = null;
                 string planWhy = null;
+                var planningClock = Stopwatch.StartNew();
 
                 if (_routeCache.TryGet(cacheKey, role, frame.Width, frame.Height, out var cached))
                 {
@@ -665,18 +675,40 @@ internal sealed class BoardBot
 
                 if (plan is null)
                 {
-                    plan = BoardPlanner.Plan(frame, role, scan, out planWhy);
+                    plan = BoardPlanner.PlanLive(frame, role, scan, out planWhy);
                     if (plan is not null) _routeCache.Put(cacheKey, plan);
                 }
                 if (plan is null)
                 {
-                    signatureHistory.Clear();
-                    boardLatency = null;
-                    Throttle(lastHold, $"giữ, chưa bấm gì: {planWhy}");
-                    Sleep(ct, _cfg.Board.WatchPollMs);
-                    continue;
+                    Emit($"planner chính không ra tuyến sau {planningClock.ElapsedMilliseconds}ms: " +
+                         $"{planWhy} — thử fallback trên frame sạch");
+                    string tightWhy = "bỏ qua để giữ ngân sách góc đầu";
+                    if (planningClock.ElapsedMilliseconds < 300)
+                        plan = BoardPlanner.PlanTight(frame, role, scan, out tightWhy);
+
+                    if (plan is null)
+                    {
+                        Emit($"planner lề chặt không ra tuyến: {tightWhy} — bỏ lớp bảo phụ");
+                        // Full-resolution ở fallback cuối: lớp mềm được bỏ, nhưng thân tường xanh
+                        // bão hòa phải được giữ chính xác hơn đường quét nhanh thu nhỏ 2×.
+                        var primaryScan = BoardPlanner.ScanWallsFullResolution(
+                            frame, includeSecondary: false);
+                        plan = BoardPlanner.PlanTight(frame, role, primaryScan, out string primaryWhy);
+                        if (plan is null)
+                        {
+                            message = $"không có tuyến được chứng nhận trên frame sạch: {primaryWhy}";
+                            DumpPlannerFailure(frame, role, scan, primaryScan);
+                            Emit("không đứng chờ dựng lại trên ảnh đã có vệt dây — " + message);
+                            WaitForFailedOrClosed(reader, ct, message);
+                            reason = BoardStopReason.Failed;
+                            return;
+                        }
+                        Emit("dùng fallback chỉ tường chính (đã kiểm không cắt tường)");
+                    }
+                    else Emit("dùng fallback lề chặt (vẫn giữ lớp bảo tường)");
                 }
 
+                Emit($"lập tuyến tổng {planningClock.ElapsedMilliseconds}ms");
                 Emit(plan.Describe());
                 foreach (string n in plan.RefineNotes) Emit("  ngã rẽ " + n);
                 foreach (var s in plan.Segments) Emit("  đoạn " + s);
@@ -698,6 +730,12 @@ internal sealed class BoardBot
                 reason = fail?.Reason ?? BoardStopReason.Error;
                 message = fail?.Message ?? note;
                 Emit("dừng: " + message);
+                if (reason is BoardStopReason.NoProgress or BoardStopReason.WireDidNotStart
+                              or BoardStopReason.LateStart or BoardStopReason.TurnNotConfirmed)
+                {
+                    WaitForFailedOrClosed(reader, ct, message);
+                    reason = BoardStopReason.Failed;
+                }
                 return;
             }
         }
@@ -733,6 +771,90 @@ internal sealed class BoardBot
         if (sw.ElapsedMilliseconds < 700) return;
         sw.Restart();
         Emit(line);
+    }
+
+    /// <summary>
+    /// Sau một lỗi không cứu được, giữ quyền điều khiển tới khi game hiện banner fail rồi đóng
+    /// panel. Không trả sớm cho nav, nếu không vòng ngoài có thể giao chính overlay cho BoardBot
+    /// như một bảng mới.
+    /// </summary>
+    private void WaitForFailedOrClosed(BoardReader reader, CancellationToken ct, string cause)
+    {
+        bool announced = false;
+        int gone = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (reader.FailOverlayVisible() && !announced)
+            {
+                announced = true;
+                Emit("[MINIGAME FAIL] thấy banner đỏ KHÔNG THÀNH CÔNG — " + cause);
+            }
+
+            if (!reader.BoardOpen(conservativeOnCaptureFailure: true))
+            {
+                if (++gone >= 3)
+                {
+                    Emit(announced
+                        ? "banner fail/panel đã đóng — chuẩn bị chơi lại"
+                        : "panel đóng khi chưa đạt GOAL — coi là fail và chuẩn bị chơi lại");
+                    return;
+                }
+            }
+            else gone = 0;
+
+            Sleep(ct, _cfg.Board.WatchPollMs);
+        }
+    }
+
+    private void DumpPlannerFailure(BoardFrame frame, BoardRole role,
+                                    BoardPlanner.WallScan scan,
+                                    BoardPlanner.WallScan primaryScan)
+    {
+        try
+        {
+            string root = Path.Combine(ElectricConfig.DebugDir(_profile.Key),
+                                       "board-fail-" + DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+            Directory.CreateDirectory(root);
+            SaveBgr(frame.Bgr, frame.Width, frame.Height, Path.Combine(root, "frame-clean.png"));
+
+            foreach (var (name, mask) in BoardPlanner.DiagnosticMasks(frame, role, scan))
+                SaveMask(mask, Path.Combine(root, "secondary-" + name + ".png"));
+            foreach (var (name, mask) in BoardPlanner.DiagnosticMasks(frame, role, primaryScan))
+                SaveMask(mask, Path.Combine(root, "primary-" + name + ".png"));
+
+            Emit("đã lưu frame/mặt nạ planner hỏng: " + root);
+        }
+        catch (Exception ex) { Emit("không lưu được chẩn đoán planner: " + ex.Message); }
+    }
+
+    private static void SaveBgr(byte[] bgr, int w, int h, string path)
+    {
+        using var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
+        var bd = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly,
+                              PixelFormat.Format24bppRgb);
+        try
+        {
+            int rowBytes = w * 3;
+            for (int y = 0; y < h; y++)
+                Marshal.Copy(bgr, y * rowBytes, bd.Scan0 + y * bd.Stride, rowBytes);
+        }
+        finally { bmp.UnlockBits(bd); }
+        bmp.Save(path, ImageFormat.Png);
+    }
+
+    private static void SaveMask(Mask mask, string path)
+    {
+        int w = mask.Width, h = mask.Height;
+        var bgr = new byte[w * h * 3];
+        for (int i = 0; i < mask.Data.Length; i++)
+        {
+            byte v = mask.Data[i] == 0 ? (byte)0 : (byte)255;
+            int p = i * 3;
+            bgr[p] = bgr[p + 1] = bgr[p + 2] = v;
+        }
+        SaveBgr(bgr, w, h, path);
     }
 
     // ---------------------------------------------------------------- chay tuyen
