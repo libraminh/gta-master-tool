@@ -88,6 +88,31 @@ internal static class StillPicker
         return shot;
     }
 
+    /// <summary>Đếm ngược không chụp — để người dùng click vào game trước phép thử phím.</summary>
+    public static void WaitFocus(Screen screen, int seconds)
+    {
+        var overlay = new CountdownOverlay(screen);
+        try
+        {
+            overlay.ShowNoActivate();
+            var sw = Stopwatch.StartNew();
+            int total = Math.Max(1, seconds) * 1000;
+            while (sw.ElapsedMilliseconds < total)
+            {
+                overlay.SetSeconds((int)Math.Ceiling((total - sw.ElapsedMilliseconds) / 1000.0));
+                Application.DoEvents();
+                Thread.Sleep(60);
+            }
+        }
+        finally
+        {
+            overlay.Close();
+            overlay.Dispose();
+        }
+        Application.DoEvents();
+        Thread.Sleep(150);
+    }
+
     public static Bitmap Load(string path)
     {
         if (!File.Exists(path)) return null;

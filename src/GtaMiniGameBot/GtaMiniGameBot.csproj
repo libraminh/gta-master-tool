@@ -28,7 +28,7 @@
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
-  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish">
+  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish" Condition="'$(SkipAppLockCheck)' != 'true'">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\tools\fail-if-app-running.ps1&quot;" />
   </Target>
 

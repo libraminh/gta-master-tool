@@ -113,6 +113,7 @@ internal sealed class JobRecovery
 
     public string Phase { get; private set; }
     public bool MustRehire { get; private set; }
+    public bool PausedForSurvival { get; private set; }
 
     private double _started, _phaseStarted;
     private bool _manual;
@@ -161,6 +162,42 @@ internal sealed class JobRecovery
 
     public void ResetBlind() => _blindSince = null;
 
+    /// <summary>Nhả input và reset đồng hồ tiến độ — tránh timeout giả sau 10–20 s đứng ăn.</summary>
+    public bool PauseForSurvival(double now)
+    {
+        if (Phase != "SEEK_LIGHTNING") return false;
+        if (PausedForSurvival) return true;
+        ReleaseETick(now);
+        if (_eDown) _input.SendKeyEvent(NavKey.E, up: true);
+        _eDown = false;
+        _eUpAt = 0;
+        _input.StopMouseStream(immediate: true);
+        _input.ReleaseOwnedOnce();
+        _ctl.ResetTransient();
+        _navBestDist = null;
+        _navLastProgressT = now;
+        _nav30sCycleStarted = now;
+        _navBlindSince = null;
+        _watchdog.Reset();
+        PausedForSurvival = true;
+        Emit("[RESET NGHỀ] tạm dừng SEEK_LIGHTNING để ăn uống");
+        return true;
+    }
+
+    public void ResumeAfterSurvival(double now)
+    {
+        if (!PausedForSurvival) return;
+        PausedForSurvival = false;
+        _navBestDist = null;
+        _navLastProgressT = now;
+        _nav30sCycleStarted = now;
+        _navBlindSince = null;
+        _watchdog.Reset();
+        _ctl.ResetTransient();
+        _phaseStarted = now;
+        Emit("[RESET NGHỀ] tiếp tục SEEK_LIGHTNING sau ăn uống");
+    }
+
     /// <summary><c>_job_recovery_start</c>.</summary>
     public void Start(double now, string reason, bool manual = false)
     {
@@ -193,6 +230,7 @@ internal sealed class JobRecovery
         _ctl.ResetTransient();
         _watchdog.Reset();
         _tracker.Reset();
+        PausedForSurvival = false;
         _started = _phaseStarted = now;
         _eStreak = _restoreStreak = _clickRetry = 0;
         _lightningLast = null;
@@ -217,6 +255,7 @@ internal sealed class JobRecovery
         _input.StopMouseStream(immediate: true);
         _input.ReleaseOwnedOnce();
         Phase = null;
+        PausedForSurvival = false;
         _phaseStarted = _started = 0;
         _eStreak = _restoreStreak = _clickRetry = 0;
         _lightningLast = null;
@@ -356,7 +395,7 @@ internal sealed class JobRecovery
     public bool Step(NavFrame mini, WorldSnapshot snap, double now, bool focused)
     {
         string phase = Phase;
-        if (phase is null) return false;
+        if (phase is null || PausedForSurvival) return false;
         ReleaseETick(now);
         if (!focused)
         {
