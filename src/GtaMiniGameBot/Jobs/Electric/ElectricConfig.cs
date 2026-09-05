@@ -54,6 +54,9 @@ internal sealed class ElectricProfile
     /// <summary>Khe (px) tách ô phím khỏi chữ, đo lúc khoanh.</summary>
     public int PromptGapSplit { get; set; }
 
+    /// <summary>ROI / màu / phím đã xác minh của đồng hồ bánh-nước trên đúng độ phân giải này.</summary>
+    public SurvivalHudProfile SurvivalHud { get; set; } = new();
+
     [JsonIgnore]
     public string Key => $"{Width}x{Height}";
 
@@ -81,6 +84,8 @@ internal sealed class ElectricProfile
         BoardRoi ??= new FishingRect();
         TitleBand ??= new FishingRect();
         PromptBand ??= new FishingRect();
+        SurvivalHud ??= new SurvivalHudProfile();
+        SurvivalHud.Normalize();
     }
 
     // ---------------- vung thuc te ----------------
@@ -127,7 +132,12 @@ internal sealed class ElectricProfile
         string prompt = IsPromptCalibrated
             ? $"prompt {PromptBand.W}×{PromptBand.H} chữ {PromptTextH}px"
             : "chưa khoanh [E] TƯƠNG TÁC";
-        return $"{Key} — {how}; bảng {board.W}×{board.H}, quét dây {wire.W}×{wire.H}; {prompt}";
+        string eat = SurvivalHud.IsReady
+            ? "ăn uống đã hiệu chuẩn"
+            : SurvivalHud.IsHudReady
+                ? "HUD ăn uống đã khoanh, chưa test phím"
+                : "chưa hiệu chuẩn ăn uống";
+        return $"{Key} — {how}; bảng {board.W}×{board.H}, quét dây {wire.W}×{wire.H}; {prompt}; {eat}";
     }
 }
 
@@ -619,6 +629,12 @@ internal sealed class ElectricConfig
 
     /// <summary>Nơi <c>--verify-wire</c> / <c>--verify-board</c> đổ ảnh trung gian.</summary>
     public static string DebugDir(string key) => Path.Combine(ProfileDir(key), "debug");
+
+    /// <summary>Crop LOW/HIGH và mặt nạ đồng hồ bánh/nước của một độ phân giải.</summary>
+    public static string SurvivalDir(string key) => Path.Combine(ProfileDir(key), "survival");
+
+    public static string SurvivalSamplePath(string key, string name) =>
+        Path.Combine(SurvivalDir(key), name + ".png");
 
     // ---------------- luu / doc ----------------
 

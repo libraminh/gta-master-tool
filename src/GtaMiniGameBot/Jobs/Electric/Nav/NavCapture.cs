@@ -66,7 +66,7 @@ internal sealed class NavCapture : IDisposable
     public Rectangle MinimapRegion => _miniRel;
     public Rectangle WorldRegion => _worldRel;
 
-    public NavCapture(Screen screen, NavScale s)
+    public NavCapture(Screen screen, NavScale s, SurvivalSettings survival, SurvivalHudProfile hud = null)
     {
         _screen = screen;
         _s = s;
@@ -83,8 +83,7 @@ internal sealed class NavCapture : IDisposable
         if (_worldRel.IsEmpty) throw new InvalidOperationException("không suy được vùng world");
         _world = new RegionReader(Abs(_worldRel));
 
-        var v = NavTuning.SurvivalRoiRef;
-        _survRel = s.RoiRef(v[0], v[1], v[2], v[3]);
+        _survRel = (survival ?? new SurvivalSettings()).CaptureRoi(s, hud);
         if (_survRel.IsEmpty) throw new InvalidOperationException("không suy được vùng đồng hồ đói/khát");
         _surv = new RegionReader(Abs(_survRel));
     }

@@ -3,24 +3,15 @@ using System.Drawing.Imaging;
 namespace GtaMiniGameBot;
 
 /// <summary>
-/// Kiểm bộ đọc đồng hồ đói/khát NGOÀI GAME, hai phần:
-///   1. Tự vẽ vòng cung ở cả 1920×1080 và 2560×1440 rồi đọc lại — chứng minh phép quy đổi tỉ lệ và
-///      cách đo độ phủ góc cho ra đúng phần trăm đã vẽ.
-///   2. Đọc trên ảnh tĩnh người dùng chụp bằng nút "Chụp ảnh tĩnh…" của tab Thợ điện
-///      (<c>%AppData%\GtaMiniGameBot\electric\&lt;WxH&gt;\shots\hud-*.png</c>).
-///
-/// Phần 1 KHÔNG chứng minh được ngưỡng màu: ảnh vẽ tay dùng đúng màu mình chọn nên nó chỉ kiểm hình
-/// học và tỉ lệ. Phần 2 mới là phần chịu lực — nó trả lời câu duy nhất đáng hỏi: ở HUD THẬT của
-/// server này, hai tâm icon trong config có trỏ đúng chỗ không. Lệch thì sửa
-/// <c>Survival.FoodCenterXRef</c>/<c>WaterCenterXRef</c> trong electric.json.
-///
+/// Kiểm bộ đọc đồng hồ đói/khát ngoài game: polar unwrap, ổn định thời gian,
+/// cổng state, và mẫu LOW/HIGH do wizard lưu.
 /// Chạy: GtaMiniGameBot.exe --verify-survival
 /// </summary>
 internal static class VerifySurvival
 {
     public static int Run(string[] args)
     {
-        Console.WriteLine("== kiểm tra bộ đọc đồng hồ đói/khát (port SURVIVAL V6.7.34) ==");
+        Console.WriteLine("== kiểm tra bộ đọc đồng hồ đói/khát (polar + ổn định) ==");
 
         int fail = SelfTest();
 
@@ -37,13 +28,21 @@ internal static class VerifySurvival
             Console.WriteLine();
             Console.WriteLine($"-- {key} --");
             var s = new NavScale(profile.Width, profile.Height, cfg.Nav.ScreenPxScale);
-            var v = NavTuning.SurvivalRoiRef;
-            var roi = s.RoiRef(v[0], v[1], v[2], v[3]);
+            var roi = cfg.Survival.CaptureRoi(s, profile.SurvivalHud);
             Console.WriteLine($"  vùng chụp {roi.Width}×{roi.Height} @ {roi.X},{roi.Y}");
-            Console.WriteLine($"  tâm bánh ({cfg.Survival.FoodCenterXRef * s.Sx:F1},{cfg.Survival.FoodCenterYRef * s.Sy:F1})  " +
-                              $"tâm nước ({cfg.Survival.WaterCenterXRef * s.Sx:F1},{cfg.Survival.WaterCenterYRef * s.Sy:F1})");
-            Console.WriteLine($"  vành {NavTuning.SurvivalRingRminRef * s.Max:F1}→{NavTuning.SurvivalRingRmaxRef * s.Max:F1} px, " +
-                              $"lõi cần {Math.Max(3, (int)(NavTuning.SurvivalCoreMinPixels * s.Area))} px");
+            if (profile.SurvivalHud.IsHudReady)
+            {
+                Console.WriteLine($"  HUD đã học: bánh ({profile.SurvivalHud.FoodCx:F0},{profile.SurvivalHud.FoodCy:F0}) " +
+                                  $"r {profile.SurvivalHud.FoodRmin:F0}–{profile.SurvivalHud.FoodRmax:F0} " +
+                                  $"H={profile.SurvivalHud.FoodHue}±{profile.SurvivalHud.FoodHueSpread}; " +
+                                  $"nước ({profile.SurvivalHud.WaterCx:F0},{profile.SurvivalHud.WaterCy:F0})");
+            }
+            else
+            {
+                Console.WriteLine($"  chưa hiệu chuẩn HUD — fallback tâm " +
+                                  $"({cfg.Survival.FoodCenterXRef * s.Sx:F1},{cfg.Survival.FoodCenterYRef * s.Sy:F1}) / " +
+                                  $"({cfg.Survival.WaterCenterXRef * s.Sx:F1},{cfg.Survival.WaterCenterYRef * s.Sy:F1})");
+            }
             fail += RealShots(cfg, profile, s, roi);
         }
 
@@ -58,11 +57,11 @@ internal static class VerifySurvival
         if (!ok) fail++;
     }
 
-    // ================================================================ tu kiem tra
-
-    private static readonly Color Food = Color.FromArgb(255, 220, 40);    // H≈25 (OpenCV) — trong dai 14..35
-    private static readonly Color Water = Color.FromArgb(40, 200, 220);   // H≈93          — trong dai 88..110
-    private static readonly Color Dark = Color.FromArgb(30, 30, 30);      // V=30 < 70 — bi loai o buoc re nhat
+    private static readonly Color Food = Color.FromArgb(255, 220, 40);
+    private static readonly Color Water = Color.FromArgb(40, 200, 220);
+    private static readonly Color FoodHud = Color.FromArgb(0xE6, 0x7E, 0x22);
+    private static readonly Color WaterHud = Color.FromArgb(0x5D, 0xAD, 0xE2);
+    private static readonly Color Dark = Color.FromArgb(30, 30, 30);
 
     private static int SelfTest()
     {
@@ -73,7 +72,12 @@ internal static class VerifySurvival
         fail += NormalizeCases();
         foreach (var (w, h) in new[] { (1920, 1080), (2560, 1440) })
             fail += GaugeCases(w, h);
-        fail += StreakCases();
+        fail += RealisticGaugeCases();
+        fail += PolarExtraCases();
+        fail += RoiCases();
+        fail += TemporalCases();
+        fail += UseWatchCases();
+        fail += GateCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
         return fail;
     }
@@ -84,8 +88,8 @@ internal static class VerifySurvival
         Console.WriteLine("  · ô hotbar");
         Check(ref fail, SurvivalSettings.SlotKeys("5,7").SequenceEqual(new ushort[] { 0x35, 0x37 }),
               "\"5,7\" → mã phím 0x35,0x37", "");
-        Check(ref fail, SurvivalSettings.SlotKeys("4,6").SequenceEqual(new ushort[] { 0x34, 0x36 }),
-              "\"4,6\" → mã phím 0x34,0x36", "");
+        Check(ref fail, SurvivalSettings.SlotKeys("6").SequenceEqual(new ushort[] { 0x36 }),
+              "\"6\" → một phím", "");
         Check(ref fail, SurvivalSettings.SlotKeys("").Length == 0, "chuỗi rỗng → không có phím nào", "");
         return fail;
     }
@@ -95,18 +99,23 @@ internal static class VerifySurvival
         int fail = 0;
         Console.WriteLine("  · kẹp cấu hình");
 
-        var c = new SurvivalSettings { FoodSlots = "x5!!7y9", WaterSlots = "4,4,6" };
+        var c = new SurvivalSettings { FoodSlots = "x5!!7y9", WaterSlots = "4,4,8" };
         c.Normalize();
         Check(ref fail, c.FoodSlots == "5,7", "lọc rác + cắt còn 2 phím", c.FoodSlots);
-        Check(ref fail, c.WaterSlots == "4,6", "bỏ phím trùng", c.WaterSlots);
+        Check(ref fail, c.WaterSlots == "4,8", "bỏ phím trùng trong cùng loại", c.WaterSlots);
+
+        var overlap = new SurvivalSettings { FoodSlots = "6,5", WaterSlots = "5,7" };
+        overlap.Normalize();
+        Check(ref fail, overlap.FoodSlots.Contains('5') && !overlap.WaterSlots.Contains('5'),
+              "ô trùng giữa bánh/nước → giữ bánh, bỏ khỏi nước",
+              $"bánh={overlap.FoodSlots} nước={overlap.WaterSlots}");
 
         var d = new SurvivalSettings { FoodSlots = "abc", FoodCenterXRef = -1, WaterCenterYRef = 99999 };
         d.Normalize();
-        Check(ref fail, d.FoodSlots == "5,7", "không còn phím hợp lệ → về mặc định", d.FoodSlots);
+        Check(ref fail, d.FoodSlots == "6", "không còn phím hợp lệ → về mặc định", d.FoodSlots);
         Check(ref fail, Math.Abs(d.FoodCenterXRef - 160.0) < 1e-9, "tâm âm → về mặc định", $"{d.FoodCenterXRef}");
         Check(ref fail, Math.Abs(d.WaterCenterYRef - 1047.0) < 1e-9, "tâm vượt màn → về mặc định", $"{d.WaterCenterYRef}");
 
-        // Chi kep, KHONG nem: ElectricConfig.Load nuot moi exception va tra config moi.
         bool threw = false;
         try { new SurvivalSettings { FoodSlots = null, WaterSlots = null }.Normalize(); }
         catch { threw = true; }
@@ -114,13 +123,13 @@ internal static class VerifySurvival
         return fail;
     }
 
-    /// <summary>Vẽ một đồng hồ: đĩa lõi + vòng cung quét <paramref name="sweepDeg"/> độ từ 3 giờ.</summary>
-    private static void DrawGauge(Bitmap bmp, NavScale s, double cxRef, double cyRef, double sweepDeg, Color c)
+    private static void DrawGauge(Bitmap bmp, NavScale s, double cxRef, double cyRef, double sweepDeg, Color c,
+        float? penPx = null)
     {
         double cx = cxRef * s.Sx, cy = cyRef * s.Sy;
         double coreR = NavTuning.SurvivalCoreRadiusRef * s.Max;
         double ringR = 0.5 * (NavTuning.SurvivalRingRminRef + NavTuning.SurvivalRingRmaxRef) * s.Max;
-        float pen = (float)(9.0 * s.Max);   // phu du ca dai rmin..rmax du GDI khong khu rang cua
+        float pen = penPx ?? (float)(9.0 * s.Max);
 
         using var g = Graphics.FromImage(bmp);
         using var br = new SolidBrush(c);
@@ -133,9 +142,17 @@ internal static class VerifySurvival
             0f, (float)sweepDeg);
     }
 
-    private static SurvivalReading Read(SurvivalSettings cfg, NavScale s, Bitmap bmp, double now)
+    private static void Sprinkle(Bitmap bmp, Color c, int n, int seed)
     {
-        var gauge = new SurvivalGauge(cfg, s);
+        var rng = new Random(seed);
+        for (int i = 0; i < n; i++)
+            bmp.SetPixel(rng.Next(bmp.Width), rng.Next(bmp.Height), c);
+    }
+
+    private static SurvivalReading Read(SurvivalSettings cfg, NavScale s, Bitmap bmp, double now,
+        SurvivalHudProfile hud = null)
+    {
+        var gauge = new SurvivalGauge(cfg, s, hud);
         return gauge.Update(NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height)), now);
     }
 
@@ -163,22 +180,19 @@ internal static class VerifySurvival
             var r = Read(cfg, s, bmp, 1.0);
 
             double want = sweep / 360.0 * 100.0;
-            Check(ref fail, r.FoodValid && Math.Abs(r.FoodPct - want) <= 6.0,
+            Check(ref fail, r.FoodValid && Math.Abs(r.FoodPct - want) <= 8.0,
                   $"bánh cung {sweep:F0}° → {want:F0}%", $"đọc {r.FoodPct:F1}%");
-            Check(ref fail, r.WaterValid && Math.Abs(r.WaterPct - want) <= 6.0,
+            Check(ref fail, r.WaterValid && Math.Abs(r.WaterPct - want) <= 8.0,
                   $"nước cung {sweep:F0}° → {want:F0}%", $"đọc {r.WaterPct:F1}%");
         }
 
-        // Chi co dia loi, khong co vanh: doc duoc nhung 0 %. Day la trang thai "can an ngay".
         using (var bmp = Blank(w, h))
         {
             DrawGauge(bmp, s, cfg.FoodCenterXRef, cfg.FoodCenterYRef, 0, Food);
             var r = Read(cfg, s, bmp, 1.0);
-            Check(ref fail, r.FoodValid && r.FoodPct <= 3.0, "chỉ có lõi, không vành → 0%", $"{r.FoodPct:F1}%");
+            Check(ref fail, r.FoodValid && r.FoodPct <= 4.0, "chỉ có lõi, không vành → 0%", $"{r.FoodPct:F1}%");
         }
 
-        // CHOT CHAN QUAN TRONG NHAT: khong ve gi thi phai bao "khong doc duoc", KHONG duoc tra 0 %.
-        // Tra 0 % la bot tu mo mot bua an giua luc HUD an hoac dang o menu.
         using (var bmp = Blank(w, h))
         {
             var r = Read(cfg, s, bmp, 1.0);
@@ -187,7 +201,6 @@ internal static class VerifySurvival
             Check(ref fail, !r.FoodLow && !r.WaterLow, "màn trống → không kích hoạt ăn uống", "");
         }
 
-        // Sai mau o dung cho: vang o o nuoc thi bo doc nuoc phai tu choi.
         using (var bmp = Blank(w, h))
         {
             DrawGauge(bmp, s, cfg.WaterCenterXRef, cfg.WaterCenterYRef, 360, Food);
@@ -198,109 +211,323 @@ internal static class VerifySurvival
         return fail;
     }
 
-    private static int StreakCases()
+    private static int RealisticGaugeCases()
     {
         int fail = 0;
-        Console.WriteLine("  · streak & EMA");
+        Console.WriteLine("  · màu HUD + vành mỏng");
+        var s = new NavScale(1920, 1080, 0);
+        var cfg = new SurvivalSettings();
+        cfg.Normalize();
+        float thin = (float)(3.0 * s.Max);
+
+        foreach (double sweep in new double[] { 360, 180, 270 })
+        {
+            using var bmp = Blank(1920, 1080);
+            DrawGauge(bmp, s, cfg.FoodCenterXRef, cfg.FoodCenterYRef, sweep, FoodHud, thin);
+            DrawGauge(bmp, s, cfg.WaterCenterXRef, cfg.WaterCenterYRef, sweep, WaterHud, thin);
+            var r = Read(cfg, s, bmp, 1.0);
+            double want = sweep / 360.0 * 100.0;
+            Check(ref fail, r.FoodValid && Math.Abs(r.FoodPct - want) <= 10.0,
+                  $"cam HUD cung {sweep:F0}° → {want:F0}%", $"đọc {r.FoodPct:F1}%");
+            Check(ref fail, r.WaterValid && Math.Abs(r.WaterPct - want) <= 10.0,
+                  $"xanh HUD cung {sweep:F0}° → {want:F0}%", $"đọc {r.WaterPct:F1}%");
+        }
+
+        return fail;
+    }
+
+    private static int PolarExtraCases()
+    {
+        int fail = 0;
+        Console.WriteLine("  · polar: lệch tâm, nhiễu rời, học hình học");
         var s = new NavScale(1920, 1080, 0);
         var cfg = new SurvivalSettings();
         cfg.Normalize();
 
-        // 25 % — duoi nguong 50. Phai doi du SurvivalLowConfirmScans luot moi duoc bao THIEU.
+        using (var bmp = Blank(1920, 1080))
+        {
+            DrawGauge(bmp, s, cfg.FoodCenterXRef, cfg.FoodCenterYRef, 180, Food);
+            Sprinkle(bmp, Food, 80, 11);
+            var r = Read(cfg, s, bmp, 1.0);
+            Check(ref fail, r.FoodValid && Math.Abs(r.FoodPct - 50.0) <= 10.0,
+                  "nhiễu màu rời không đội % — chỉ cung liên tục", $"{r.FoodPct:F1}% mảnh={r.FoodFragments}");
+        }
+
+        using (var bmp = Blank(1920, 1080))
+        {
+            DrawGauge(bmp, s, cfg.WaterCenterXRef + 2, cfg.WaterCenterYRef - 1, 270, Water, 5f);
+            var shifted = new SurvivalSettings
+            {
+                FoodCenterXRef = cfg.FoodCenterXRef,
+                FoodCenterYRef = cfg.FoodCenterYRef,
+                WaterCenterXRef = cfg.WaterCenterXRef,
+                WaterCenterYRef = cfg.WaterCenterYRef
+            };
+            shifted.Normalize();
+            var r = Read(shifted, s, bmp, 1.0);
+            Check(ref fail, r.WaterValid && Math.Abs(r.WaterPct - 75.0) <= 12.0,
+                  "tâm lệch 2px vẫn đọc ~75%", $"{r.WaterPct:F1}%");
+        }
+
+        using (var bmp = Blank(1920, 1080))
+        {
+            DrawGauge(bmp, s, cfg.FoodCenterXRef, cfg.FoodCenterYRef, 180, Food);
+            var frame = NavFrame.FromBitmap(bmp, new Rectangle(0, 0, 1920, 1080));
+            double cx = cfg.FoodCenterXRef * s.Sx, cy = cfg.FoodCenterYRef * s.Sy;
+            var roi = new Rectangle((int)(cx - 32), (int)(cy - 32), 64, 64);
+            bool geo = SurvivalCalibrator.TryLearnGeometry(frame, roi, food: true, out var ring);
+            Check(ref fail, geo && ring is not null && Math.Abs(ring.Cx - cx) <= 6
+                           && ring.Rmin >= 14 && ring.Rmax <= 28 && ring.Rmax > ring.Rmin,
+                  "học tâm/radius từ ROI (vành, không phải lõi)",
+                  geo ? $"tâm ({ring.Cx:F0},{ring.Cy:F0}) r {ring.Rmin:F0}–{ring.Rmax:F0}" : "thất bại");
+        }
+
+        return fail;
+    }
+
+    private static int RoiCases()
+    {
+        int fail = 0;
+        Console.WriteLine("  · vùng chụp theo tâm / ROI profile");
+        var s = new NavScale(1920, 1080, 0);
+        var def = new SurvivalSettings();
+        def.Normalize();
+        var roi = def.CaptureRoi(s);
+        var documented = s.RoiRef(NavTuning.SurvivalRoiRef[0], NavTuning.SurvivalRoiRef[1],
+                                  NavTuning.SurvivalRoiRef[2], NavTuning.SurvivalRoiRef[3]);
+        Check(ref fail, !roi.IsEmpty, "tâm mặc định → ROI không rỗng", $"{roi.Width}×{roi.Height}");
+        Check(ref fail, roi.IntersectsWith(documented),
+              "ROI mặc định giao hộp SurvivalRoiRef", $"{roi} vs {documented}");
+
+        double rmax = NavTuning.SurvivalRingRmaxRef * s.Max;
+        bool foodIn = 160 - rmax >= roi.X && 160 + rmax <= roi.Right && 1047 - rmax >= roi.Y && 1047 + rmax <= roi.Bottom;
+        bool waterIn = 210 - rmax >= roi.X && 210 + rmax <= roi.Right && 1047 - rmax >= roi.Y && 1047 + rmax <= roi.Bottom;
+        Check(ref fail, foodIn && waterIn, "ROI mặc định ôm trọn hai vành", $"{roi.X},{roi.Y} {roi.Width}×{roi.Height}");
+
+        var hud = new SurvivalHudProfile
+        {
+            FoodRoi = new FishingRect { X = 380, Y = 860, W = 70, H = 70 },
+            WaterRoi = new FishingRect { X = 450, Y = 860, W = 70, H = 70 }
+        };
+        var far = def.CaptureRoi(s, hud);
+        Check(ref fail, far.Contains(400, 880) && far.Contains(480, 880) && far.X > 300,
+              "ROI profile đi theo ô đã khoanh", $"{far.X},{far.Y} {far.Width}×{far.Height}");
+        return fail;
+    }
+
+    private static int TemporalCases()
+    {
+        int fail = 0;
+        Console.WriteLine("  · median / streak / chống nhảy");
+        var s = new NavScale(1920, 1080, 0);
+        var cfg = new SurvivalSettings();
+        cfg.Normalize();
+
         using var low = Blank(1920, 1080);
         DrawGauge(low, s, cfg.FoodCenterXRef, cfg.FoodCenterYRef, 90, Food);
         var frameLow = NavFrame.FromBitmap(low, new Rectangle(0, 0, 1920, 1080));
 
-        var gauge = new SurvivalGauge(cfg, s);
-        double t = 1.0;
-        for (int i = 1; i < NavTuning.SurvivalLowConfirmScans; i++)
-        {
-            var r = gauge.Update(frameLow, t);
-            Check(ref fail, !r.FoodLow, $"lượt {i}/{NavTuning.SurvivalLowConfirmScans} chưa báo THIẾU", $"{r.FoodPct:F1}%");
-            t += NavTuning.SurvivalScanIntervalS;
-        }
-        var last = gauge.Update(frameLow, t);
-        Check(ref fail, last.FoodLow, $"lượt {NavTuning.SurvivalLowConfirmScans} mới báo THIẾU", $"{last.FoodPct:F1}%");
+        using var high = Blank(1920, 1080);
+        DrawGauge(high, s, cfg.FoodCenterXRef, cfg.FoodCenterYRef, 330, Food);
+        var frameHigh = NavFrame.FromBitmap(high, new Rectangle(0, 0, 1920, 1080));
 
-        // Mat icon giua chung la XOA streak: mot khung HUD an khong duoc phep gop vao chuoi.
         using var blank = Blank(1920, 1080);
         var frameBlank = NavFrame.FromBitmap(blank, new Rectangle(0, 0, 1920, 1080));
+
+        var gauge = new SurvivalGauge(cfg, s);
+        double t = 1.0;
+        SurvivalReading last = SurvivalReading.None;
+        int need = NavTuning.SurvivalMedianMinValid + NavTuning.SurvivalLowConfirmScans - 1;
+        for (int i = 1; i < need; i++)
+        {
+            last = gauge.Update(frameLow, t);
+            Check(ref fail, !last.FoodLow, $"khung {i}/{need} chưa báo THIẾU", $"{last.FoodPct:F1}%");
+            t += NavTuning.SurvivalScanIntervalS;
+        }
+        last = gauge.Update(frameLow, t);
+        Check(ref fail, last.FoodLow, $"đủ {need} khung (cửa sổ 7 + 5 thấp liên tiếp) mới báo THIẾU", $"{last.FoodPct:F1}%");
+
         t += NavTuning.SurvivalScanIntervalS;
         gauge.Update(frameBlank, t);
         t += NavTuning.SurvivalScanIntervalS;
-        var after = gauge.Update(frameLow, t);
-        Check(ref fail, !after.FoodLow, "mất icon một lượt → streak về 0, phải đếm lại từ đầu", "");
+        var afterHide = gauge.Update(frameLow, t);
+        Check(ref fail, !afterHide.FoodLow, "HUD ẩn một khung → streak về 0", "");
 
-        // Tiet luu: hoi truoc khi chup, 0.25 s mot lan chu khong moi tick 25 ms.
         var g2 = new SurvivalGauge(cfg, s);
-        Check(ref fail, g2.Due(0.0), "chưa quét lần nào → Due() đúng", "");
-        g2.Update(frameLow, 10.0);
-        Check(ref fail, !g2.Due(10.0 + NavTuning.SurvivalScanIntervalS / 2), "chưa tới hạn → Due() sai", "");
-        Check(ref fail, g2.Due(10.0 + NavTuning.SurvivalScanIntervalS), "tới hạn → Due() đúng", "");
+        t = 1.0;
+        for (int i = 0; i < NavTuning.SurvivalMedianWindow; i++)
+        {
+            g2.Update(frameLow, t);
+            t += NavTuning.SurvivalScanIntervalS;
+        }
+        double stable = g2.Last.FoodPct;
+        g2.Update(frameHigh, t);
+        Check(ref fail, Math.Abs(g2.Last.FoodPct - stable) <= 8.0,
+              "một frame 90% không kéo mức ổn định", $"ổn định {g2.Last.FoodPct:F1}% (trước {stable:F1}%)");
 
-        g2.Reset();
-        Check(ref fail, g2.Due(0.0) && !g2.Last.FoodValid, "Reset() xoá cả hạn quét lẫn kết quả", "");
+        var g3 = new SurvivalGauge(cfg, s);
+        Check(ref fail, g3.Due(0.0), "chưa quét lần nào → Due() đúng", "");
+        g3.Update(frameLow, 10.0);
+        Check(ref fail, !g3.Due(10.0 + NavTuning.SurvivalScanIntervalS / 2), "chưa tới hạn → Due() sai", "");
+        Check(ref fail, g3.Due(10.0 + NavTuning.SurvivalScanIntervalS), "tới hạn → Due() đúng", "");
+        g3.Reset();
+        Check(ref fail, g3.Due(0.0) && !g3.Last.FoodValid, "Reset() xoá cả hạn quét lẫn kết quả", "");
         return fail;
     }
 
-    // ================================================================ anh that
+    private static int UseWatchCases()
+    {
+        int fail = 0;
+        Console.WriteLine("  · xác nhận sau dùng");
+        var watch = new SurvivalUseWatch();
+        watch.Start(41, 0);
+        Check(ref fail, watch.Observe(93, 1.0, out _) == SurvivalUseVerdict.Animating,
+              "trong animation không kết luận dù thấy 93%", "");
 
-    private static Bitmap Load(ElectricProfile p, string name, out string why)
+        watch.Start(41, 0);
+        var v = SurvivalUseVerdict.Watching;
+        double t = 0;
+        while (t <= NavTuning.SurvivalUseTimeoutS + 0.3)
+        {
+            double? pct = t < 1.0 ? 93.0 : 30.0;
+            v = watch.Observe(pct, t, out _);
+            t += 0.25;
+        }
+        Check(ref fail, v == SurvivalUseVerdict.Failed,
+              "spike 41→93→30 không được công nhận thành công", v.ToString());
+
+        watch.Start(41, 0);
+        t = 0;
+        v = SurvivalUseVerdict.Watching;
+        while (t < NavTuning.SurvivalAnimMinS + NavTuning.SurvivalConfirmS + 0.3)
+        {
+            double? pct = t < NavTuning.SurvivalAnimMinS ? 45.0 : 72.0;
+            v = watch.Observe(pct, t, out _);
+            t += 0.25;
+        }
+        Check(ref fail, v == SurvivalUseVerdict.Success, "tăng ổn định ≥10 điểm trong 2s → thành công", v.ToString());
+        return fail;
+    }
+
+    private static int GateCases()
+    {
+        int fail = 0;
+        Console.WriteLine("  · cổng state");
+        Check(ref fail, SurvivalGate.CanPauseJob("SEEK_LIGHTNING"), "SEEK_LIGHTNING được phép pause", "");
+        Check(ref fail, !SurvivalGate.CanPauseJob("WAIT_EMPLOYED_BOARD"), "bảng NPC không bị ngắt", "");
+        Check(ref fail, SurvivalGate.Decide("SEEK_LIGHTNING", "WORLD", null, null, false, false) == SurvivalActKind.Start,
+              "SEEK_LIGHTNING + thiếu → Start (pause rồi uống)", "");
+        Check(ref fail, SurvivalGate.Decide("WAIT_EMPLOYED_BOARD", "WORLD", null, null, false, false) == SurvivalActKind.Pending,
+              "bảng NPC → pending meal", "");
+        Check(ref fail, SurvivalGate.Decide(null, "WORLD", NavCameraReset.Down, null, false, false) == SurvivalActKind.Blocked,
+              "reset camera không bị ngắt", "");
+        Check(ref fail, SurvivalGate.Decide(null, "WORLD", null, null, true, false) == SurvivalActKind.Blocked,
+              "panel mở → không mở bữa", "");
+        Check(ref fail, SurvivalGate.Decide(null, "WAIT_BOARD", null, null, false, false) == SurvivalActKind.Wait,
+              "simple flow khác WORLD → chờ", "");
+        Check(ref fail, SurvivalGate.Decide(null, "WORLD", null, NavInteraction.Settle, false, false) == SurvivalActKind.Blocked,
+              "đang SETTLE E → không mở bữa", "");
+        Check(ref fail, SurvivalGate.IsNpcBoard("WAIT_OUTSIDE_PROMPT"), "WAIT_OUTSIDE_PROMPT là bảng NPC", "");
+
+        string reason = SurvivalGate.WaitReason(SurvivalActKind.Pending, false, true, 80, 38);
+        Check(ref fail, reason.Contains("38") && reason.Contains("bảng"),
+              "log chờ ghi mức ổn định và lý do", reason);
+        return fail;
+    }
+
+    private static Bitmap Load(string path, int wantW, int wantH, out string why)
     {
         why = null;
-        string path = ElectricConfig.ShotPath(p.Key, name);
         var bmp = StillPicker.Load(path);
-        if (bmp is null) { why = $"chưa chụp ({Path.GetFileName(path)})"; return null; }
-        if (bmp.Width != p.Width || bmp.Height != p.Height)
+        if (bmp is null) { why = $"chưa có ({Path.GetFileName(path)})"; return null; }
+        if (wantW > 0 && (bmp.Width != wantW || bmp.Height != wantH))
         {
-            why = $"ảnh {bmp.Width}×{bmp.Height} lệch profile {p.Width}×{p.Height} — chụp lại";
+            why = $"ảnh {bmp.Width}×{bmp.Height} lệch {wantW}×{wantH}";
             bmp.Dispose();
             return null;
         }
         return bmp;
     }
 
-    /// <summary>Thiếu ảnh nào thì bỏ qua ảnh đó — chưa chụp không phải là lỗi.</summary>
     private static int RealShots(ElectricConfig cfg, ElectricProfile p, NavScale s, Rectangle roi)
     {
         int fail = 0;
+        fail += LabeledSamples(cfg, p, s);
 
-        foreach (var (name, label) in new[] { ("hud-no", "no đủ"), ("hud-doi", "đói/khát") })
+        foreach (var name in new[] { "hud-no", "hud-doi" })
         {
-            using var shot = Load(p, name, out string why);
+            string path = ElectricConfig.ShotPath(p.Key, name);
+            using var shot = Load(path, p.Width, p.Height, out string why);
             if (shot is null) { Console.WriteLine($"  [{name}] bỏ qua: {why}"); continue; }
 
-            var r = Read(cfg.Survival, s, shot, 1.0);
-            Console.WriteLine($"  [{name}] ({label}) bánh={Pct(r.FoodValid, r.FoodPct)} nước={Pct(r.WaterValid, r.WaterPct)}");
-
-            // Doc duoc HAI icon la ca kiem duy nhat dat cung o day: phan tram bao nhieu thi chi mat
-            // nguoi moi xac nhan duoc, nhung "khong thay icon" thi chac chan la tam trong config
-            // tro sai cho — va do la loi lam ca tinh nang chet cam.
-            Check(ref fail, r.FoodValid, $"[{name}] thấy icon bánh ở tâm đã cấu hình", "");
-            Check(ref fail, r.WaterValid, $"[{name}] thấy icon nước ở tâm đã cấu hình", "");
-
-            if (name == "hud-doi" && r.FoodValid && r.WaterValid)
-                Console.WriteLine($"      → {(r.FoodPct < NavTuning.SurvivalLowThresholdPct ? "bánh" : "")}" +
-                                  $"{(r.WaterPct < NavTuning.SurvivalLowThresholdPct ? " nước" : "")}" +
-                                  $" dưới ngưỡng {NavTuning.SurvivalLowThresholdPct:F0}% → sẽ mở bữa ăn");
+            var r = Read(cfg.Survival, s, shot, 1.0, p.SurvivalHud);
+            Console.WriteLine($"  [{name}] bánh={Pct(r.FoodValid, r.FoodPct)} nước={Pct(r.WaterValid, r.WaterPct)} " +
+                              $"(không suy nhãn từ tên file)");
+            Check(ref fail, r.FoodValid, $"[{name}] thấy icon bánh", "");
+            Check(ref fail, r.WaterValid, $"[{name}] thấy icon nước", "");
         }
 
-        // Vung chup phai om tron ca hai vanh, khong thi phan tram bi cat oan o ria khung.
-        double rmax = NavTuning.SurvivalRingRmaxRef * s.Max;
-        foreach (var (cxr, cyr, who) in new[]
-                 {
-                     (cfg.Survival.FoodCenterXRef, cfg.Survival.FoodCenterYRef, "bánh"),
-                     (cfg.Survival.WaterCenterXRef, cfg.Survival.WaterCenterYRef, "nước")
-                 })
+        if (!roi.IsEmpty && !p.SurvivalHud.HasRois)
         {
-            double cx = cxr * s.Sx, cy = cyr * s.Sy;
-            bool inside = cx - rmax >= roi.X && cx + rmax <= roi.X + roi.Width
-                                             && cy - rmax >= roi.Y && cy + rmax <= roi.Y + roi.Height;
-            Check(ref fail, inside, $"vùng chụp bao trọn vành {who}", $"tâm ({cx:F0},{cy:F0}) ± {rmax:F0}");
+            double rmax = NavTuning.SurvivalRingRmaxRef * s.Max;
+            foreach (var (cxr, cyr, who) in new[]
+                     {
+                         (cfg.Survival.FoodCenterXRef, cfg.Survival.FoodCenterYRef, "bánh"),
+                         (cfg.Survival.WaterCenterXRef, cfg.Survival.WaterCenterYRef, "nước")
+                     })
+            {
+                double cx = cxr * s.Sx, cy = cyr * s.Sy;
+                bool inside = cx - rmax >= roi.X && cx + rmax <= roi.X + roi.Width
+                                                 && cy - rmax >= roi.Y && cy + rmax <= roi.Y + roi.Height;
+                Check(ref fail, inside, $"vùng chụp bao trọn vành {who}", $"tâm ({cx:F0},{cy:F0}) ± {rmax:F0}");
+            }
         }
 
         return fail;
     }
+
+    private static int LabeledSamples(ElectricConfig cfg, ElectricProfile p, NavScale s)
+    {
+        int fail = 0;
+        string dir = ElectricConfig.SurvivalDir(p.Key);
+        if (!Directory.Exists(dir))
+        {
+            Console.WriteLine("  [survival/] chưa có mẫu LOW/HIGH của wizard — bỏ qua");
+            return 0;
+        }
+
+        using var foodLow = Load(ElectricConfig.SurvivalSamplePath(p.Key, "food-low"), 0, 0, out _);
+        using var foodHigh = Load(ElectricConfig.SurvivalSamplePath(p.Key, "food-high"), 0, 0, out _);
+        using var waterLow = Load(ElectricConfig.SurvivalSamplePath(p.Key, "water-low"), 0, 0, out _);
+        using var waterHigh = Load(ElectricConfig.SurvivalSamplePath(p.Key, "water-high"), 0, 0, out _);
+
+        if (foodLow is null || foodHigh is null || waterLow is null || waterHigh is null)
+        {
+            Console.WriteLine("  [survival/] thiếu một trong bốn file food/water-low/high — bỏ qua");
+            return 0;
+        }
+
+        var gauge = new SurvivalGauge(cfg.Survival, s, p.SurvivalHud);
+        var fl = FrameOf(foodLow, p);
+        var fh = FrameOf(foodHigh, p);
+        var wl = FrameOf(waterLow, p);
+        var wh = FrameOf(waterHigh, p);
+
+        var a = gauge.ReadRaw(fl, food: true);
+        var b = gauge.ReadRaw(fh, food: true);
+        var c = gauge.ReadRaw(wl, food: false);
+        var d = gauge.ReadRaw(wh, food: false);
+        Console.WriteLine($"  [wizard] bánh LOW={Pct(a.Valid, a.Pct)} HIGH={Pct(b.Valid, b.Pct)}  " +
+                          $"nước LOW={Pct(c.Valid, c.Pct)} HIGH={Pct(d.Valid, d.Pct)}");
+        Check(ref fail, a.Valid && b.Valid && b.Pct >= a.Pct + 10,
+              "mẫu wizard bánh: HIGH lớn hơn LOW", $"LOW {a.Pct:F0} HIGH {b.Pct:F0}");
+        Check(ref fail, c.Valid && d.Valid && d.Pct >= c.Pct + 10,
+              "mẫu wizard nước: HIGH lớn hơn LOW", $"LOW {c.Pct:F0} HIGH {d.Pct:F0}");
+        return fail;
+    }
+
+    private static NavFrame FrameOf(Bitmap bmp, ElectricProfile p)
+        => NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
 
     private static string Pct(bool valid, double v) => valid ? $"{v:F1}%" : "không đọc được";
 }

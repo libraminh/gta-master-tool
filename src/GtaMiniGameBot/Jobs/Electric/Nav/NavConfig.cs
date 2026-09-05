@@ -427,43 +427,43 @@ internal static class NavTuning
 
     public const double FocusGraceS = 1.5;                               // focus_unknown_title_grace_s
 
-    // ================================================================ an uong (SurvivalGaugeDetector)
+    // ================================================================ an uong (SurvivalGauge)
     /// <summary>
-    /// Vùng chụp bao cả hai đồng hồ tròn ở góc dưới trái. KHÔNG dùng lại được <see cref="WorldRoiRef"/>
-    /// vì vùng đó dừng ở y=950 còn hai icon nằm ở y≈1047. Rộng hơn tâm icon mỗi bên ~30 px để còn chỗ
-    /// cho vành ngoài (rmax 23) và cho người dùng chỉnh tâm vài chục pixel mà không phải sửa ROI.
+    /// Hộp chụp của TÂM MẶC ĐỊNH (160/210, 1047) + lề vành. Runtime ưu tiên ROI đã khoanh
+    /// trên <see cref="SurvivalHudProfile"/>; số này chỉ là hộp an toàn khi chưa hiệu chuẩn.
     /// </summary>
     public static readonly double[] SurvivalRoiRef = { 120, 1005, 260, 1080 };
 
-    public const double SurvivalCoreRadiusRef = 10.0;                    // survival_core_radius_px
-    public const int SurvivalCoreMinPixels = 16;                         // survival_core_min_pixels (dien tich)
-    public const double SurvivalRingRminRef = 17.0;                      // survival_ring_rmin_px
-    public const double SurvivalRingRmaxRef = 23.0;                      // survival_ring_rmax_px
-    public const int SurvivalRadialSamples = 7;                          // survival_radial_samples
-    public const int SurvivalAngleBins = 180;                            // survival_angle_bins
-    public const int SurvivalAngleHitPixels = 2;                         // survival_angle_hit_pixels
-    public const double SurvivalScanIntervalS = 0.25;                    // survival_scan_interval_s
-    public const double SurvivalEmaAlpha = 0.45;                         // survival_ema_alpha
-    public const double SurvivalLowThresholdPct = 50.0;                  // survival_low_threshold_pct
-    public const int SurvivalLowConfirmScans = 3;                        // survival_low_confirm_scans
-    public const double SurvivalPreUseSettleS = 0.20;                    // survival_pre_use_settle_s
-    public const double SurvivalKeyHoldS = 0.150;                        // survival_key_hold_ms
+    public const double SurvivalCoreRadiusRef = 10.0;
+    public const int SurvivalCoreMinPixels = 16;
+    public const double SurvivalRingRminRef = 17.0;
+    public const double SurvivalRingRmaxRef = 23.0;
+    public const int SurvivalPolarBins = 180;
+    public const int SurvivalPolarRadialSamples = 12;
+    public const double SurvivalScoreThreshold = 0.40;
+    public const double SurvivalMinConfidence = 0.28;
+    public const int SurvivalGapFillBins = 2;
+    public const int SurvivalMaxFragments = 4;
+    public const double SurvivalScanIntervalS = 0.25;
+    public const double SurvivalLowThresholdPct = 50.0;
+    public const int SurvivalMedianWindow = 9;
+    public const int SurvivalMedianMinValid = 7;
+    public const int SurvivalLowConfirmScans = 5;
+    public const double SurvivalJumpRejectPct = 25.0;
+    public const double SurvivalPreUseSettleS = 0.20;
+    public const double SurvivalKeyHoldS = 0.150;
+    public const double SurvivalAnimMinS = 2.5;
+    public const double SurvivalConfirmS = 2.0;
+    public const double SurvivalUseTimeoutS = 8.0;
+    public const double SurvivalSuccessDeltaPct = 10.0;
+    public const double SurvivalSuccessAbsPct = 55.0;
+    public const double SurvivalSuccessRearmS = 4.0;
+    public const double SurvivalFailedBlockS = 60.0;
+    public const double SurvivalPostUseWRearmS = 1.2;
+    public const double SurvivalSampleDeltaPct = 15.0;
 
-    /// <summary>
-    /// <c>survival_fixed_wait_s</c>. Đứng CHẾT đúng 10 s rồi mới đọc đồng hồ một lần. Bản Python từng
-    /// có đường thoát sớm (<c>survival_use_confirm_min_s/max_s/delta_pct</c>) và bỏ hẳn ở V6.59 vì
-    /// đọc giữa animation ăn cho số loạn — ba khoá đó nay nằm chết trong config.json của họ.
-    /// </summary>
-    public const double SurvivalFixedWaitS = 10.0;
-
-    public const double SurvivalSuccessDeltaPct = 3.0;                   // survival_success_delta_pct
-    public const double SurvivalFailedBlockS = 30.0;                     // survival_failed_resource_block_s
-    public const double SurvivalPostUseWRearmS = 1.2;                    // survival_post_use_w_rearm_s
-
-    // food_hsv_low/high (14,80,70)-(35,255,255) — vong cung vang/cam.
+    /// <summary>Giới hạn HSV dự phòng khi chưa học màu từ mẫu LOW/HIGH — không nới rộng.</summary>
     public const int FoodHLo = 14, FoodHHi = 35, FoodSMin = 80, FoodVMin = 70;
-
-    // water_hsv_low/high (88,80,70)-(110,255,255) — vong cung xanh cyan.
     public const int WaterHLo = 88, WaterHHi = 110, WaterSMin = 80, WaterVMin = 70;
 }
 
