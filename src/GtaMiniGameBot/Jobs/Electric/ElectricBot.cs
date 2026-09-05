@@ -134,9 +134,22 @@ internal sealed class ElectricBot
                      : "đang chờ minigame hiện ra."));
 
             // Cho bo dieu huong muon lai dung hai bo tham do nay: no chi biet "da bam E xong roi",
-            // con "minigame da mo chua" thi o day moi tra loi duoc.
+            // con "minigame da mo chua" thi o day moi tra loi duoc. Panel day phai doc du slot
+            // mau qua hai khung — FindPanel don le nhan nham tu bien ap/gian sat.
+            var wireGate = new WirePanelGate();
+            bool WireConfirmed()
+            {
+                if (!wantWire) return false;
+                var hit = wireProbe.ConfirmPanel();
+                double now = NavClock.Now;
+                if (wireGate.Note(hit, now, out string skip)) return true;
+                if (wireGate.ShouldLogSkip(now, skip))
+                    Emit($"[BỎ PANEL DÂY] {skip}" + (hit.Panel.IsEmpty ? "" : $" tại {hit.Panel.Width}×{hit.Panel.Height}"));
+                return false;
+            }
+
             bool PanelVisible() =>
-                (wantWire && !wireProbe.FindPanel().IsEmpty) ||
+                WireConfirmed() ||
                 (wantBoard && boardProbe.BoardOpen(conservativeOnCaptureFailure: false));
 
             // Bo dieu huong can biet no vua duoc goi lai SAU mot minigame (de reset camera, lay lai W)
@@ -149,8 +162,9 @@ internal sealed class ElectricBot
                 ct.ThrowIfCancellationRequested();
                 WaitWindow(ct);
 
-                if (wantWire && !wireProbe.FindPanel().IsEmpty)
+                if (WireConfirmed())
                 {
+                    wireGate.Reset();
                     Emit("thấy panel đi dây — giao cho bộ giải dây.");
                     if (!RunWire(ct, out message, out bool solved)) return;
                     if (StopAfterOneRound(ref message)) return;

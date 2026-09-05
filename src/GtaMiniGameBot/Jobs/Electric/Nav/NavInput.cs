@@ -82,6 +82,7 @@ internal sealed class NavInput : IDisposable
     private readonly object _mlock = new();
     private readonly double _xMultiplier;
     private double _tx, _ty, _rx, _ry, _fx, _fy, _ux, _uy;
+    private long _ySent;
     private readonly Thread _mouseThread;
     private volatile bool _mouseStop;
 
@@ -222,6 +223,36 @@ internal sealed class NavInput : IDisposable
     }
 
     /// <summary>
+    /// Xung W lấy lại gameplay sau NUI: UP → nhấn ngắn → UP. Không giữ W và không mở cửa sổ
+    /// heartbeat/rearm — reset camera phải đứng yên, chỉ cần game nhận lại raw mouse.
+    /// </summary>
+    public void PulseWReacquire(double holdMs = 40.0)
+    {
+        double holdS = Math.Clamp(holdMs / 1000.0, 0.018, 0.080);
+        lock (_lock)
+        {
+            InputSender.KeyUp(VK_W);
+            _held &= ~NavKey.W;
+            _rearmUntil = 0;
+            _hardRemaining = 0;
+            _nextRearm = 0;
+            _nextHeartbeat = NavClock.Now + HeartbeatS;
+        }
+        Thread.Sleep(10);
+        lock (_lock) InputSender.KeyDown(VK_W);
+        Thread.Sleep((int)Math.Round(holdS * 1000));
+        lock (_lock)
+        {
+            InputSender.KeyUp(VK_W);
+            _held &= ~NavKey.W;
+            _rearmUntil = 0;
+            _hardRemaining = 0;
+            _nextRearm = 0;
+            _nextHeartbeat = NavClock.Now + HeartbeatS;
+        }
+    }
+
+    /// <summary>
     /// <c>force_w_takeover_once</c>: một cú W UP thật, một khoảng trống nhìn thấy được, rồi W DOWN
     /// thật — để game trả quyền đi thẳng về sau khi minigame/UI đóng. Gap cho phép tới 140 ms vì
     /// 50 ms từng bị FiveM/NUI nuốt.
@@ -334,6 +365,26 @@ internal sealed class NavInput : IDisposable
         lock (_mlock) { _ty = cps; _uy = now; }
     }
 
+    /// <summary>Tổng count Y đã gửi thành công qua <see cref="InputSender.MoveRelative"/>.</summary>
+    public long YSentCounts { get { lock (_mlock) return _ySent; } }
+
+    public void ResetYSent() { lock (_mlock) _ySent = 0; }
+
+    /// <summary>Tích phân profile Y ngoài game — cùng tau/gia tốc luồng 240 Hz.</summary>
+    public static int SimulateYCounts(double targetCps, double durationS)
+    {
+        double rate = 0, frac = 0;
+        const double dt = 1.0 / 240;
+        int n = Math.Max(1, (int)Math.Round(durationS * 240.0));
+        int total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            (rate, frac, int outp) = AxisStep(targetCps, rate, frac, dt, YTauS, YAccelCps2);
+            total += outp;
+        }
+        return total;
+    }
+
     /// <summary>
     /// <c>stop_mouse_stream</c>. <paramref name="immediate"/> false = chỉ hạ đích về 0 để tốc độ tắt dần
     /// qua tau (cú "dừng mềm" duy nhất của bản Python nằm ở ARC_ARRIVAL_COAST); true = cắt phăng.
@@ -410,7 +461,11 @@ internal sealed class NavInput : IDisposable
                 }
             }
 
-            lock (_mlock) { _rx = rx; _fx = fx; _ry = ry; _fy = fy; }
+            lock (_mlock)
+            {
+                _rx = rx; _fx = fx; _ry = ry; _fy = fy;
+                if (dy != 0) _ySent += dy;
+            }
         }
 
         lock (_mlock) { _rx = _tx = _fx = 0; _ry = _ty = _fy = 0; }

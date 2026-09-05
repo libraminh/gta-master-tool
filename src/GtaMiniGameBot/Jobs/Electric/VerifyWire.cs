@@ -26,6 +26,7 @@ internal static class VerifyWire
         int fail = 0;
         fail += SyntheticTests();
         fail += PolicyTests();
+        fail += GateTests();
         fail += StillTests();
 
         Console.WriteLine();
@@ -369,7 +370,155 @@ internal static class VerifyWire
             Console.WriteLine("  chưa có ảnh nào. Chụp bằng tab Điện → “Chụp ảnh tĩnh…”, " +
                               "lưu tên wire3.png / wire5.png.");
 
-        return fail + NoFalsePanelOnBoard(cfg);
+        return fail + NoFalsePanelOnBoard(cfg) + NoFalsePanelOnWorld(cfg);
+    }
+
+    // ================================================================ cong semantic
+
+    /// <summary>
+    /// Cảnh world chỉ có viền/nền xám có thể qua <see cref="WireReader.FindPanel"/> nhưng không
+    /// được cổng giao quyền. Panel thật phải qua hai khung độc lập; cùng một lần thăm dò không đủ.
+    /// </summary>
+    private static int GateTests()
+    {
+        Console.WriteLine();
+        Console.WriteLine("-- cổng panel dây (không nhận nhầm world) --");
+
+        int fail = 0;
+        const int sw = 2560, sh = 1440;
+        var profile = new ElectricProfile { Width = sw, Height = sh };
+        profile.Normalize();
+        var cfg = new ElectricConfig();
+        cfg.Normalize();
+
+        var worldBox = new Rectangle(900, 420, 640, 560);
+        using (var world = DrawWorldBorderBox(sw, sh, worldBox))
+        using (var reader = WireReader.OpenForBitmap(cfg, profile, world))
+        {
+            var found = reader.FindPanel();
+            var hit = reader.ConfirmPanel();
+            if (found.IsEmpty)
+            {
+                Console.WriteLine("  world viền-nền: đạt — FindPanel cũng không thấy (cổng không cần vào)");
+            }
+            else if (!hit.Ok)
+            {
+                Console.WriteLine($"  world viền-nền: đạt — FindPanel thấy {found.Width}×{found.Height} nhưng cổng semantic bỏ ({hit.Reject})");
+            }
+            else
+            {
+                Console.WriteLine($"  world viền-nền: HỎNG — ConfirmPanel nhận WIRE_{hit.Round.Count} tại {found}");
+                fail++;
+            }
+
+            var gate = new WirePanelGate();
+            bool opened = gate.Note(hit, 1.0, out _) && gate.Note(hit, 1.0 + WirePanelGate.MinIndependentGapS, out _);
+            if (opened)
+            {
+                Console.WriteLine("  world viền-nền: HỎNG — cổng hai khung vẫn mở");
+                fail++;
+            }
+            else
+                Console.WriteLine("  world viền-nền: đạt — hai khung cũng không mở cổng");
+        }
+
+        var realBox = new Rectangle((sw - 747) / 2, (sh - 693) / 2, 747, 693);
+        using (var still = DrawPanel(sw, sh, 3, realBox))
+        using (var reader = WireReader.OpenForBitmap(cfg, profile, still))
+        {
+            var hit = reader.ConfirmPanel();
+            if (!hit.Ok)
+            {
+                Console.WriteLine("  panel thật: HỎNG — ConfirmPanel không đọc được slot");
+                fail++;
+                return fail;
+            }
+
+            var gate = new WirePanelGate();
+            bool first = gate.Note(hit, 10.0, out _);
+            bool same = gate.Note(hit, 10.0, out string sameSkip);
+            int streakAfterSame = gate.Streak;
+            bool second = gate.Note(hit, 10.0 + WirePanelGate.MinIndependentGapS, out _);
+            if (first || same || streakAfterSame != 1)
+            {
+                Console.WriteLine($"  cùng lần thăm dò: HỎNG — first={first} same={same} streak={streakAfterSame} skip={sameSkip}");
+                fail++;
+            }
+            else
+                Console.WriteLine($"  cùng lần thăm dò: đạt — streak={streakAfterSame} ({sameSkip})");
+
+            if (!second)
+            {
+                Console.WriteLine($"  panel thật hai khung: HỎNG — chưa mở cổng (streak={gate.Streak})");
+                fail++;
+            }
+            else
+                Console.WriteLine("  panel thật hai khung: đạt — ConfirmPanel + hai khung độc lập");
+        }
+
+        return fail;
+    }
+
+    /// <summary>Khối viền/nền đúng màu panel dây, không có nắp slot — mô phỏng tủ biến áp.</summary>
+    private static Bitmap DrawWorldBorderBox(int screenW, int screenH, Rectangle box)
+    {
+        var bmp = new Bitmap(screenW, screenH, PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = SmoothingMode.None;
+        g.Clear(Color.FromArgb(160, 150, 140));
+
+        var border = Rgb(WirePalette.Border);
+        var bg = Rgb(WirePalette.PanelBg);
+        int t = 8;
+        using (var bBorder = new SolidBrush(border))
+        {
+            g.FillRectangle(bBorder, box.Left, box.Top, box.Width, t);
+            g.FillRectangle(bBorder, box.Left, box.Bottom - t, box.Width, t);
+            g.FillRectangle(bBorder, box.Left, box.Top, t, box.Height);
+            g.FillRectangle(bBorder, box.Right - t, box.Top, t, box.Height);
+        }
+        using (var bBg = new SolidBrush(bg))
+            g.FillRectangle(bBg, box.Left + t, box.Top + t, box.Width - t * 2, box.Height - t * 2);
+        return bmp;
+    }
+
+    /// <summary>Ảnh world/trạm điện người dùng chụp: FindPanel có thể kêu, ConfirmPanel thì không.</summary>
+    private static int NoFalsePanelOnWorld(ElectricConfig cfg)
+    {
+        Console.WriteLine();
+        Console.WriteLine("-- không nhận nhầm panel dây trên ảnh world --");
+
+        int found = 0, fail = 0;
+        foreach (var (key, profile) in cfg.Profiles.OrderBy(kv => kv.Key))
+        {
+            foreach (var name in new[] { "world", "nav-marker", "nav-far" })
+            {
+                string path = ElectricConfig.ShotPath(key, name);
+                if (!File.Exists(path)) continue;
+                found++;
+                try
+                {
+                    using var still = new Bitmap(path);
+                    using var reader = WireReader.OpenForBitmap(cfg, profile, still);
+                    var hit = reader.ConfirmPanel();
+                    if (!hit.Ok)
+                    {
+                        Console.WriteLine($"  {key}/{name}.png: đạt — cổng bỏ ({hit.Reject ?? "không thấy"})");
+                        continue;
+                    }
+                    Console.WriteLine($"  {key}/{name}.png: HỎNG — ConfirmPanel nhận {hit.Round.Describe()}");
+                    fail++;
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("  HỎNG — " + ex.Message);
+                    fail++;
+                }
+            }
+        }
+
+        if (found == 0) Console.WriteLine("  chưa có ảnh world/nav — ca tự vẽ ở trên đã phủ.");
+        return fail;
     }
 
     /// <summary>

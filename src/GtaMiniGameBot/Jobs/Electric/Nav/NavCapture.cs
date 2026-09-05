@@ -5,6 +5,10 @@ internal sealed class WorldSnapshot
 {
     public WorldMarker Marker { get; init; } = WorldMarker.None;
     public bool PromptVisible { get; init; }
+
+    /// <summary>ROI chặt: cụm HUD <c>[E] TƯƠNG TÁC</c> — bằng chứng bấm E khi SEARCH360 mất đích.</summary>
+    public bool WorkPromptVisible { get; init; }
+
     public JobBoardInfo Board { get; init; }
     public double T { get; init; }
 
@@ -152,13 +156,18 @@ internal sealed class NavCapture : IDisposable
                 if (_resetWorldRequested) { World.Reset(); _resetWorldRequested = false; }
                 var marker = World.Update(frame, t0);
                 bool prompt = PromptHeuristic.Visible(frame, _s.ScreenW, _s.ScreenH);
+                bool work = PromptHeuristic.WorkVisible(frame, _s.ScreenW, _s.ScreenH);
                 JobBoardInfo board = WantBoard ? JobBoardReader.Read(frame, _s) : null;
                 Obstacle.Observe(frame, t0);
 
                 double dt = Math.Max(0.001, NavClock.Now - t0);
                 hz = hz <= 0 ? 1.0 / dt : 0.9 * hz + 0.1 / dt;
                 _seq++;
-                Volatile.Write(ref _snap, new WorldSnapshot { Marker = marker, PromptVisible = prompt, Board = board, T = t0, Hz = hz, Seq = _seq });
+                Volatile.Write(ref _snap, new WorldSnapshot
+                {
+                    Marker = marker, PromptVisible = prompt, WorkPromptVisible = work,
+                    Board = board, T = t0, Hz = hz, Seq = _seq
+                });
 
                 if (dt < 0.004) Thread.Sleep(1);
             }

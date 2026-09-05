@@ -72,4 +72,41 @@ internal static class NavInteraction
             || state.StartsWith("RAM_PASS_THROUGH", StringComparison.Ordinal)
             || state.StartsWith("WORLD_TRIGGER_COAST", StringComparison.Ordinal)
             || state.StartsWith("ARC_ARRIVAL_COAST", StringComparison.Ordinal));
+
+    /// <summary>
+    /// Prompt công việc ổn định khi đang SEARCH360 / vừa mất đích — được bấm E dù không còn dist/rel.
+    /// </summary>
+    public static bool LostTargetArm(bool workPromptStable, string lastState, int search360Round)
+    {
+        if (!workPromptStable) return false;
+        if (search360Round > 0) return true;
+        return lastState is not null && lastState.StartsWith("SEARCH360", StringComparison.Ordinal);
+    }
+}
+
+/// <summary>
+/// Cổng ngắt panel toàn cục: hai (hoặc ba khi reset nghề) hit <c>PanelVisible</c> độc lập.
+/// Bảng xin/nghỉ nghề (3 nút cyan) huỷ ứng viên ngay — không giao cho bộ giải nước/điện.
+/// </summary>
+internal sealed class NavPanelInterrupt
+{
+    private int _streak;
+
+    public int Streak => _streak;
+
+    public void Reset() => _streak = 0;
+
+    public bool Note(bool visible, bool npcBoard)
+    {
+        if (npcBoard || !visible)
+        {
+            Reset();
+            return false;
+        }
+        _streak++;
+        return true;
+    }
+
+    public bool Confirmed(bool jobRecovery) =>
+        _streak >= (jobRecovery ? NavTuning.PanelInterruptJobHits : NavTuning.PanelInterruptHits);
 }

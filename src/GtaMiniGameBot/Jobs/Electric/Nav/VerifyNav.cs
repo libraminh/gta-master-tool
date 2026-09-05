@@ -79,9 +79,11 @@ internal static class VerifyNav
         fail += ServoCases();
         fail += Ket1Cases();
         fail += MouseCases();
+        fail += CameraResetCases();
         fail += WatchdogCases();
         fail += PromptCases();
         fail += InteractionCases();
+        fail += PanelInterruptCases();
         fail += WorldCases();
         fail += BoardCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
@@ -327,6 +329,63 @@ internal static class VerifyNav
         return fail;
     }
 
+    private static int CameraResetCases()
+    {
+        int fail = 0;
+        string phase = NavCameraReset.Reacquire;
+        var seen = new List<string> { phase };
+        double[] hold =
+        {
+            NavTuning.CameraResetReacquireSettleS,
+            NavTuning.CameraResetSettleS,
+            NavTuning.CameraResetDownS,
+            NavTuning.CameraResetGroundHoldS,
+            NavTuning.CameraResetUpS,
+            NavTuning.CameraResetFinalSettleS
+        };
+        for (int i = 0; i < hold.Length; i++)
+        {
+            Check(ref fail, NavCameraReset.Advance(phase, hold[i] - 0.001) == phase,
+                  $"chưa hết {phase} thì đứng nguyên", "");
+            phase = NavCameraReset.Advance(phase, hold[i]);
+            seen.Add(phase);
+        }
+        Check(ref fail, string.Join(">", seen) == string.Join(">", NavCameraReset.Sequence),
+              "REACQUIRE → DOWN → UP → W_RECLAIM", string.Join(">", seen));
+
+        using (var input = new NavInput(4.0))
+        {
+            input.Apply(NavKey.W);
+            input.PulseWReacquire(NavTuning.CameraResetReacquireHoldMs);
+            Check(ref fail, !input.IsHeld(NavKey.W), "xung W reacquire không để W bị giữ",
+                  input.Held.ToString());
+        }
+
+        int down = NavInput.SimulateYCounts(NavTuning.CameraResetDownRateCps, NavTuning.CameraResetDownS);
+        int upOld = NavInput.SimulateYCounts(-1950.0, NavTuning.CameraResetUpS);
+        int up = NavInput.SimulateYCounts(-NavTuning.CameraResetUpRateCps, NavTuning.CameraResetUpS);
+        Check(ref fail, Math.Abs(NavTuning.CameraResetUpRateCps - 1950.0 * 0.85) < 1e-9,
+              "kéo lên reset giảm 15% (1950 → 1657.5)", $"{NavTuning.CameraResetUpRateCps:F1}");
+        Check(ref fail, down >= 1500, "profile Y xuống tạo đủ delta dương", $"{down}");
+        Check(ref fail, up <= -800, "profile Y lên tạo đủ delta âm", $"{up}");
+        Check(ref fail, Math.Abs(up) < Math.Abs(upOld), "delta lên nhỏ hơn profile cũ 1950 cps", $"{up} vs {upOld}");
+        Check(ref fail, NavTuning.CameraResetReacquireSettleS > 0.10
+                        && NavTuning.CameraResetReacquireHoldMs >= 30,
+              "reacquire có nhấn W rồi settle trước pitch",
+              $"hold={NavTuning.CameraResetReacquireHoldMs:F0}ms settle={NavTuning.CameraResetReacquireSettleS:F2}s");
+        Check(ref fail, Math.Abs(NavCameraReset.WaitAfterPanelGoneS(3.0) - 2.0) < 1e-9,
+              "bảng mất 3 s → chờ thêm 2 s", $"{NavCameraReset.WaitAfterPanelGoneS(3.0):F1}s");
+        Check(ref fail, Math.Abs(NavCameraReset.WaitAfterPanelGoneS(1.5) - 3.5) < 1e-9,
+              "panel dây mất 1.5 s → chờ thêm 3.5 s", $"{NavCameraReset.WaitAfterPanelGoneS(1.5):F1}s");
+        Check(ref fail, NavCameraReset.WaitAfterPanelGoneS(5.0) == 0
+                        && NavCameraReset.WaitAfterPanelGoneS(6.0) == 0,
+              "panel đã mất ≥ 5 s → reset ngay",
+              $"{NavCameraReset.WaitAfterPanelGoneS(5.0):F1}/{NavCameraReset.WaitAfterPanelGoneS(6.0):F1}");
+        Check(ref fail, NavTuning.CameraResetAfterPanelGoneS == 5.0,
+              "mốc kéo camera = 5 s từ lúc panel mất", $"{NavTuning.CameraResetAfterPanelGoneS:F1}s");
+        return fail;
+    }
+
     private static int WatchdogCases()
     {
         int fail = 0;
@@ -382,7 +441,34 @@ internal static class VerifyNav
             for (int i = 0; i < 5; i++) Box(bmp, 300 + 30 + 12 + i * 12, 568, 8, 14, Color.White);
             Check(ref fail, !PromptHeuristic.Visible(Frame(bmp), W, H), "prompt ngoài vùng 0.45–0.73 → bỏ qua", "");
         }
+        using (var bmp = NewFrame())
+        {
+            DrawWorkPrompt(bmp, 1000, 560, glyphs: 6);
+            var f = Frame(bmp);
+            Check(ref fail, PromptHeuristic.Visible(f, W, H) && PromptHeuristic.WorkVisible(f, W, H),
+                  "ô [E] + 6 chữ trong ROI chặt → prompt công việc", "");
+        }
+        using (var bmp = NewFrame())
+        {
+            DrawWorkPrompt(bmp, 900, 460, glyphs: 6);
+            var f = Frame(bmp);
+            Check(ref fail, PromptHeuristic.Visible(f, W, H) && !PromptHeuristic.WorkVisible(f, W, H),
+                  "prompt lệch lên (y≈0.43) — rộng nhận, ROI chặt bỏ", "");
+        }
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 1000, 560, 30, 30, Color.White);
+            for (int i = 0; i < 3; i++) Box(bmp, 1000 + 30 + 12 + i * 12, 568, 8, 14, Color.White);
+            Check(ref fail, !PromptHeuristic.WorkVisible(Frame(bmp), W, H),
+                  "ROI chặt nhưng thiếu chữ → không phải [E] TƯƠNG TÁC", "");
+        }
         return fail;
+    }
+
+    private static void DrawWorkPrompt(Bitmap bmp, int x, int y, int glyphs)
+    {
+        Box(bmp, x, y, 30, 30, Color.White);
+        for (int i = 0; i < glyphs; i++) Box(bmp, x + 30 + 12 + i * 12, y + 8, 8, 14, Color.White);
     }
 
     private static int InteractionCases()
@@ -406,6 +492,15 @@ internal static class VerifyNav
         Check(ref fail, pass, "pass-through hợp lệ → arm E dù dist lớn", "");
         Check(ref fail, !pred, "PREDICT_ONLY gần không arm E", "");
 
+        Check(ref fail, !NavInteraction.LostTargetArm(false, "SEARCH360_MOVING", 2),
+              "SEARCH360 nhưng chưa có prompt công việc → không arm E", "");
+        Check(ref fail, !NavInteraction.LostTargetArm(true, "RAM_V63_AIM_CENTERED_W", 0),
+              "prompt công việc khi còn đích → không arm theo SEARCH360", "");
+        Check(ref fail, NavInteraction.LostTargetArm(true, "SEARCH360_MOVING", 2),
+              "prompt công việc ổn định + SEARCH360 → được bấm E", "");
+        Check(ref fail, NavInteraction.LostTargetArm(true, "RAM_V6_LOST_KEEP_STRAIGHT", 1),
+              "đã vào SEARCH360 (round>0) + prompt công việc → được bấm E", "");
+
         Check(ref fail, !NavInteraction.RetryReady(10.5, 11.0) && NavInteraction.RetryReady(11.0, 11.0),
               "E thất bại: cooldown 1 s trước lần thử sau", "");
         Check(ref fail, NavTuning.InteractionSettleS < 0.5 && NavTuning.InteractionSettleS < NavTuning.SimpleWaitBoardS,
@@ -421,6 +516,35 @@ internal static class VerifyNav
         Check(ref fail, !gone1 && !gone2 && !gone3 && !consumed && absent >= NavTuning.SimplePromptRearmAbsentFrames,
               "prompt tắt đủ frame + hết cooldown → mở lại E",
               $"consumed={consumed} absent={absent}");
+        return fail;
+    }
+
+    private static int PanelInterruptCases()
+    {
+        int fail = 0;
+        var g = new NavPanelInterrupt();
+        g.Note(true, npcBoard: false);
+        Check(ref fail, !g.Confirmed(false) && g.Streak == 1, "một hit nền chưa giao panel", $"streak={g.Streak}");
+        Check(ref fail, g.Note(true, npcBoard: false) && g.Confirmed(false),
+              "hai hit bền vững → ngắt được khi đi thường", $"streak={g.Streak}");
+
+        g.Reset();
+        g.Note(true, false);
+        Check(ref fail, !g.Note(false, false) && g.Streak == 0, "hit chập chờn → reset streak", $"streak={g.Streak}");
+
+        g.Reset();
+        g.Note(true, false);
+        g.Note(true, false);
+        Check(ref fail, !g.Confirmed(true), "reset nghề: hai hit chưa đủ", $"streak={g.Streak}");
+        Check(ref fail, g.Note(true, false) && g.Confirmed(true),
+              "reset nghề: ba hit bền vững → ngắt được", $"streak={g.Streak}");
+
+        g.Reset();
+        g.Note(true, false);
+        Check(ref fail, !g.Note(true, npcBoard: true) && g.Streak == 0,
+              "bảng NPC (3 nút cyan) huỷ ứng viên panel", $"streak={g.Streak}");
+        Check(ref fail, !g.Note(true, npcBoard: true) && !g.Confirmed(true),
+              "bảng NPC không bao giờ giao cho bộ giải minigame", $"streak={g.Streak}");
         return fail;
     }
 
@@ -576,7 +700,10 @@ internal static class VerifyNav
         using var shot = Load(p, "nav-prompt", out string why);
         if (shot is null) { Console.WriteLine($"  [nav-prompt] bỏ qua: {why}"); return 0; }
         int fail = 0;
-        Check(ref fail, PromptHeuristic.Visible(Frame(shot), s.ScreenW, s.ScreenH), "[nav-prompt] heuristic thấy prompt [E]", "");
+        var f = Frame(shot);
+        Check(ref fail, PromptHeuristic.Visible(f, s.ScreenW, s.ScreenH), "[nav-prompt] heuristic thấy prompt [E]", "");
+        Check(ref fail, PromptHeuristic.WorkVisible(f, s.ScreenW, s.ScreenH),
+              "[nav-prompt] ROI chặt thấy [E] TƯƠNG TÁC", "");
         return fail;
     }
 

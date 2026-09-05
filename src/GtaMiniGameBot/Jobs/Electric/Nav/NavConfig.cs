@@ -332,11 +332,34 @@ internal static class NavTuning
     /// <summary>E thất bại thì không thử lại trước khoảng này, dù prompt còn hiện.</summary>
     public const double InteractionRetryS = 1.0;
 
+    /// <summary>
+    /// ROI chặt cho cụm HUD cố định <c>[E] TƯƠNG TÁC</c>. Vẫn tỉ lệ theo độ phân giải; hẹp hơn
+    /// <see cref="SimpleERoiX0"/> để khỏi bắt chữ trắng lạc, đủ bằng chứng bấm E khi SEARCH360
+    /// đã làm mất dist/rel.
+    /// </summary>
+    public const double WorkERoiX0 = 0.48, WorkERoiX1 = 0.70, WorkERoiY0 = 0.50, WorkERoiY1 = 0.62;
+    public const int WorkEMinTextGlyphs = 5;
+
+    /// <summary>Nhịp thăm dò panel ngoài cửa sổ E — khớp PollPanel.</summary>
+    public const double PanelInterruptPollS = 0.125;
+
+    /// <summary>Hai hit độc lập mới giao quyền khi đang đi thường.</summary>
+    public const int PanelInterruptHits = 2;
+
+    /// <summary>Đang reset nghề thì cần thêm một hit — bảng NPC cũng là panel lớn.</summary>
+    public const int PanelInterruptJobHits = 3;
+
     // ================================================================ reset camera + W reclaim
+    /// <summary>Kéo camera chỉ sau khi panel đã mất đủ khoảng này — không tính từ lúc nav chạy lại.</summary>
+    public const double CameraResetAfterPanelGoneS = 5.0;
+    /// <summary>Nhấn W ngắn để GTA trả quyền chuột sau NUI — không giữ W.</summary>
+    public const double CameraResetReacquireHoldMs = 40.0;
+    /// <summary>Chờ sau xung W rồi mới phát pitch. Quá ngắn thì game vẫn nuốt delta Y.</summary>
+    public const double CameraResetReacquireSettleS = 0.180;
     public const double CameraResetSettleS = 0.070;
     public const double CameraResetDownS = 0.780, CameraResetDownRateCps = 3300.0;
     public const double CameraResetGroundHoldS = 0.070;
-    public const double CameraResetUpS = 0.525, CameraResetUpRateCps = 1950.0;
+    public const double CameraResetUpS = 0.525, CameraResetUpRateCps = 1657.5;
     public const double CameraResetFinalSettleS = 0.090;
     public const double PostMiniWReclaimDelayS = 0.260;
     public const double PostMiniWReclaimGapMs = 85.0;
@@ -442,4 +465,40 @@ internal static class NavTuning
 
     // water_hsv_low/high (88,80,70)-(110,255,255) — vong cung xanh cyan.
     public const int WaterHLo = 88, WaterHHi = 110, WaterSMin = 80, WaterVMin = 70;
+}
+
+/// <summary>
+/// Thứ tự hard-stop camera sau minigame: xung W lấy quyền chuột, rồi nhìn xuống hết cỡ,
+/// rồi ngẩng một lượng cố định, rồi mới lấy lại W để chạy.
+/// </summary>
+internal static class NavCameraReset
+{
+    public const string WaitAfterMinigame = "WAIT_AFTER_MINIGAME";
+    public const string Reacquire = "REACQUIRE_INPUT";
+    public const string Settle = "SETTLE";
+    public const string Down = "DOWN_TO_GROUND";
+    public const string GroundHold = "GROUND_HOLD";
+    public const string Up = "UP_TO_NORMAL";
+    public const string Final = "FINAL_SETTLE";
+    public const string WReclaim = "W_RECLAIM";
+
+    public static readonly string[] Sequence =
+    {
+        Reacquire, Settle, Down, GroundHold, Up, Final, WReclaim
+    };
+
+    /// <summary>Phần còn lại trước khi đủ <see cref="NavTuning.CameraResetAfterPanelGoneS"/> kể từ lúc panel mất.</summary>
+    public static double WaitAfterPanelGoneS(double panelGoneS) =>
+        Math.Max(0.0, NavTuning.CameraResetAfterPanelGoneS - Math.Max(0.0, panelGoneS));
+
+    public static string Advance(string phase, double elapsed) => phase switch
+    {
+        Reacquire when elapsed >= NavTuning.CameraResetReacquireSettleS => Settle,
+        Settle when elapsed >= NavTuning.CameraResetSettleS => Down,
+        Down when elapsed >= NavTuning.CameraResetDownS => GroundHold,
+        GroundHold when elapsed >= NavTuning.CameraResetGroundHoldS => Up,
+        Up when elapsed >= NavTuning.CameraResetUpS => Final,
+        Final when elapsed >= NavTuning.CameraResetFinalSettleS => WReclaim,
+        _ => phase
+    };
 }

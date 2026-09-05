@@ -117,6 +117,11 @@ internal sealed class NavBot
     private double _eUpAt;
     private double _lastPanelPoll;
     private bool _arrived;
+    private readonly NavPanelInterrupt _panelInterrupt = new();
+
+    // prompt công việc (ROI chặt) — streak riêng, cooldown/consumed chung với prompt rộng
+    private int _workPromptStreak, _workPromptAbsent;
+    private int _workPromptSeq = -1;
 
     // E song song voi dieu huong: SETTLE ngan roi WATCH (lai + tham do panel).
     private string _ixPhase;
@@ -133,8 +138,10 @@ internal sealed class NavBot
 
     // camera reset
     private string _cameraPhase;
-    private double _cameraPhaseStart;
+    private double _cameraPhaseStart, _cameraWaitUntil, _panelGoneAt;
     private string _cameraReason;
+    private bool _cameraDidReset, _reacquireSent;
+    private long _camYMark, _camYDown, _camYUp;
 
     // W reclaim
     private bool _wReclaimPending;
@@ -283,7 +290,11 @@ internal sealed class NavBot
             _simplePhase = "POST_CHECK";
             _postCheckUntil = now + Math.Max(0.5, remaining);
         }
-        Emit($"sau minigame (bảng mất {gone:F1}s trước) → {_simplePhase}: kiểm prompt rồi reset camera");
+        _cameraDidReset = false;
+        _panelGoneAt = now - gone;
+        double wait = NavCameraReset.WaitAfterPanelGoneS(gone);
+        StartCameraReset(now, "AFTER_MINIGAME", wait);
+        Emit($"sau minigame (bảng mất {gone:F1}s trước) → {_simplePhase}: chờ {wait:F1}s rồi reset camera");
     }
 
     private void Loop(CancellationToken ct)
@@ -334,6 +345,15 @@ internal sealed class NavBot
     /// <summary>Một vòng của <c>loop()</c>. Trả true khi đã tới nơi (kết thúc bot).</summary>
     private bool Tick(CancellationToken ct, double now, bool focused, NavFrame mini, WorldSnapshot snap)
     {
+        // Minigame > mọi thứ: panel mở vì bất kỳ lý do nào (kể cả reset nghề / SEARCH360) đều giao giải.
+        if (TryInterruptForPanel(now, focused, snap))
+        {
+            _arrived = true;
+            return true;
+        }
+
+        if (_job.Phase is not null) _capture.WantBoard = true;
+
         // Backout S nghiem trong cua watch 30 s so huu input truoc moi thu.
         if (_backoutActive && RestartWatchStep(now, focused)) return false;
 
@@ -354,27 +374,6 @@ internal sealed class NavBot
             }
         }
 
-        if (SimpleFlowStep(now, focused, snap, out bool arrived))
-        {
-            if (arrived) { _arrived = true; return true; }
-            StatusLine(now, $"[PROMPT/E] pha={_simplePhase}", snap);
-            return false;
-        }
-
-        if (PendingSettleStep(now, focused, out arrived))
-        {
-            if (arrived) { _arrived = true; return true; }
-            StatusLine(now, $"[PROMPT/E] pha={_ixPhase}", snap);
-            return false;
-        }
-
-        if (RestartWatchStep(now, focused)) return false;
-
-        if (_wReclaimPending && _cameraPhase is null)
-        {
-            if (WReclaimStep(now, focused)) return false;
-        }
-
         if (_cameraPhase is not null)
         {
             if (focused)
@@ -391,6 +390,27 @@ internal sealed class NavBot
                 return false;
             }
         }
+
+        if (_wReclaimPending)
+        {
+            if (WReclaimStep(now, focused)) return false;
+        }
+
+        if (SimpleFlowStep(now, focused, snap, out bool arrived))
+        {
+            if (arrived) { _arrived = true; return true; }
+            StatusLine(now, $"[PROMPT/E] pha={_simplePhase}", snap);
+            return false;
+        }
+
+        if (PendingSettleStep(now, focused, out arrived))
+        {
+            if (arrived) { _arrived = true; return true; }
+            StatusLine(now, $"[PROMPT/E] pha={_ixPhase}", snap);
+            return false;
+        }
+
+        if (RestartWatchStep(now, focused)) return false;
 
         // Mo bua moi: dung sau moi may trang thai tren va truoc dieu huong — cau "camera reset /
         // minigame > survival > navigation" cua ban Python.
@@ -412,7 +432,14 @@ internal sealed class NavBot
         var target = _tracker.Update(candidates, _originX, _originY, now, fragments);
         var world = snap.Marker;
 
-        if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
+        bool workStable = NavInteraction.NotePrompt(snap.WorkPromptVisible, snap.Seq,
+            ref _workPromptSeq, ref _workPromptStreak, ref _workPromptAbsent,
+            ref _promptConsumed, now, _eRetryUntil);
+
+        // Đang thấy [E] TƯƠNG TÁC thì không đi reset nghề — thử bấm E trước.
+        if (snap.WorkPromptVisible || workStable)
+            _job.ResetBlind();
+        else if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
         {
             _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
             if (_job.Step(mini, snap, now, focused)) return false;
@@ -429,7 +456,7 @@ internal sealed class NavBot
         }
         bool forwardRequested = _input.IsHeld(NavKey.W) && !_input.IsHeld(NavKey.S);
 
-        if (TryArmWorldE(now, focused, snap, target, world, dist, rel))
+        if (TryArmWorldE(now, focused, snap, target, world, dist, rel, workStable))
         {
             StatusLine(now, $"[PROMPT/E] pha={_ixPhase ?? _simplePhase}", snap);
             return false;
@@ -661,7 +688,6 @@ internal sealed class NavBot
 
     private bool BeginPostEWait(double now, string source)
     {
-        _cameraPhase = null;
         _simplePhase = "POST_WAIT10";
         _wait10Until = now + NavTuning.SimplePostEWaitS;
         _input.StopMouseStream(immediate: true);
@@ -687,17 +713,56 @@ internal sealed class NavBot
 
     private bool PollPanel(double now, bool focused)
     {
-        if (!focused || now - _lastPanelPoll < 0.125) return false;
+        if (!focused || now - _lastPanelPoll < NavTuning.PanelInterruptPollS) return false;
         _lastPanelPoll = now;
         return PanelVisible?.Invoke() == true;
     }
 
-    private bool MarkArrived()
+    /// <summary>
+    /// Panel điện/nước hiện vì bất kỳ lý do nào — huỷ reset nghề/bữa/camera và giao bộ giải.
+    /// Sau E cố ý: một hit là đủ. Đi nền: cổng 2–3 hit; bảng NPC (3 nút cyan) huỷ ứng viên.
+    /// </summary>
+    private bool TryInterruptForPanel(double now, bool focused, WorldSnapshot snap)
     {
+        if (!focused) return false;
+
+        bool pendingE = _ixPhase is NavInteraction.Settle or NavInteraction.Watch;
+        if (pendingE)
+            return PollPanel(now, focused) && HandoffAmbientPanel(now, afterE: true);
+
+        if (now - _lastPanelPoll < NavTuning.PanelInterruptPollS) return false;
+        _lastPanelPoll = now;
+
+        if (snap.Board is not null)
+        {
+            _panelInterrupt.Reset();
+            return false;
+        }
+
+        bool visible = PanelVisible?.Invoke() == true;
+        if (!_panelInterrupt.Note(visible, npcBoard: false)) return false;
+        if (!_panelInterrupt.Confirmed(_job.Phase is not null)) return false;
+        return HandoffAmbientPanel(now, afterE: false);
+    }
+
+    private bool HandoffAmbientPanel(double now, bool afterE)
+    {
+        CancelSurvival(now, "minigame hiện");
+        if (_job.Phase is not null)
+            _job.Cancel(now, "MINIGAME HIỆN TRONG LÚC RESET NGHỀ", finished: false);
+        _cameraPhase = null;
+        _cameraWaitUntil = 0;
+        _wReclaimPending = false;
+        _backoutActive = false;
+        _watchActive = false;
+        _watchPending = false;
+        _input.StopMouseStream(immediate: true);
+        _ctl.ResetSearch360();
+        _panelInterrupt.Reset();
         ReleaseETick(double.MaxValue);
         _input.ReleaseOwnedOnce();
         ClearPendingE();
-        Emit("[MINIGAME MỞ] giao cho bộ giải");
+        Emit(afterE ? "[MINIGAME MỞ] giao cho bộ giải" : "[MINIGAME MỞ] thấy panel ngoài cửa sổ E — giao cho bộ giải");
         return true;
     }
 
@@ -707,7 +772,7 @@ internal sealed class NavBot
         arrived = false;
         ReleaseETick(now);
         if (_ixPhase != NavInteraction.Settle) return false;
-        if (PollPanel(now, focused)) { arrived = true; return MarkArrived(); }
+        if (PollPanel(now, focused)) { arrived = true; return HandoffAmbientPanel(now, afterE: true); }
         if (now < _ixSettleUntil)
         {
             _input.StopMouseStream(immediate: true);
@@ -728,7 +793,7 @@ internal sealed class NavBot
     {
         arrived = false;
         if (_ixPhase != NavInteraction.Watch) return false;
-        if (PollPanel(now, focused)) { arrived = true; return MarkArrived(); }
+        if (PollPanel(now, focused)) { arrived = true; return HandoffAmbientPanel(now, afterE: true); }
         if (now < _ixWatchUntil) return false;
         _promptConsumed = false;
         _eRetryUntil = now + NavTuning.InteractionRetryS;
@@ -739,15 +804,18 @@ internal sealed class NavBot
 
     /// <summary>WORLD: prompt + tiếp cận điểm vàng mới được bấm E. Trả true = occupy tick.</summary>
     private bool TryArmWorldE(double now, bool focused, WorldSnapshot snap, TargetOutput target,
-                              WorldMarker world, double dist, double rel)
+                              WorldMarker world, double dist, double rel, bool workStable)
     {
-        if (_ixPhase == NavInteraction.Settle || _simplePhase != "WORLD" || !focused || _postJobIgnoreNpcE) return false;
+        bool lostArm = NavInteraction.LostTargetArm(workStable, _lastCtlState, _ctl.Search360Round);
+        if (_ixPhase == NavInteraction.Settle || _simplePhase != "WORLD" || !focused) return false;
+        if (_postJobIgnoreNpcE && !lostArm) return false;
         ReleaseETick(now);
 
         bool stable = PromptStable(snap, now);
         // consumed chi chan spam cung mot lan hien prompt; E that bai van duoc thu lai sau
         // cooldown du prompt con hien — ApproachReady moi la cong sat diem vang.
-        if (!stable || !NavInteraction.RetryReady(now, _eRetryUntil)) return false;
+        // SEARCH360 mất dest: prompt công việc ổn định cũng đủ để bấm.
+        if (!(stable || workStable) || !NavInteraction.RetryReady(now, _eRetryUntil)) return false;
 
         bool ready = NavInteraction.ApproachReady(dist, rel, _s.Px, target.Quality, target.Confidence,
             world.Present, world.Confidence, world.Area, _lastCtlState, _ctl.ArrivalShieldUntil, now);
@@ -755,7 +823,7 @@ internal sealed class NavBot
         string re = double.IsNaN(rel) ? "---" : $"{rel:+0.0;-0.0}";
         string why = $"Q={target.Quality} dist={ds} rel={re} WQ={world.Quality} WC={world.Confidence:F2}";
 
-        if (!ready)
+        if (!ready && !lostArm)
         {
             if (now - _lastPromptSkipLog >= 0.5)
             {
@@ -765,6 +833,9 @@ internal sealed class NavBot
             return false;
         }
 
+        if (lostArm && !ready)
+            why = "SEARCH360 + [E] TƯƠNG TÁC — " + why;
+
         if (now < _recentBoardExitUntil)
         {
             HoldEnter("E MUỘN SAU BẢNG");
@@ -772,7 +843,13 @@ internal sealed class NavBot
         }
 
         HoldEnter("PROMPT E");
-        if (!PressEOnce(now, "E_TUONG_TAC")) return false;
+        if (!PressEOnce(now, lostArm && !ready ? "E_SEARCH360" : "E_TUONG_TAC")) return false;
+        if (lostArm) _ctl.ResetSearch360();
+        if (_postJobIgnoreNpcE)
+        {
+            _postJobIgnoreNpcE = false;
+            _promptConsumed = false;
+        }
         Emit($"[E ARM] {why}");
         StartPendingE(now);
         return true;
@@ -788,8 +865,16 @@ internal sealed class NavBot
         {
             ArmRestartWatch(now, "SIMPLE_" + reason);
             AutorunResetTimer(now);
-            StartCameraReset(now, reason);
-            Emit($"[HẬU MINIGAME] {reason} → nhìn xuống đất → ngẩng lên → tìm lại điểm vàng → W");
+            if (_cameraPhase is null && !_cameraDidReset)
+            {
+                double wait = AfterMinigame
+                    ? NavCameraReset.WaitAfterPanelGoneS(now - _panelGoneAt)
+                    : 0;
+                StartCameraReset(now, reason, wait);
+                Emit($"[HẬU MINIGAME] {reason} → {(wait > 0 ? $"chờ {wait:F1}s rồi " : "")}kéo camera");
+            }
+            else
+                Emit($"[HẬU MINIGAME] {reason} → camera đã reset, về WORLD");
             return;
         }
         _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
@@ -819,7 +904,6 @@ internal sealed class NavBot
 
         if (phase == "POST_CHECK")
         {
-            if (!_promptConsumed && PromptStable(snap, now)) return BeginPostEWait(now, "POST_CHECK_E");
             if (now < _postCheckUntil) return true;
             ResumeWorld(now, "BOARD_CLOSED_NO_E");
             return false;
@@ -902,20 +986,44 @@ internal sealed class NavBot
 
     // ================================================================ reset camera + W reclaim
 
-    private void StartCameraReset(double now, string reason)
+    private void StartCameraReset(double now, string reason, double waitS = 0)
     {
+        if (_cameraPhase is not null) return;
         _input.ReleaseAll();
-        _cameraPhase = "SETTLE";
-        _cameraPhaseStart = now;
         _cameraReason = reason;
+        _reacquireSent = false;
+        _camYMark = _camYDown = _camYUp = 0;
+        _input.ResetYSent();
         _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
         _watchdog.Reset();
         _ctl.ResetTransient();
         _capture.ResetWorld();
+        if (waitS > 0)
+        {
+            _cameraPhase = NavCameraReset.WaitAfterMinigame;
+            _cameraPhaseStart = now;
+            _cameraWaitUntil = now + waitS;
+            Emit($"[RESET CAMERA] pha={NavCameraReset.WaitAfterMinigame} còn {waitS:F1}s (đủ {NavTuning.CameraResetAfterPanelGoneS:F0}s từ lúc panel mất)");
+            return;
+        }
+        _cameraPhase = NavCameraReset.Reacquire;
+        _cameraPhaseStart = now;
+        _cameraWaitUntil = 0;
         Emit($"[RESET CAMERA] bắt đầu ({reason})");
     }
 
-    /// <summary><c>_camera_reset_step</c>: SETTLE → DOWN (3300 cps, 780 ms) → GROUND_HOLD → UP (1950 cps, 525 ms) → FINAL. Nhả hết phím mỗi khung.</summary>
+    private long TakeCameraY()
+    {
+        long y = _input.YSentCounts;
+        long d = y - _camYMark;
+        _camYMark = y;
+        return d;
+    }
+
+    /// <summary>
+    /// REACQUIRE (xung W) → SETTLE → DOWN (3300 cps, 780 ms) → GROUND_HOLD → UP (1657.5 cps, 525 ms)
+    /// → FINAL. Nhả hết phím mỗi khung; W không được giữ trong lúc xoay camera.
+    /// </summary>
     private bool CameraResetStep(double now)
     {
         string phase = _cameraPhase;
@@ -925,39 +1033,76 @@ internal sealed class NavBot
 
         switch (phase)
         {
-            case "SETTLE":
-                if (elapsed >= NavTuning.CameraResetSettleS) { _cameraPhase = "DOWN_TO_GROUND"; _cameraPhaseStart = now; }
+            case NavCameraReset.WaitAfterMinigame:
+                _input.StopMouseStream(immediate: true);
+                if (now < _cameraWaitUntil) return true;
+                _cameraPhase = NavCameraReset.Reacquire;
+                _cameraPhaseStart = now;
+                _reacquireSent = false;
+                Emit("[RESET CAMERA] đủ 5s từ lúc panel mất → bắt đầu kéo camera");
                 return true;
-            case "DOWN_TO_GROUND":
-                if (elapsed >= NavTuning.CameraResetDownS)
+            case NavCameraReset.Reacquire:
+                if (!_reacquireSent)
                 {
-                    _cameraPhase = "GROUND_HOLD"; _cameraPhaseStart = now;
+                    _input.PulseWReacquire(NavTuning.CameraResetReacquireHoldMs);
+                    _reacquireSent = true;
+                    _cameraPhaseStart = now;
+                    elapsed = 0;
+                    Emit("[REACQUIRE INPUT] xung W → chờ game trả chuột");
+                }
+                if (NavCameraReset.Advance(phase, elapsed) == NavCameraReset.Settle)
+                {
+                    _cameraPhase = NavCameraReset.Settle;
+                    _cameraPhaseStart = now;
+                    _input.ResetYSent();
+                    _camYMark = 0;
+                }
+                return true;
+            case NavCameraReset.Settle:
+                if (NavCameraReset.Advance(phase, elapsed) == NavCameraReset.Down)
+                {
+                    _cameraPhase = NavCameraReset.Down;
+                    _cameraPhaseStart = now;
+                }
+                return true;
+            case NavCameraReset.Down:
+                if (NavCameraReset.Advance(phase, elapsed) == NavCameraReset.GroundHold)
+                {
+                    _camYDown = TakeCameraY();
+                    Emit($"[RESET CAMERA] {phase} ΔY={_camYDown}");
+                    _cameraPhase = NavCameraReset.GroundHold;
+                    _cameraPhaseStart = now;
                     _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
                     _input.ReleaseAll();
                     return true;
                 }
                 _input.SetMouseYRate(NavTuning.CameraResetDownRateCps);
                 return true;
-            case "GROUND_HOLD":
-                if (elapsed >= NavTuning.CameraResetGroundHoldS)
+            case NavCameraReset.GroundHold:
+                if (NavCameraReset.Advance(phase, elapsed) == NavCameraReset.Up)
                 {
-                    _cameraPhase = "UP_TO_NORMAL"; _cameraPhaseStart = now;
+                    _cameraPhase = NavCameraReset.Up;
+                    _cameraPhaseStart = now;
                     _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
                 }
                 return true;
-            case "UP_TO_NORMAL":
-                if (elapsed >= NavTuning.CameraResetUpS)
+            case NavCameraReset.Up:
+                if (NavCameraReset.Advance(phase, elapsed) == NavCameraReset.Final)
                 {
-                    _cameraPhase = "FINAL_SETTLE"; _cameraPhaseStart = now;
+                    _camYUp = TakeCameraY();
+                    Emit($"[RESET CAMERA] {phase} ΔY={_camYUp}");
+                    _cameraPhase = NavCameraReset.Final;
+                    _cameraPhaseStart = now;
                     _input.StopMouseStream(immediate: true, axis: MouseAxis.Y);
                     _input.ReleaseAll();
                     return true;
                 }
                 _input.SetMouseYRate(-NavTuning.CameraResetUpRateCps);
                 return true;
-            case "FINAL_SETTLE":
-                if (elapsed < NavTuning.CameraResetFinalSettleS) return true;
+            case NavCameraReset.Final:
+                if (NavCameraReset.Advance(phase, elapsed) != NavCameraReset.WReclaim) return true;
                 _cameraPhase = null;
+                _cameraDidReset = true;
                 _tracker.Reset();
                 _watchdog.Reset();
                 _ctl.ResetTransient();
@@ -965,7 +1110,7 @@ internal sealed class NavBot
                 _input.ReleaseAll();
                 ScheduleWReclaim(now);
                 AutorunResetTimer(now);
-                Emit("[RESET CAMERA XONG] → lấy lại W → chạy tiếp");
+                Emit($"[RESET CAMERA XONG] ΔY xuống={_camYDown} lên={_camYUp} → lấy lại W → chạy tiếp");
                 return false;
         }
 
@@ -1407,8 +1552,11 @@ internal sealed class NavBot
         _capture.ResetWorld();
         _promptStreak = _promptAbsentStreak = 0;
         _promptSeq = -1;
+        _workPromptStreak = _workPromptAbsent = 0;
+        _workPromptSeq = -1;
         _promptConsumed = false;
         _eRetryUntil = 0;
+        _panelInterrupt.Reset();
         ClearPendingE();
     }
 

@@ -111,6 +111,15 @@ internal sealed class WireRound
         $"dây: {string.Join(" ", Sources)}  ổ: {string.Join(" ", Targets)}";
 }
 
+/// <summary>Kết quả một lần thăm dò semantic — rỗng <see cref="Round"/> thì chưa được giao quyền.</summary>
+internal readonly struct WireProbeHit
+{
+    public Rectangle Panel { get; init; }
+    public WireRound Round { get; init; }
+    public string Reject { get; init; }
+    public bool Ok => Round is not null;
+}
+
 /// <summary>
 /// Đọc panel đi dây: tìm panel, phân loại slot, và đo mức "dây đã dính" tại từng ổ cắm.
 ///
@@ -259,6 +268,21 @@ internal sealed class WireReader : IDisposable
         }
 
         return best;
+    }
+
+    /// <summary>
+    /// Probe giao quyền: phải có hộp viền VÀ đọc đủ slot màu. Cảnh world (tủ biến áp, giàn sắt)
+    /// có thể qua <see cref="FindPanel"/> nhưng fail ở đây.
+    /// </summary>
+    public WireProbeHit ConfirmPanel()
+    {
+        var box = FindPanel();
+        if (box.IsEmpty)
+            return new WireProbeHit { Reject = "không thấy viền" };
+        var round = ReadRound(box);
+        if (round is null)
+            return new WireProbeHit { Panel = box, Reject = "border-only — không đọc được slot" };
+        return new WireProbeHit { Panel = box, Round = round };
     }
 
     // ---------------------------------------------------------------- doc luot

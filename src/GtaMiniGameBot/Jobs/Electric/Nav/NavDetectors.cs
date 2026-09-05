@@ -486,22 +486,39 @@ internal sealed class DotTracker
 /// </summary>
 internal static class PromptHeuristic
 {
-    /// <summary>Vùng quét trên màn (tỉ lệ 0.45–0.73 × 0.42–0.68).</summary>
-    public static Rectangle Roi(int screenW, int screenH)
+    /// <summary>Vùng quét rộng trên màn (tỉ lệ 0.45–0.73 × 0.42–0.68) — mọi prompt [E], kể cả NPC.</summary>
+    public static Rectangle Roi(int screenW, int screenH) =>
+        RatioRoi(screenW, screenH, NavTuning.SimpleERoiX0, NavTuning.SimpleERoiX1,
+                 NavTuning.SimpleERoiY0, NavTuning.SimpleERoiY1);
+
+    /// <summary>ROI chặt quanh HUD cố định <c>[E] TƯƠNG TÁC</c>.</summary>
+    public static Rectangle WorkRoi(int screenW, int screenH) =>
+        RatioRoi(screenW, screenH, NavTuning.WorkERoiX0, NavTuning.WorkERoiX1,
+                 NavTuning.WorkERoiY0, NavTuning.WorkERoiY1);
+
+    public static Rectangle RatioRoi(int screenW, int screenH, double x0n, double x1n, double y0n, double y1n)
     {
-        int x0 = (int)Math.Round(screenW * NavTuning.SimpleERoiX0);
-        int x1 = (int)Math.Round(screenW * NavTuning.SimpleERoiX1);
-        int y0 = (int)Math.Round(screenH * NavTuning.SimpleERoiY0);
-        int y1 = (int)Math.Round(screenH * NavTuning.SimpleERoiY1);
+        int x0 = (int)Math.Round(screenW * x0n);
+        int x1 = (int)Math.Round(screenW * x1n);
+        int y0 = (int)Math.Round(screenH * y0n);
+        int y1 = (int)Math.Round(screenH * y1n);
         x0 = Math.Clamp(x0, 0, screenW - 1); x1 = Math.Clamp(x1, x0 + 1, screenW);
         y0 = Math.Clamp(y0, 0, screenH - 1); y1 = Math.Clamp(y1, y0 + 1, screenH);
         return new Rectangle(x0, y0, x1 - x0, y1 - y0);
     }
 
-    public static bool Visible(NavFrame f, int screenW, int screenH)
+    public static bool Visible(NavFrame f, int screenW, int screenH) =>
+        VisibleInRoi(f, Roi(screenW, screenH), screenH, NavTuning.SimpleEMinTextGlyphs, 0.70, 1.38);
+
+    /// <summary>Prompt công việc: ROI hẹp, ô phím vuông hơn, cần nhiều chữ hơn bên phải.</summary>
+    public static bool WorkVisible(NavFrame f, int screenW, int screenH) =>
+        VisibleInRoi(f, WorkRoi(screenW, screenH), screenH, NavTuning.WorkEMinTextGlyphs, 0.80, 1.25);
+
+    private static bool VisibleInRoi(NavFrame f, Rectangle roi, int screenH, int minGlyphs,
+                                    double arLo, double arHi)
     {
-        if (screenH < 540 || screenW < 900) return false;
-        var local = f.ToLocal(Roi(screenW, screenH));
+        if (screenH < 540 || f.Width < 8) return false;
+        var local = f.ToLocal(roi);
         if (local.IsEmpty) return false;
 
         var m = new Mask(local.Width, local.Height);
@@ -528,7 +545,7 @@ internal static class PromptHeuristic
             double ar = ww / Math.Max(1.0, hh);
             double fill = b.Area / Math.Max(1.0, (double)ww * hh);
             if (18.0 * scale <= ww && ww <= 44.0 * scale && 18.0 * scale <= hh && hh <= 44.0 * scale
-                && 0.70 <= ar && ar <= 1.38 && fill >= NavTuning.SimpleEKeycapMinFill)
+                && arLo <= ar && ar <= arHi && fill >= NavTuning.SimpleEKeycapMinFill)
                 keycaps.Add(b);
         }
 
@@ -545,7 +562,7 @@ internal static class PromptHeuristic
                       && c.Area >= 7.0 * scale * scale)) continue;
                 glyphs++;
             }
-            if (glyphs >= NavTuning.SimpleEMinTextGlyphs) return true;
+            if (glyphs >= minGlyphs) return true;
         }
         return false;
     }
