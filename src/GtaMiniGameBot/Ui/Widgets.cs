@@ -37,6 +37,7 @@ internal sealed class PhaseTrack : DrawPanel
             ? $"{st.PhaseMs / 1000.0:0.0} s"
             : $"tối đa {cfg.FightTimeoutMs / 1000} s";
         _subs[3] = st.Phase == FishingPhase.ClickingRelease ? "đang thả"
+            : st.Phase == FishingPhase.ClickingSell ? "đang bán"
             : st.Phase == FishingPhase.ClickingKeep ? "đang click"
             : "chờ nút hiện";
         _subs[4] = st.DumpOn
@@ -44,7 +45,8 @@ internal sealed class PhaseTrack : DrawPanel
             : "tắt";
 
         // Nhanh quay lai sang len khi vua di qua no.
-        _loopWarm = st.Phase == FishingPhase.Casting && st.Casts > st.Bites + st.Catches + st.Released;
+        _loopWarm = st.Phase == FishingPhase.Casting &&
+                    st.Casts > st.Bites + st.Catches + st.Released + st.Sold;
 
         Invalidate();
     }

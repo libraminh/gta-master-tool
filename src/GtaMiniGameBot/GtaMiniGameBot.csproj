@@ -10,6 +10,8 @@
     <LangVersion>latest</LangVersion>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
     <AssemblyName>GtaMiniGameBot</AssemblyName>
     <RootNamespace>GtaMiniGameBot</RootNamespace>
 
@@ -26,15 +28,19 @@
     <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
   </PropertyGroup>
 
-  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish">
+  <Target Name="FailIfAppRunning" BeforeTargets="BeforeBuild;BeforePublish" Condition="'$(SkipAppLockCheck)' != 'true'">
     <Exec Command="powershell -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)..\..\tools\fail-if-app-running.ps1&quot;" />
   </Target>
 
   <ItemGroup>
+    <PackageReference Include="Vortice.Direct3D11" Version="3.8.3" />
+
     <!-- Mau dong ho toc do, dung cho phep do "dang trong xe" bang NCC.
          Sinh ra boi che do pick-car-template; phai di kem exe khi publish. -->
-    <Content Include="car-template.png" Condition="Exists('car-template.png')">
+    <Content Include="Jobs\Oil\car-template.png" Condition="Exists('Jobs\Oil\car-template.png')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>car-template.png</TargetPath>
+      <Link>car-template.png</Link>
     </Content>
   </ItemGroup>
 

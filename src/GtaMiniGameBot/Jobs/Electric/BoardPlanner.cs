@@ -1,0 +1,1633 @@
+using System.Diagnostics;
+
+namespace GtaMiniGameBot;
+
+/// <summary>Một đoạn đường thẳng của tuyến: giữ một phím cho tới khi tới <see cref="End"/>.</summary>
+internal sealed class BoardSegment
+{
+    public string Key { get; init; }
+    public PointF Start { get; init; }
+    public PointF End { get; init; }
+    public double Distance { get; init; }
+
+    /// <summary>Đoạn cuối — đoạn cắm vào thân đầu nối GOAL.</summary>
+    public bool IsGoalEntry { get; init; }
+
+    public override string ToString() =>
+        $"{Key} ({Start.X:F0},{Start.Y:F0})→({End.X:F0},{End.Y:F0}) {Distance:F0}px";
+}
+
+/// <summary>Tuyến đã ĐÓNG BĂNG, cùng mọi số liệu chứng minh nó an toàn.</summary>
+internal sealed class BoardPlan
+{
+    public BoardSegment[] Segments { get; init; }
+    public BoardRole Role { get; init; }
+
+    /// <summary>Tường vật lý (chưa nở). Dùng để đo lại khoảng thoát lúc kiểm chứng.</summary>
+    public Mask Obstacles { get; init; }
+
+    /// <summary>Tường đã nở thêm lề an toàn — bản đồ mà A* thật sự đi trên đó.</summary>
+    public Mask Inflated { get; init; }
+
+    public Rectangle LegalBounds { get; init; }
+    public int ValueThreshold { get; init; }
+    public double InflationRadiusRef { get; init; }
+    public int GridCell { get; init; }
+    public double MinClearance { get; init; }
+    public double TotalLength { get; init; }
+    public int Turns => Math.Max(0, (Segments?.Length ?? 1) - 1);
+    public double BuildMs { get; init; }
+    public int LargeWalls { get; init; }
+    public int MicroWalls { get; init; }
+    public int SecondaryWalls { get; init; }
+    public List<string> RefineNotes { get; init; } = new();
+
+    /// <summary>"lan-nhanh" hay "tinh-chinh" — đường nào đã sinh ra tuyến này.</summary>
+    public string Mode { get; init; } = "tinh-chinh";
+
+    /// <summary>
+    /// Đoạn ngắn nhất của tuyến. Đây là con số DỰ BÁO thắng/thua tốt nhất đo được: ngày 22/08, mọi
+    /// lượt có số này ≥ 53px đều thắng, và hai lượt duy nhất thua là hai lượt có nó dưới 17px.
+    /// </summary>
+    public double ShortestSegment =>
+        Segments is null || Segments.Length == 0 ? 0.0 : Segments.Min(s => s.Distance);
+
+    public string Describe() =>
+        $"tuyến [{string.Join(" ", Segments.Select(s => s.Key))}] {Turns} lần rẽ, " +
+        $"dài {TotalLength:F0}px, đoạn ngắn nhất {ShortestSegment:F0}px, " +
+        $"khoảng thoát nhỏ nhất {MinClearance:F1}px, " +
+        $"lưới {GridCell}px, nở {InflationRadiusRef:F0}, dựng {BuildMs:F0}ms [{Mode}]";
+}
+
+/// <summary>
+/// Dựng tuyến đi cho bảng Water &amp; Power: đọc tường, chốt vùng bàn hợp lệ, chạy A* rồi tinh
+/// chỉnh từng ngã rẽ về tâm khe an toàn nhất.
+///
+/// Nguyên tắc bất di bất dịch, giữ nguyên từ bản Python: tuyến được ĐÓNG BĂNG trước khi bấm phím
+/// đầu tiên và lúc chạy KHÔNG bao giờ đổi. Nếu không dựng nổi tuyến đủ an toàn thì GIỮ, không
+/// bấm tuyến chưa chứng nhận; đường live chuyển ngay sang tầng fallback ít bảo thủ hơn trên cùng
+/// frame sạch, không chụp lại ảnh đã có vệt dây.
+///
+/// Khác có ý thức so với bản Python:
+///   - Lối nhanh cho cú rẽ đầu gần vẫn tồn tại, nhưng dùng chung A* phân cấp/hành lang với đường
+///     chính. Nó chỉ khác tiêu chí nhận và có thể bỏ tinh chỉnh; không còn một nhánh tìm đường
+///     trùng lặp.
+///   - Bộ dò đầu nối phụ theo dải chân cắm: xem <see cref="BoardReader"/>.
+///   - Bản vá "v38.3 diagonal corner pair": một trường hợp riêng cho vài bản đồ nhất định.
+/// </summary>
+internal static class BoardPlanner
+{
+    // ---------------- tuong ----------------
+    private const int WallHueMin = 35;
+    private const int WallHueMax = 105;
+    private const int WallSatMin = 120;
+    private const double WallDensityWindowRef = 15.0;
+    private const double WallDensityMin = 0.38;
+    private const double WallCloseRef = 5.0;
+
+    private const double LargeAreaRef = 1500.0;
+    private const double MicroAreaRef = 240.0;
+    private const double MicroShortRef = 8.0;
+    private const double MicroLongRef = 14.0;
+    private const double MicroAspectMax = 7.5;
+    private const double MicroFillMin = 0.34;
+
+    // ---------------- lop bao thu hai (bias ve phia BAO TUONG) ----------------
+    private const int SoftHueMin = 30;
+    private const int SoftHueMax = 115;
+    private const int SoftSatMin = 78;
+    private const double SecondaryDensityRef = 25.0;
+    private const double SecondaryDensityMin = 0.55;
+    private const double SecondaryMinAreaRef = 150.0;
+    private const double SecondaryShortMinRef = 6.0;
+    private const double SecondaryNearRef = 11.0;
+
+    // ---------------- vung ban ----------------
+    private const double EnvelopeComponentAreaRef = 1800.0;
+    private const double EnvelopePadRef = 18.0;
+    private const double BoardExtentInsetRef = 4.0;
+    private const double BoardExtentExemptRef = 62.0;
+
+    // ---------------- cong dau noi ----------------
+    private const double PortCarveLenRef = 54.0;
+    private const double PortCarveHalfRef = 9.0;
+    private const double BoundaryMarginRef = 14.0;
+
+    // ---------------- A* ----------------
+    private const double TurnCost = 22.0;
+    private const double ClearanceCost = 18.0;
+    private const int MaxAStarStates = 180_000;
+    // Tran tong giu so nhanh phan cap khong the nhan chi phi vo han; muc 4M xap xi ngan sach cuc
+    // dai 21 luot full-grid cua thuat toan cu, cong them phan du cho luoi tho thuong rat re.
+    private const int MaxCandidateStates = 4_000_000;
+    private static readonly double[] InflationRadiiRef = { 18, 16, 14, 12, 10, 8, 6 };
+    private static readonly double[] TightInflationRadiiRef = { 5, 4, 3, 2 };
+    private static readonly double[] GridFallbackRefs = { 12.0, 10.0, 8.0 };
+    private static readonly double[] CoarseGridRefs = { 32.0, 28.0, 24.0 };
+    private const double CorridorPadRef = 72.0;
+    private const double MinAcceptClearRef = 6.0;
+
+    /// <summary>
+    /// Đoạn ngắn nhất mà bộ điều khiển CÒN BẮN ĐƯỢC, mốc 1080p. Đây là một con số VẬT LÝ, không
+    /// phải khẩu vị.
+    ///
+    /// Bấm phím rẽ không làm dây rẽ ngay: đo được trong game ở 2K, dây phải chạy khoảng 17px trên
+    /// trục mới thì cú rẽ mới nhìn thấy được. Nên khi bộ điều khiển vừa xác nhận xong cú rẽ ở góc
+    /// i, đầu dây đã ở quá góc đó ~17px. Nếu góc i+1 nằm gần hơn thế thì nó ĐÃ BỊ VƯỢT ngay tại
+    /// thời điểm ta bắt đầu canh nó, và cửa sổ bắn (−7…+3px) không chạm tới được.
+    ///
+    /// Ngày 22/08 chuyện này đo được rất rõ: hai lượt fail duy nhất còn lại là hai lượt duy nhất có
+    /// đoạn ngắn hơn 17px (4px và 14px); mọi lượt có đoạn ngắn nhất ≥ 53px đều thắng. Lượt 4px:
+    /// bot bấm góc #6 tại (981,607), 16ms sau xác nhận xong thì dây đã ở x=964, mà góc #7 ở x=972 —
+    /// vượt 8px, ngoài cửa sổ đúng 1px. Bot đứng nhìn 200ms rồi dây đâm tường.
+    ///
+    /// 20px ở mốc 1080p = 27px ở 2K, dư trên 17px đo được, đủ để góc kế tiếp còn nằm TRƯỚC đầu dây
+    /// lúc bắt đầu canh — tức về đúng đường bắn bình thường.
+    /// </summary>
+    private const double MinSegmentRef = 20.0;
+
+    // ---------------- lan nhanh cho cu re dau o gan ----------------
+    private const double UrgentRadiusRef = 18.0;
+    private const double UrgentFirstSegMinRef = 16.0;
+    private const double UrgentFirstSegMaxRef = 180.0;
+    private const double UrgentMinClearRef = 10.0;
+
+    // ---------------- on dinh khung ve ----------------
+    private const double SignaturePanelVMin = 64.0;
+    private const double SignatureCoverageMin = 0.28;
+    private const double SignatureCoverageMax = 0.72;
+    private const double SignatureCoverageDrift = 0.020;
+    private const double SignatureIouMin = 0.975;
+
+    // ================================================================ mat na tuong
+
+    /// <summary>Kết quả một lượt phân đoạn tường, kèm số liệu để log và để canh ổn định.</summary>
+    internal sealed class WallScan
+    {
+        public Mask Wall { get; init; }
+        public int ValueThreshold { get; init; }
+
+        /// <summary>Trung vị V trong vùng tường — khung chưa vẽ xong thì số này thấp.</summary>
+        public double PanelV { get; init; }
+
+        /// <summary>Tỉ lệ che của ảnh thu nhỏ 128×72, dùng so hai khung liền nhau.</summary>
+        public double Coverage { get; init; }
+
+        public Mask Thumb { get; init; }
+        public int LargeWalls { get; init; }
+        public int MicroWalls { get; init; }
+        public int SecondaryWalls { get; init; }
+
+        /// <summary>
+        /// Thời gian từng bước, ms. Có mặt vì bước này là chỗ quyết định bot có kịp bấm phím đầu
+        /// tiên hay không — đo được thì mới biết tối ưu chỗ nào, thay vì đoán.
+        /// </summary>
+        public string Timing { get; init; }
+    }
+
+    /// <summary>
+    /// Dò THÂN BẢNG đặc, không dò nét mạch trang trí.
+    ///
+    /// Ba bước: (1) pixel xanh bão hoà và sáng hơn ngưỡng Otsu; (2) đòi mật độ CỤC BỘ cao trong
+    /// cửa sổ 15px — đây là bước loại nét mạch mảnh và chữ ma trận, vì chúng không bao giờ đủ dày
+    /// trong một cửa sổ ngần đó; (3) giữ khối lớn HOẶC khối nhỏ mà đặc và vuông vắn.
+    ///
+    /// Bước (3) có hai tiêu chí là vì bản Python đã sửa đúng chỗ này: bản cũ chỉ giữ khối ≥1500px²
+    /// nên xoá mất những mấu chữ nhật nhỏ vốn là tường thật, và A* coi chúng là đường trống rồi
+    /// lao thẳng vào.
+    /// </summary>
+    public static WallScan ScanWalls(BoardFrame f, bool includeSecondary = true)
+    {
+        // Tường chỉ cần độ chính xác theo khe rộng, trong khi chạy morphology/label trên gần hai
+        // triệu pixel chiếm phần lớn độ trễ trước cú rẽ đầu. Thu nhỏ 2x bằng mẫu xanh mạnh nhất
+        // trong mỗi ô 2x2: tường mảnh 6–8px (đủ qua cửa mật độ ở full-res) không bị mất vì một
+        // pixel mép. Nhiễu một pixel vẫn bị ScanWallsCore loại ở cửa sổ mật độ.
+        if (f.Width < 1000 || f.Height < 600) return ScanWallsCore(f, includeSecondary);
+
+        var sw = Stopwatch.StartNew();
+        var reduced = ReduceForWallScan(f, 2);
+        var small = ScanWallsCore(reduced, includeSecondary);
+        var fullWall = ImageOps.ResizeNearest(small.Wall, f.Width, f.Height);
+        var thumb = ImageOps.ResizeNearest(fullWall, 128, 72);
+
+        return new WallScan
+        {
+            Timing = $"thu-nhỏ+phóng {sw.Elapsed.TotalMilliseconds:F0}  {small.Timing}",
+            Wall = fullWall,
+            ValueThreshold = small.ValueThreshold,
+            PanelV = small.PanelV,
+            Coverage = thumb.Count / (double)thumb.Data.Length,
+            Thumb = thumb,
+            LargeWalls = small.LargeWalls,
+            MicroWalls = small.MicroWalls,
+            SecondaryWalls = small.SecondaryWalls
+        };
+    }
+
+    internal static WallScan ScanWallsFullResolution(BoardFrame f, bool includeSecondary = true) =>
+        ScanWallsCore(f, includeSecondary);
+
+    private static BoardFrame ReduceForWallScan(BoardFrame source, int factor)
+    {
+        int w2 = (source.Width + factor - 1) / factor;
+        int h2 = (source.Height + factor - 1) / factor;
+        var h = new byte[w2 * h2];
+        var s = new byte[h.Length];
+        var v = new byte[h.Length];
+
+        for (int y2 = 0; y2 < h2; y2++)
+        for (int x2 = 0; x2 < w2; x2++)
+        {
+            int bestScore = int.MinValue;
+            (int H, int S, int V) best = default;
+            for (int yy = 0; yy < factor; yy++)
+            for (int xx = 0; xx < factor; xx++)
+            {
+                int x = Math.Min(source.Width - 1, x2 * factor + xx);
+                int y = Math.Min(source.Height - 1, y2 * factor + yy);
+                int i = y * source.Width + x;
+                int hh = source.Hsv.H[i], ss = source.Hsv.S[i], vv = source.Hsv.V[i];
+                bool wallHue = hh is >= 30 and <= 115;
+                int score = wallHue ? 1000 + ss * 2 + vv : vv;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = (hh, ss, vv);
+                }
+            }
+
+            var pick = best;
+            int di = y2 * w2 + x2;
+            h[di] = (byte)pick.H;
+            s[di] = (byte)pick.S;
+            v[di] = (byte)pick.V;
+        }
+
+        BoardTerminal ScaleTerminal(BoardTerminal t) => new()
+        {
+            Box = new Rectangle(
+                t.Box.X / factor, t.Box.Y / factor,
+                Math.Max(1, (t.Box.Width + factor - 1) / factor),
+                Math.Max(1, (t.Box.Height + factor - 1) / factor)),
+            Area = Math.Max(1, t.Area / (factor * factor)),
+            Cx = t.Cx / factor,
+            Cy = t.Cy / factor,
+            PinSide = t.PinSide,
+            PinConfidence = t.PinConfidence
+        };
+
+        return new BoardFrame
+        {
+            RoiRect = new Rectangle(0, 0, w2, h2),
+            Hsv = new Hsv { Width = w2, Height = h2, H = h, S = s, V = v },
+            Sx = source.Sx / factor,
+            Sy = source.Sy / factor,
+            Scale = source.Scale / factor,
+            Terminals = source.Terminals.Select(ScaleTerminal).ToArray(),
+            TitleCount = source.TitleCount
+        };
+    }
+
+    private static WallScan ScanWallsCore(BoardFrame f, bool includeSecondary)
+    {
+        int w = f.Width, h = f.Height;
+        var hsv = f.Hsv;
+        double scale = f.Scale;
+
+        var sw = Stopwatch.StartNew();
+        var laps = new List<string>();
+        void Lap(string name) { laps.Add($"{name} {sw.Elapsed.TotalMilliseconds:F0}"); sw.Restart(); }
+
+        int vt = GreenOtsu(hsv);
+        Lap("otsu");
+
+        var green = new Mask(w, h);
+        for (int i = 0; i < green.Data.Length; i++)
+        {
+            if (hsv.H[i] >= WallHueMin && hsv.H[i] <= WallHueMax
+                && hsv.S[i] >= WallSatMin && hsv.V[i] >= vt) green.Data[i] = 1;
+        }
+
+        int k = Odd(Math.Max(9, (int)Math.Round(WallDensityWindowRef * scale)));
+        var solid = ImageOps.BoxAtLeast(green, k, WallDensityMin);
+        Lap("mat-do");
+
+        solid = ImageOps.Close(solid, Odd(Math.Max(3, (int)Math.Round(WallCloseRef * scale))));
+        Lap("close");
+
+        int largeMinArea = Math.Max(350, (int)Math.Round(LargeAreaRef * scale * scale));
+        int microMinArea = Math.Max(90, (int)Math.Round(MicroAreaRef * scale * scale));
+        int microShort = Math.Max(6, (int)Math.Round(MicroShortRef * scale));
+        int microLong = Math.Max(10, (int)Math.Round(MicroLongRef * scale));
+        int sideMin = Math.Max(8, (int)(18 * scale));
+
+        int large = 0, micro = 0;
+        var labeled = ImageOps.Label(solid);
+        var clean = ImageOps.Keep(labeled, b =>
+        {
+            int shortSide = Math.Min(b.Box.Width, b.Box.Height);
+            int longSide = Math.Max(b.Box.Width, b.Box.Height);
+            double fill = b.Area / Math.Max(1.0, (double)b.Box.Width * b.Box.Height);
+
+            bool largeOk = b.Area >= largeMinArea && b.Box.Width >= sideMin && b.Box.Height >= sideMin;
+            bool microOk = b.Area >= microMinArea
+                           && shortSide >= microShort
+                           && longSide >= microLong
+                           && longSide / Math.Max(1.0, (double)shortSide) <= MicroAspectMax
+                           && fill >= MicroFillMin;
+
+            if (largeOk) large++;
+            else if (microOk) micro++;
+            return largeOk || microOk;
+        });
+        Lap("nhan-khoi");
+
+        // Lop bao thu hai: nguong xanh mem hon + cua so mat do LON hon. No co the MO RONG mot
+        // buc tuong da duoc chung minh, nhung khong duoc tu tao ra tuong moi — day la gioi han
+        // ban Python dat ra de tranh nhan tranh tri mach dam thanh tuong.
+        var (secondary, secondaryKept) = includeSecondary
+            ? SecondaryWalls(hsv, vt, scale)
+            : (new Mask(w, h), 0);
+        Lap("lop-bao");
+
+        int nearK = Odd(Math.Max(3, (int)Math.Round(SecondaryNearRef * scale)));
+        var near = ImageOps.Dilate(clean, nearK, nearK);
+        if (includeSecondary)
+            clean = ImageOps.Or(clean, ImageOps.And(secondary, near));
+        Lap("gop-bao");
+
+        // Than dau noi LUON la tuong. Duong ham o hai cong duoc khoet lai sau, va chi o hai
+        // mat da chung minh bang den bao.
+        int pad = Math.Max(2, (int)Math.Round(2 * scale));
+        foreach (var t in f.Terminals)
+            ImageOps.FillRect(clean, Rectangle.Inflate(t.Box, pad, pad), 1);
+
+        double panelV = ImageOps.MedianIn(hsv.V, clean);
+        var thumb = ImageOps.ResizeNearest(clean, 128, 72);
+        Lap("trung-vi+thumb");
+
+        return new WallScan
+        {
+            Timing = string.Join("  ", laps),
+            Wall = clean,
+            ValueThreshold = vt,
+            PanelV = panelV,
+            Coverage = thumb.Count / (double)thumb.Data.Length,
+            Thumb = thumb,
+            LargeWalls = large,
+            MicroWalls = micro,
+            SecondaryWalls = secondaryKept
+        };
+    }
+
+    private static (Mask Mask, int Kept) SecondaryWalls(Hsv hsv, int vt, double scale)
+    {
+        int w = hsv.Width, h = hsv.Height;
+        double softV = Math.Max(34.0, vt - 10.0);
+
+        var soft = new Mask(w, h);
+        for (int i = 0; i < soft.Data.Length; i++)
+        {
+            if (hsv.H[i] >= SoftHueMin && hsv.H[i] <= SoftHueMax
+                && hsv.S[i] >= SoftSatMin && hsv.V[i] >= softV) soft.Data[i] = 1;
+        }
+
+        int sk = Odd(Math.Max(11, (int)Math.Round(SecondaryDensityRef * scale)));
+        var mask = ImageOps.BoxAtLeast(soft, sk, SecondaryDensityMin);
+
+        mask = ImageOps.Close(mask, Odd(Math.Max(3, (int)Math.Round(5 * scale))));
+
+        int minArea = Math.Max(60, (int)Math.Round(SecondaryMinAreaRef * scale * scale));
+        int minShort = Math.Max(4, (int)Math.Round(SecondaryShortMinRef * scale));
+
+        int kept = 0;
+        var labeled = ImageOps.Label(mask);
+        var outp = ImageOps.Keep(labeled, b =>
+        {
+            int shortSide = Math.Min(b.Box.Width, b.Box.Height);
+            int longSide = Math.Max(b.Box.Width, b.Box.Height);
+            if (b.Area < minArea || shortSide < minShort) return false;
+
+            double fill = b.Area / Math.Max(1.0, (double)b.Box.Width * b.Box.Height);
+
+            // Vung dac va gon la than bang thuc. Vung rat dai va thua thi van la net mach / chu.
+            bool ok = fill >= 0.26 && longSide / Math.Max(1.0, (double)shortSide) <= 11.0;
+            if (ok) kept++;
+            return ok;
+        });
+
+        return (outp, kept);
+    }
+
+    /// <summary>
+    /// Ngưỡng Otsu trên V của những pixel xanh bão hoà — chỗ trũng giữa nền xanh mờ và thân bảng
+    /// xanh sáng. Bị kẹp trong 52..64 chỉ để loại khung đang mờ dần, KHÔNG để nhắm một tỉ lệ che
+    /// nào; xem <see cref="ImageOps.Otsu"/>.
+    /// </summary>
+    private static int GreenOtsu(Hsv hsv)
+    {
+        var hist = new long[256];
+        long n = 0;
+        for (int i = 0; i < hsv.H.Length; i++)
+        {
+            if (hsv.H[i] < 35 || hsv.H[i] > 105 || hsv.S[i] < 100) continue;
+            hist[hsv.V[i]]++;
+            n++;
+        }
+        if (n < 1500) return 58;
+        return Math.Clamp(ImageOps.Otsu(hist), 52, 64);
+    }
+
+    private static int Odd(int k) => k % 2 == 0 ? k + 1 : k;
+
+    // ================================================================ on dinh khung ve
+
+    /// <summary>
+    /// Ba khung tường gần như y hệt nhau thì mới cho đóng băng tuyến.
+    ///
+    /// Không phải cẩn thận quá mức: bảng có hoạt ảnh hiện dần, và một khung vẽ dở cho ra tường
+    /// thiếu — tức đường trống ở chỗ có tường thật. Đóng băng tuyến trên khung đó là lao vào
+    /// tường mà mọi chứng chỉ an toàn đều báo "ổn".
+    /// </summary>
+    public static bool SignatureStable(IReadOnlyList<WallScan> history, int need, out string reason)
+    {
+        need = Math.Max(2, need);
+        if (history.Count < need) { reason = $"cần {need} khung"; return false; }
+
+        var hs = history.Skip(history.Count - need).ToArray();
+
+        double minPanelV = hs.Min(x => x.PanelV);
+        if (minPanelV < SignaturePanelVMin)
+        {
+            reason = $"bảng còn mờ (V={minPanelV:F1} < {SignaturePanelVMin})";
+            return false;
+        }
+
+        double minCov = hs.Min(x => x.Coverage), maxCov = hs.Max(x => x.Coverage);
+        if (minCov < SignatureCoverageMin || maxCov > SignatureCoverageMax)
+        {
+            reason = $"tỉ lệ che ngoài dải ({minCov:F3}–{maxCov:F3})";
+            return false;
+        }
+        if (maxCov - minCov > SignatureCoverageDrift)
+        {
+            reason = $"tỉ lệ che còn đổi ({minCov:F3}–{maxCov:F3})";
+            return false;
+        }
+
+        double minIou = double.MaxValue;
+        for (int i = 0; i + 1 < hs.Length; i++)
+            minIou = Math.Min(minIou, Iou(hs[i].Thumb, hs[i + 1].Thumb));
+
+        if (minIou < SignatureIouMin)
+        {
+            reason = $"mặt nạ tường còn dịch (iou={minIou:F4})";
+            return false;
+        }
+
+        reason = $"ổn định {hs.Length} khung (iou={minIou:F4}, che={(minCov + maxCov) / 2:F3}, V={minPanelV:F1})";
+        return true;
+    }
+
+    private static double Iou(Mask a, Mask b)
+    {
+        int inter = 0, union = 0;
+        for (int i = 0; i < a.Data.Length; i++)
+        {
+            bool x = a.Data[i] != 0, y = b.Data[i] != 0;
+            if (x && y) inter++;
+            if (x || y) union++;
+        }
+        return inter / Math.Max(1.0, union);
+    }
+
+    // ================================================================ vung ban hop le
+
+    /// <summary>
+    /// Vùng bàn hợp lệ: bao lồi ĐO ĐƯỢC của các thân bảng lớn cộng hai đầu nối, cắt về trong ROI.
+    /// Mọi thứ ngoài vùng này bị coi là tường cứng, nên đây là một quyết định nặng.
+    ///
+    /// Bản trước còn GIAO thêm với một khung "canvas" suy từ tỉ lệ ROI
+    /// (0.060–0.915 × 0.055–0.920). Con số đó là giá trị DỰ PHÒNG của bản Python — nó chỉ rơi vào
+    /// đó khi bộ dò biên bằng ảnh của nó không kết luận nổi — mà tôi lại dùng như một phép đo.
+    /// Trên bảng thật đo được: ROI 1814×1053, hai đầu nối ở y=22 và y=1001..1044, tức NGOÀI khung
+    /// đoán đó. Phép giao cắt mất cả điểm đầu lẫn điểm đích, chúng nằm trong tường đặc, và A* báo
+    /// "không có tuyến nào an toàn" — một thông báo đúng cho một bản đồ đã bị làm sai.
+    ///
+    /// Nên bỏ hẳn khung đoán. Bao lồi vẫn giữ được mục đích ban đầu (không cho A* chạy vòng ra
+    /// khoảng trang trí ngoài mạch) vì nó bám theo hình học thật của bản đồ, và nó LUÔN chứa hai
+    /// đầu nối theo cách dựng — tức điểm đầu/đích không bao giờ có thể bị chính bước này khoá lại.
+    /// </summary>
+    public static Rectangle LegalBounds(Mask wall, BoardFrame f)
+    {
+        var legal = Envelope(wall, f);
+        legal.Intersect(new Rectangle(0, 0, f.Width, f.Height));
+        return legal;
+    }
+
+    private static Rectangle Envelope(Mask wall, BoardFrame f)
+    {
+        int minArea = Math.Max(200, (int)Math.Round(EnvelopeComponentAreaRef * f.Scale * f.Scale));
+        var boxes = ImageOps.Blobs(wall, minArea);
+
+        int x0, y0, x1, y1;
+        if (boxes.Count == 0)
+        {
+            x0 = 0; y0 = 0; x1 = f.Width - 1; y1 = f.Height - 1;
+        }
+        else
+        {
+            x0 = boxes.Min(b => b.Box.Left);
+            y0 = boxes.Min(b => b.Box.Top);
+            x1 = boxes.Max(b => b.Box.Right - 1);
+            y1 = boxes.Max(b => b.Box.Bottom - 1);
+        }
+
+        // Gom ca than dau noi de bao chum toi diem dau/cuoi thuc — nhung dau noi khong duoc keo
+        // bao di sau vao vung logo/trang tri, nen khong noi them gi ngoai pad chung.
+        foreach (var t in f.Terminals)
+        {
+            x0 = Math.Min(x0, t.Box.Left);
+            y0 = Math.Min(y0, t.Box.Top);
+            x1 = Math.Max(x1, t.Box.Right - 1);
+            y1 = Math.Max(y1, t.Box.Bottom - 1);
+        }
+
+        int pad = Math.Max(8, (int)Math.Round(EnvelopePadRef * f.Scale));
+        return Rectangle.FromLTRB(
+            Math.Max(0, x0 - pad), Math.Max(0, y0 - pad),
+            Math.Min(f.Width - 1, x1 + pad), Math.Min(f.Height - 1, y1 + pad));
+    }
+
+    /// <summary>
+    /// Đóng cứng mọi thứ ngoài vùng bàn hợp lệ thành TƯỜNG, rồi khoét lại đúng hai đường hầm của
+    /// hai cổng đầu nối. Không lỗ nào khác trên biên có thể thành đường đi.
+    /// </summary>
+    private static Mask ApplyEnvelope(Mask wall, BoardFrame f, BoardRole role, Rectangle legal)
+    {
+        var outp = ImageOps.Clone(wall);
+        int w = f.Width, h = f.Height;
+
+        ImageOps.FillRect(outp, new Rectangle(0, 0, w, legal.Top), 1);
+        ImageOps.FillRect(outp, new Rectangle(0, legal.Bottom + 1, w, h - legal.Bottom - 1), 1);
+        ImageOps.FillRect(outp, new Rectangle(0, 0, legal.Left, h), 1);
+        ImageOps.FillRect(outp, new Rectangle(legal.Right + 1, 0, w - legal.Right - 1, h), 1);
+
+        int inset = Math.Max(1, (int)Math.Round(BoardExtentInsetRef * f.Scale));
+        ImageOps.FillRect(outp, new Rectangle(0, legal.Top, w, inset), 1);
+        ImageOps.FillRect(outp, new Rectangle(0, legal.Bottom - inset + 1, w, inset), 1);
+        ImageOps.FillRect(outp, new Rectangle(legal.Left, 0, inset, h), 1);
+        ImageOps.FillRect(outp, new Rectangle(legal.Right - inset + 1, 0, inset, h), 1);
+
+        return CarvePorts(outp, role, f.Scale, PortCarveHalfRef * f.Scale);
+    }
+
+    /// <summary>Khoét đường hầm ở hai cổng đã chứng minh, để START/GOAL không bị chính thân đầu nối bịt.</summary>
+    private static Mask CarvePorts(Mask mask, BoardRole role, double scale, double halfWidth)
+    {
+        var outp = ImageOps.Clone(mask);
+
+        var sv = BoardKeys.Vec(role.StartKey);
+        var gv = BoardKeys.Vec(role.GoalFinalKey);
+        double len = PortCarveLenRef * scale;
+        int width = Math.Max(5, (int)Math.Round(2 * halfWidth + 1));
+        int r = Math.Max(8, (int)Math.Round(15 * scale));
+
+        ImageOps.FillCircle(outp, role.StartPoint.X, role.StartPoint.Y, r, 0);
+        ImageOps.DrawThickLine(outp, role.StartPoint,
+            new Point((int)Math.Round(role.StartPoint.X + sv.X * len),
+                      (int)Math.Round(role.StartPoint.Y + sv.Y * len)), width, 0);
+
+        ImageOps.FillCircle(outp, role.GoalHit.X, role.GoalHit.Y, r, 0);
+        ImageOps.DrawThickLine(outp,
+            new Point((int)Math.Round(role.GoalHit.X - gv.X * len),
+                      (int)Math.Round(role.GoalHit.Y - gv.Y * len)),
+            role.GoalHit, width, 0);
+
+        return outp;
+    }
+
+    /// <summary>
+    /// Nở tường thêm lề an toàn, đóng cứng mép ROI, rồi mở lại hai đường hầm cổng (hẹp hơn lúc
+    /// chứng nhận, để A* không men sát vào thân đầu nối).
+    ///
+    /// Nhận vào bản đồ khoảng thoát ĐÃ TÍNH của mặt nạ tường + biên hợp lệ, chứ không tự tính:
+    /// bộ dựng tuyến thử bảy bán kính trên cùng một mặt nạ, mà distance transform là phần đắt
+    /// nhất. Tính một lần rồi ngưỡng bảy lần.
+    /// </summary>
+    private static Mask InflateFrom(float[] certClear, BoardFrame f, BoardRole role, double radiusRef)
+    {
+        int r = Math.Max(2, (int)Math.Round(radiusRef * f.Scale));
+        var inf = ImageOps.Within(certClear, f.Width, f.Height, r);
+
+        int b = Math.Max(3, (int)Math.Round(BoundaryMarginRef * f.Scale));
+        ImageOps.FillRect(inf, new Rectangle(0, 0, f.Width, b), 1);
+        ImageOps.FillRect(inf, new Rectangle(0, f.Height - b, f.Width, b), 1);
+        ImageOps.FillRect(inf, new Rectangle(0, 0, b, f.Height), 1);
+        ImageOps.FillRect(inf, new Rectangle(f.Width - b, 0, b, f.Height), 1);
+
+        return CarvePorts(inf, role, f.Scale, Math.Max(3, PortCarveHalfRef * f.Scale * 0.55));
+    }
+
+    // ================================================================ A*
+
+    /// <summary>
+    /// A* trên lưới thô, ba chiều trạng thái (x, y, hướng).
+    ///
+    /// Ba thành phần giá, và cả ba đều cần:
+    ///   - 1.0 mỗi ô: đường ngắn.
+    ///   - <see cref="TurnCost"/> = 22 mỗi lần rẽ: mỗi lần rẽ trong game là một lần phải bấm đúng
+    ///     thời điểm, tức một cơ hội thất bại. Tuyến ít rẽ đáng giá hơn tuyến ngắn.
+    ///   - <see cref="ClearanceCost"/>/(c+0.6)²: men sát tường bị phạt nặng dần. Đây là thứ giữ
+    ///     cho tuyến đi giữa khe thay vì cọ vào mép.
+    ///
+    /// Cấm quay đầu (đi ngược hướng hiện tại): dây trong game không lùi lại được.
+    /// </summary>
+    private sealed class AStarRun
+    {
+        public List<(int X, int Y, int D)> States { get; init; }
+        public int Explored { get; init; }
+        public double Ms { get; init; }
+        public bool BudgetHit { get; init; }
+    }
+
+    private static AStarRun AStar(Mask blockedPx, float[] clearPx, BoardRole role, int cell,
+                                  Mask corridorPx, ref int stateBudget)
+    {
+        var sw = Stopwatch.StartNew();
+        int w = blockedPx.Width, h = blockedPx.Height;
+        int W = Math.Max(2, (int)Math.Ceiling(w / (double)cell));
+        int H = Math.Max(2, (int)Math.Ceiling(h / (double)cell));
+
+        var blocked = ImageOps.ResizeNearest(blockedPx, W, H);
+        if (corridorPx is not null)
+        {
+            var corridor = ImageOps.ResizeNearest(corridorPx, W, H);
+            for (int i = 0; i < blocked.Data.Length; i++)
+                if (corridor.Data[i] == 0) blocked.Data[i] = 1;
+        }
+        var clear = ImageOps.ResizeArea(clearPx, w, h, W, H);
+        for (int i = 0; i < clear.Length; i++) clear[i] /= cell;
+
+        int sx = (int)Math.Round(role.StartPoint.X / (double)cell);
+        int sy = (int)Math.Round(role.StartPoint.Y / (double)cell);
+        int gx = (int)Math.Round(role.GoalHit.X / (double)cell);
+        int gy = (int)Math.Round(role.GoalHit.Y / (double)cell);
+
+        var sf = NearestFree(blocked, sx, sy, 8);
+        var gf = NearestFree(blocked, gx, gy, 8);
+        if (sf is null || gf is null)
+            return new AStarRun { Ms = sw.Elapsed.TotalMilliseconds };
+        (sx, sy) = sf.Value;
+        (gx, gy) = gf.Value;
+
+        int sd = BoardKeys.Index(role.StartKey);
+        int gd = BoardKeys.Index(role.GoalFinalKey);
+
+        int Encode(int x, int y, int d) => (y * W + x) * 4 + d;
+
+        var g = new double[W * H * 4];
+        Array.Fill(g, double.PositiveInfinity);
+        var came = new int[W * H * 4];
+        Array.Fill(came, -1);
+
+        int startState = Encode(sx, sy, sd);
+        int goalState = Encode(gx, gy, gd);
+        g[startState] = 0;
+
+        var heap = new PriorityQueue<int, double>();
+        heap.Enqueue(startState, 0);
+
+        int explored = 0;
+        bool found = false;
+        bool budgetHit = false;
+        int localLimit = Math.Min(MaxAStarStates, Math.Max(0, stateBudget));
+
+        while (heap.TryDequeue(out int st, out double f))
+        {
+            if (st == goalState) { found = true; break; }
+            if (explored >= localLimit)
+            {
+                budgetHit = true;
+                break;
+            }
+            explored++;
+            stateBudget--;
+
+            int d = st & 3;
+            int cellIdx = st >> 2;
+            int x = cellIdx % W, y = cellIdx / W;
+            double gs = g[st];
+
+            // Bo qua ban ghi CU con sot trong heap: PriorityQueue khong co decrease-key nen mot
+            // trang thai co the nam trong hang nhieu lan, va chi ban co f nho nhat con dung.
+            if (f > gs + Heuristic(x, y, d) + 1e-9) continue;
+
+            for (int nd = 0; nd < 4; nd++)
+            {
+                if (BoardKeys.All[nd] == BoardKeys.Opposite(BoardKeys.All[d])) continue;
+
+                var v = BoardKeys.Vec(BoardKeys.All[nd]);
+                int nx = x + v.X, ny = y + v.Y;
+                if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                if (blocked.Data[ny * W + nx] != 0) continue;
+
+                double c = Math.Max(0.25, clear[ny * W + nx]);
+                double risk = ClearanceCost / ((c + 0.60) * (c + 0.60));
+                double ng = gs + 1.0 + (nd == d ? 0.0 : TurnCost) + risk;
+
+                int ns = Encode(nx, ny, nd);
+                if (ng >= g[ns]) continue;
+
+                g[ns] = ng;
+                came[ns] = st;
+                heap.Enqueue(ns, ng + Heuristic(nx, ny, nd));
+            }
+        }
+
+        if (!found)
+            return new AStarRun
+            {
+                Explored = explored,
+                Ms = sw.Elapsed.TotalMilliseconds,
+                BudgetHit = budgetHit
+            };
+
+        var states = new List<(int, int, int)>();
+        for (int s = goalState; s != -1; s = came[s])
+        {
+            int idx = s >> 2;
+            states.Add((idx % W, idx / W, s & 3));
+            if (s == startState) break;
+        }
+        states.Reverse();
+        return new AStarRun
+        {
+            States = states,
+            Explored = explored,
+            Ms = sw.Elapsed.TotalMilliseconds,
+            BudgetHit = budgetHit
+        };
+
+        double Heuristic(int x, int y, int d) =>
+            Math.Abs(x - gx) + Math.Abs(y - gy) + (d == gd ? 0 : 2);
+    }
+
+    private static (int X, int Y)? NearestFree(Mask blocked, int x, int y, int maxR)
+    {
+        int w = blocked.Width, h = blocked.Height;
+        bool Free(int xx, int yy) =>
+            xx >= 0 && yy >= 0 && xx < w && yy < h && blocked.Data[yy * w + xx] == 0;
+
+        if (Free(x, y)) return (x, y);
+
+        for (int r = 1; r <= maxR; r++)
+        {
+            for (int yy = y - r; yy <= y + r; yy++)
+            {
+                if (Free(x - r, yy)) return (x - r, yy);
+                if (Free(x + r, yy)) return (x + r, yy);
+            }
+            for (int xx = x - r + 1; xx < x + r; xx++)
+            {
+                if (Free(xx, y - r)) return (xx, y - r);
+                if (Free(xx, y + r)) return (xx, y + r);
+            }
+        }
+        return null;
+    }
+
+    // ================================================================ trang thai -> doan
+
+    /// <summary>
+    /// Đổi chuỗi trạng thái A* thành các đoạn Manhattan.
+    ///
+    /// Trả null nếu tuyến không hợp lệ về nguyên tắc: phím đầu không khớp mặt START, phím cuối
+    /// không khớp mặt GOAL, có hai đoạn liền nhau ngược hướng, hay có đoạn dài ≤1px. Thà không có
+    /// tuyến còn hơn có tuyến sai — bot sẽ giữ và chờ khung sau.
+    /// </summary>
+    private static BoardSegment[] StatesToSegments(List<(int X, int Y, int D)> states, int cell, BoardRole role)
+    {
+        if (states is null || states.Count == 0) return null;
+
+        var keys = new List<string>();
+        var turns = new List<PointF>();
+
+        int prevD = states[0].D;
+        for (int i = 1; i < states.Count; i++)
+        {
+            if (states[i].D == prevD) continue;
+
+            // Cu re xay ra SAU khi da toi o truoc do, tren huong truoc do.
+            var p = states[i - 1];
+            keys.Add(BoardKeys.All[prevD]);
+            turns.Add(new PointF(p.X * cell, p.Y * cell));
+            prevD = states[i].D;
+        }
+        keys.Add(BoardKeys.All[prevD]);
+        turns.Add(new PointF(role.GoalHit.X, role.GoalHit.Y));
+
+        if (keys[0] != role.StartKey || keys[^1] != role.GoalFinalKey) return null;
+        for (int i = 0; i + 1 < keys.Count; i++)
+            if (keys[i + 1] == BoardKeys.Opposite(keys[i])) return null;
+
+        // Cho cu re GAN CUOI canh lan cuoi khop dung truc cua GOAL, de doan cuoi cam thang vao.
+        if (keys.Count >= 2)
+        {
+            var t = turns[^2];
+            turns[^2] = BoardKeys.IsHorizontal(keys[^1])
+                ? new PointF(t.X, role.GoalHit.Y)
+                : new PointF(role.GoalHit.X, t.Y);
+        }
+
+        var axes = new List<double>();
+        for (int i = 0; i < keys.Count - 1; i++)
+            axes.Add(BoardKeys.IsHorizontal(keys[i]) ? turns[i].X : turns[i].Y);
+
+        return SegmentsFromAxes(keys, axes, role);
+    }
+
+    /// <summary>
+    /// Dựng đoạn từ danh sách phím + danh sách TRỤC rẽ. Trục là con số thật sự định nghĩa tuyến:
+    /// mỗi lần rẽ là "đi tới khi toạ độ x (hoặc y) đạt giá trị này".
+    /// </summary>
+    private static BoardSegment[] SegmentsFromAxes(List<string> keys, List<double> axes, BoardRole role)
+    {
+        var cur = new PointF(role.StartPoint.X, role.StartPoint.Y);
+        var goal = new PointF(role.GoalHit.X, role.GoalHit.Y);
+        var outp = new List<BoardSegment>();
+
+        for (int i = 0; i < keys.Count; i++)
+        {
+            string key = keys[i];
+            PointF end;
+            if (i == keys.Count - 1) end = goal;
+            else
+            {
+                end = BoardKeys.IsHorizontal(key)
+                    ? new PointF((float)axes[i], cur.Y)
+                    : new PointF(cur.X, (float)axes[i]);
+            }
+
+            var v = BoardKeys.Vec(key);
+            double dist = (end.X - cur.X) * v.X + (end.Y - cur.Y) * v.Y;
+            if (dist <= 1.0) return null;
+
+            // Sai so vuong goc phai rat nho, khong thi day khong con la doan Manhattan.
+            double ox = (end.X - cur.X) - v.X * dist;
+            double oy = (end.Y - cur.Y) - v.Y * dist;
+            if (Math.Sqrt(ox * ox + oy * oy) > 2.5) return null;
+
+            outp.Add(new BoardSegment
+            {
+                Key = key,
+                Start = cur,
+                End = end,
+                Distance = dist,
+                IsGoalEntry = i == keys.Count - 1
+            });
+            cur = end;
+        }
+
+        return outp.ToArray();
+    }
+
+    // ================================================================ chung chi an toan
+
+    /// <summary>
+    /// Khoảng thoát nhỏ nhất dọc cả tuyến, đo trên tường VẬT LÝ (chỉ mở hai đường hầm cổng).
+    ///
+    /// Bỏ qua 8 mẫu đầu của đoạn đầu và 8 mẫu cuối của đoạn cuối: hai chỗ đó nằm trong thân đầu
+    /// nối, nên đo ở đó luôn ra gần 0 và sẽ loại mọi tuyến hợp lệ.
+    /// </summary>
+    private static (double MinClear, double Total) Certificate(
+        BoardSegment[] segs, float[] clear, BoardFrame f)
+    {
+        double minc = double.MaxValue, total = 0;
+        for (int i = 0; i < segs.Length; i++)
+        {
+            var vals = SampleLine(clear, f.Width, f.Height, segs[i].Start, segs[i].End, 2.0);
+            int from = 0, to = vals.Count;
+            if (i == 0 && vals.Count > 8) from = 8;
+            if (i == segs.Length - 1 && vals.Count > 8) to = Math.Max(1, vals.Count - 8);
+
+            for (int k = from; k < to; k++) minc = Math.Min(minc, vals[k]);
+            total += segs[i].Distance;
+        }
+
+        return (minc == double.MaxValue ? 0.0 : minc, total);
+    }
+
+    private static List<float> SampleLine(float[] clear, int w, int h, PointF a, PointF b, double step)
+    {
+        double dx = b.X - a.X, dy = b.Y - a.Y;
+        double d = Math.Sqrt(dx * dx + dy * dy);
+        int n = Math.Max(2, (int)(d / step) + 1);
+
+        var outp = new List<float>(n);
+        for (int i = 0; i < n; i++)
+        {
+            double t = i / (double)(n - 1);
+            int x = Math.Clamp((int)Math.Round(a.X + dx * t), 0, w - 1);
+            int y = Math.Clamp((int)Math.Round(a.Y + dy * t), 0, h - 1);
+            outp.Add(clear[y * w + x]);
+        }
+        return outp;
+    }
+
+    private static double LineMinClear(float[] clear, int w, int h, PointF a, PointF b, double step = 1.0)
+    {
+        var vals = SampleLine(clear, w, h, a, b, step);
+        double m = double.MaxValue;
+        foreach (float v in vals) m = Math.Min(m, v);
+        return m == double.MaxValue ? 0.0 : m;
+    }
+
+    /// <summary>
+    /// Kiểm tra tuyến có nằm trong vùng bàn đo được hay không — CỐ TÌNH không dùng mặt nạ tường.
+    ///
+    /// Nhờ vậy một lỗi phân đoạn tường không thể tự chứng nhận cho một tuyến đi ra ngoài bàn. Hai
+    /// đầu tuyến được miễn một đoạn <see cref="BoardExtentExemptRef"/> vì chúng nằm trong thân đầu
+    /// nối, mà thân đầu nối có thể chạm mép vùng hợp lệ.
+    /// </summary>
+    private static bool ExtentAudit(BoardSegment[] segs, Rectangle legal, double scale, out string why)
+    {
+        double inset = Math.Max(1.0, BoardExtentInsetRef * scale);
+        double exempt = Math.Max(16.0, BoardExtentExemptRef * scale);
+
+        for (int i = 0; i < segs.Length; i++)
+        {
+            var s = segs[i];
+            double dx = s.End.X - s.Start.X, dy = s.End.Y - s.Start.Y;
+            double d = Math.Max(1.0, Math.Sqrt(dx * dx + dy * dy));
+            int n = Math.Max(2, (int)(d / 2.0) + 1);
+
+            for (int k = 0; k < n; k++)
+            {
+                double u = k / (double)(n - 1);
+                double along = d * u;
+                if (i == 0 && along <= exempt) continue;
+                if (i == segs.Length - 1 && d - along <= exempt) continue;
+
+                double x = s.Start.X + dx * u, y = s.Start.Y + dy * u;
+                if (x < legal.Left + inset || x > legal.Right - inset ||
+                    y < legal.Top + inset || y > legal.Bottom - inset)
+                {
+                    why = $"tuyến ra ngoài vùng bàn: đoạn {i} tại ({x:F0},{y:F0}), " +
+                          $"vùng ({legal.Left},{legal.Top})-({legal.Right},{legal.Bottom})";
+                    return false;
+                }
+            }
+        }
+
+        why = "ok";
+        return true;
+    }
+
+    // ================================================================ tinh chinh nga re
+
+    /// <summary>
+    /// Dịch mỗi góc rẽ của A* về TÂM AN TOÀN NHẤT của cùng cái khe đó.
+    ///
+    /// A* chạy trên ô 8–12px, nên một góc thô có thể rơi đúng vào MÉP của một khe hợp lệ. Về hình
+    /// học tuyến vẫn đúng, nhưng game có thể không nhận cú rẽ ở mép đó, và đầu dây đang tự chạy sẽ
+    /// lao thẳng vào tường kế tiếp. Quét từng pixel trong ±24px, chấm theo khoảng thoát tệ nhất
+    /// của: đuôi làn hiện tại, đoạn mở đầu làn kế, và cả làn kế.
+    ///
+    /// Không tìm được tâm an toàn thì GIỮ NGUYÊN trục thô — không bao giờ tự bịa ra một cú rẽ mới.
+    /// </summary>
+    private static (BoardSegment[] Segs, List<string> Notes) RefineTurns(
+        BoardSegment[] segs, float[] clear, BoardFrame f, BoardRole role)
+    {
+        var notes = new List<string>();
+        if (segs.Length < 2) return (segs, notes);
+
+        var keys = segs.Select(s => s.Key).ToList();
+        var rawAxes = new List<double>();
+        for (int i = 0; i < segs.Length - 1; i++)
+            rawAxes.Add(BoardKeys.IsHorizontal(segs[i].Key) ? segs[i].End.X : segs[i].End.Y);
+
+        double scale = f.Scale;
+        int search = Math.Max(12, (int)Math.Round(24.0 * scale));
+        double minSafe = Math.Max(8.0, 11.0 * scale);
+        double minSeg = MinSegmentRef * scale;
+        double tailLen = Math.Max(14.0, 36.0 * scale);
+        double previewLen = Math.Max(26.0, 88.0 * scale);
+
+        var chosen = new List<double>();
+        var cur = new PointF(role.StartPoint.X, role.StartPoint.Y);
+        var goal = new PointF(role.GoalHit.X, role.GoalHit.Y);
+
+        for (int i = 0; i < rawAxes.Count; i++)
+        {
+            string key = keys[i], next = keys[i + 1];
+            var v = BoardKeys.Vec(key);
+            var nv = BoardKeys.Vec(next);
+
+            double nextAxis = i + 1 < rawAxes.Count
+                ? rawAxes[i + 1]
+                : (BoardKeys.IsHorizontal(next) ? goal.X : goal.Y);
+
+            double bestScore = double.NegativeInfinity, bestClear = 0, bestAxis = rawAxes[i];
+            int bestOff = 0;
+            bool any = false;
+
+            for (int off = -search; off <= search; off++)
+            {
+                double axis = rawAxes[i] + off;
+                var corner = BoardKeys.IsHorizontal(key)
+                    ? new PointF((float)axis, cur.Y)
+                    : new PointF(cur.X, (float)axis);
+
+                // Ngưỡng ở đây từng là 3px, và đó là chỗ đã SINH RA đoạn 4px giết một lượt chạy.
+                // Xem <see cref="MinSegmentRef"/>.
+                double d1 = (corner.X - cur.X) * v.X + (corner.Y - cur.Y) * v.Y;
+                if (d1 < minSeg) continue;
+
+                var nextEnd = BoardKeys.IsHorizontal(next)
+                    ? new PointF((float)nextAxis, corner.Y)
+                    : new PointF(corner.X, (float)nextAxis);
+
+                double d2 = (nextEnd.X - corner.X) * nv.X + (nextEnd.Y - corner.Y) * nv.Y;
+                if (d2 < minSeg) continue;
+
+                var tailStart = new PointF(
+                    (float)(corner.X - v.X * Math.Min(tailLen, d1)),
+                    (float)(corner.Y - v.Y * Math.Min(tailLen, d1)));
+                var frontEnd = new PointF(
+                    (float)(corner.X + nv.X * Math.Min(previewLen, d2)),
+                    (float)(corner.Y + nv.Y * Math.Min(previewLen, d2)));
+
+                double cTail = LineMinClear(clear, f.Width, f.Height, tailStart, corner);
+                double cFront = LineMinClear(clear, f.Width, f.Height, corner, frontEnd);
+                double cNext = LineMinClear(clear, f.Width, f.Height, corner, nextEnd, 2.0);
+                double cmin = Math.Min(cTail, Math.Min(cFront, cNext));
+                if (cmin < minSafe) continue;
+
+                // Muc tieu chinh la khoang thoat te nhat lon nhat; tru mot chut theo do lech de
+                // hai vi tri an toan bang nhau thi giu nguyen hinh hoc cua A*.
+                double score = cmin - 0.005 * Math.Abs(off);
+                if (score <= bestScore) continue;
+
+                bestScore = score;
+                bestClear = cmin;
+                bestAxis = axis;
+                bestOff = off;
+                any = true;
+            }
+
+            notes.Add(any
+                ? $"#{i} {key}→{next} thô={rawAxes[i]:F1} chỉnh={bestAxis:F1} ({bestOff:+0;-0;0}px) thoát={bestClear:F1}"
+                : $"#{i} {key}→{next} thô={rawAxes[i]:F1} giữ nguyên (không có tâm an toàn)");
+
+            chosen.Add(bestAxis);
+            cur = BoardKeys.IsHorizontal(key)
+                ? new PointF((float)bestAxis, cur.Y)
+                : new PointF(cur.X, (float)bestAxis);
+        }
+
+        var refined = SegmentsFromAxes(keys, chosen, role);
+        if (refined is null)
+        {
+            notes.Add("bỏ tinh chỉnh: dựng lại đoạn không hợp lệ");
+            return (segs, notes);
+        }
+
+        var (minc, _) = Certificate(refined, clear, f);
+        if (minc < MinAcceptClearRef * scale)
+        {
+            notes.Add($"bỏ tinh chỉnh: chứng chỉ tụt xuống {minc:F1}px");
+            return (segs, notes);
+        }
+
+        // Hai phep kiem d1/d2 o tren dung `nextAxis` THO cho doan sau, nen sau khi CA hai goc lien
+        // ke deu dich thi do dai that van co the tut xuong duoi nguong. Kiem lai tuyen hoan chinh,
+        // va chi giu ban tinh chinh khi no khong lam xuat hien doan ngan hon ban tho.
+        double refMin = MinSegment(refined), rawMin = MinSegment(segs);
+        if (refMin < MinSegmentRef * scale && refMin < rawMin)
+        {
+            notes.Add($"bỏ tinh chỉnh: sinh ra đoạn {refMin:F0}px < {MinSegmentRef * scale:F0}px " +
+                      $"(bản thô {rawMin:F0}px)");
+            return (segs, notes);
+        }
+
+        return (refined, notes);
+    }
+
+    /// <summary>Đoạn NGẮN NHẤT của tuyến. Xem <see cref="MinSegmentRef"/> để biết vì sao nó quan trọng.</summary>
+    private static double MinSegment(BoardSegment[] segs)
+    {
+        if (segs is null || segs.Length == 0) return 0.0;
+        double m = double.MaxValue;
+        foreach (var s in segs) m = Math.Min(m, s.Distance);
+        return m;
+    }
+
+    private sealed class RouteChoice
+    {
+        public BoardSegment[] Segs { get; init; }
+        public double MinClear { get; init; }
+        public double Total { get; init; }
+        public double Shortest { get; init; }
+        public int Cell { get; init; }
+        public bool IsUrgent { get; init; }
+        public bool IsShortFallback { get; init; }
+    }
+
+    /// <summary>
+    /// Cận dưới khoảng thoát dùng CHỈ để chấm giá A*. Phần bình thường lấy khoảng thoát tường
+    /// vật lý trừ bán kính nở; mép ROI bổ sung cũng được kẹp bảo thủ. Pixel được khoét lại trong
+    /// hai đường hầm cổng có thể mang giá trị 0 sau phép trừ, nên cho đúng một sàn 0.25px: đủ để
+    /// A* đi qua, nhưng không thể giả vờ rằng đường hầm rộng hơn thực tế. Chứng chỉ cuối không dùng
+    /// mảng xấp xỉ này.
+    /// </summary>
+    private static float[] SearchClearance(float[] certClear, Mask inflated, BoardFrame f,
+                                           double radiusRef)
+    {
+        int radius = Math.Max(2, (int)Math.Round(radiusRef * f.Scale));
+        var clear = ImageOps.SubtractClearance(certClear, radius);
+        int b = Math.Max(3, (int)Math.Round(BoundaryMarginRef * f.Scale));
+        int w = f.Width, h = f.Height;
+
+        for (int y = 0; y < h; y++)
+        {
+            int row = y * w;
+            for (int x = 0; x < w; x++)
+            {
+                int i = row + x;
+                if (inflated.Data[i] != 0)
+                {
+                    clear[i] = 0;
+                    continue;
+                }
+
+                // Khoang cach toi bon dai bien da dong cung. Trong ham cong gia tri nay co the
+                // am vi dai bien vua duoc khoet; khi do san 0.25 ben duoi la can duoi an toan.
+                int edge = Math.Min(Math.Min(x - b + 1, w - b - x),
+                                    Math.Min(y - b + 1, h - b - y));
+                if (edge > 0) clear[i] = Math.Min(clear[i], edge);
+                else clear[i] = 0;
+
+                // Mot tam pixel trong tren luoi cach moi tam pixel bi chan it nhat 1px. 0.25 la
+                // can duoi co y thuc, chi danh cho phan ham bi carve sau phep no.
+                if (clear[i] <= 0) clear[i] = 0.25f;
+            }
+        }
+        return clear;
+    }
+
+    private static bool CrossesBlocked(BoardSegment[] segs, Mask blocked)
+    {
+        foreach (var seg in segs)
+        {
+            double dx = seg.End.X - seg.Start.X, dy = seg.End.Y - seg.Start.Y;
+            int n = Math.Max(2, (int)Math.Ceiling(seg.Distance) + 1);
+            for (int k = 0; k < n; k++)
+            {
+                double t = k / (double)(n - 1);
+                int x = Math.Clamp((int)Math.Round(seg.Start.X + dx * t), 0, blocked.Width - 1);
+                int y = Math.Clamp((int)Math.Round(seg.Start.Y + dy * t), 0, blocked.Height - 1);
+                if (blocked.Data[y * blocked.Width + x] != 0) return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool RouteInvariants(BoardSegment[] segs, BoardRole role)
+    {
+        if (segs is null || segs.Length == 0) return false;
+        if (segs[0].Key != role.StartKey || segs[^1].Key != role.GoalFinalKey) return false;
+
+        for (int i = 0; i < segs.Length; i++)
+        {
+            if (segs[i].Distance <= 1.0) return false;
+            if (i > 0)
+            {
+                if (segs[i].Key == BoardKeys.Opposite(segs[i - 1].Key)) return false;
+                if (Math.Abs(segs[i].Start.X - segs[i - 1].End.X) > 0.5 ||
+                    Math.Abs(segs[i].Start.Y - segs[i - 1].End.Y) > 0.5) return false;
+            }
+        }
+        return true;
+    }
+
+    private static RouteChoice EvaluateRoute(List<(int X, int Y, int D)> states, int cell,
+                                             Mask inflated, float[] certClear, BoardFrame f,
+                                             BoardRole role, Rectangle legal, double radiusRef,
+                                             List<string> trace, string label)
+    {
+        var segs = StatesToSegments(states, cell, role);
+        if (!RouteInvariants(segs, role))
+        {
+            trace.Add($"{label}: hình học không hợp lệ");
+            return null;
+        }
+        if (CrossesBlocked(segs, inflated))
+        {
+            trace.Add($"{label}: đoạn nối ô cắt mặt nạ đã nở");
+            return null;
+        }
+
+        var (minc, total) = Certificate(segs, certClear, f);
+        if (minc < MinAcceptClearRef * f.Scale)
+        {
+            trace.Add($"{label}: chứng chỉ {minc:F1}px không đạt");
+            return null;
+        }
+        if (!ExtentAudit(segs, legal, f.Scale, out string extentWhy))
+        {
+            trace.Add($"{label}: {extentWhy}");
+            return null;
+        }
+
+        double shortest = MinSegment(segs);
+        bool shortFallback = shortest < MinSegmentRef * f.Scale;
+        bool urgent = !shortFallback
+                      && Math.Abs(radiusRef - UrgentRadiusRef) < 0.01
+                      && segs[0].Distance >= UrgentFirstSegMinRef * f.Scale
+                      && segs[0].Distance <= UrgentFirstSegMaxRef * f.Scale
+                      && minc >= UrgentMinClearRef * f.Scale;
+
+        return new RouteChoice
+        {
+            Segs = segs,
+            MinClear = minc,
+            Total = total,
+            Shortest = shortest,
+            Cell = cell,
+            IsUrgent = urgent,
+            IsShortFallback = shortFallback
+        };
+    }
+
+    private static Mask CorridorFrom(List<(int X, int Y, int D)> states, int coarseCell,
+                                     BoardFrame f, BoardRole role)
+    {
+        var points = new List<Point>(states.Count + 2)
+        {
+            new(role.StartPoint.X, role.StartPoint.Y)
+        };
+        foreach (var s in states)
+        {
+            points.Add(new Point(
+                Math.Clamp(s.X * coarseCell, 0, f.Width - 1),
+                Math.Clamp(s.Y * coarseCell, 0, f.Height - 1)));
+        }
+        points.Add(new Point(role.GoalHit.X, role.GoalHit.Y));
+
+        int pad = Math.Max(coarseCell * 2, (int)Math.Round(CorridorPadRef * f.Scale));
+        return ImageOps.PathCorridor(f.Width, f.Height, points, pad * 2 + 1);
+    }
+
+    private static RouteChoice TryFine(Mask inflated, float[] searchClear, float[] certClear,
+                                       BoardFrame f, BoardRole role, Rectangle legal,
+                                       double radiusRef, int cell, Mask allowed,
+                                       ref int stateBudget, List<string> trace, string label)
+    {
+        if (stateBudget <= 0) return null;
+        var run = AStar(inflated, searchClear, role, cell, allowed, ref stateBudget);
+        trace.Add($"{label}: {run.Explored} trạng thái/{run.Ms:F1}ms" +
+                  (run.BudgetHit ? " [chạm ngân sách]" : run.States is null ? " [không ra]" : ""));
+        if (run.States is null) return null;
+        return EvaluateRoute(run.States, cell, inflated, certClear, f, role, legal,
+                             radiusRef, trace, label);
+    }
+
+    private static RouteChoice FindAtRadius(Mask inflated, float[] searchClear, float[] certClear,
+                                            BoardFrame f, BoardRole role, Rectangle legal,
+                                            double radiusRef, ref int stateBudget,
+                                            List<string> trace, string phase)
+    {
+        RouteChoice shortBest = null;
+        Mask corridor = null;
+
+        foreach (double coarseRef in CoarseGridRefs)
+        {
+            if (stateBudget <= 0) break;
+            int coarseCell = Math.Max(8, (int)Math.Round(coarseRef * f.Scale));
+            var run = AStar(inflated, searchClear, role, coarseCell, null, ref stateBudget);
+            trace.Add($"{phase} thô {coarseCell}: {run.Explored} trạng thái/{run.Ms:F1}ms" +
+                      (run.BudgetHit ? " [chạm ngân sách]" : run.States is null ? " [không ra]" : ""));
+            if (run.States is null) continue;
+
+            corridor = CorridorFrom(run.States, coarseCell, f, role);
+            break;
+        }
+
+        if (corridor is not null)
+        {
+            foreach (double cellRef in GridFallbackRefs)
+            {
+                int cell = Math.Max(4, (int)Math.Round(cellRef * f.Scale));
+                string label = $"{phase} hành-lang {cell}";
+                var choice = TryFine(inflated, searchClear, certClear, f, role, legal, radiusRef,
+                                     cell, corridor, ref stateBudget, trace, label);
+                if (choice is null) continue;
+                if (choice.IsUrgent || !choice.IsShortFallback) return choice;
+                if (shortBest is null || choice.Shortest > shortBest.Shortest) shortBest = choice;
+            }
+        }
+
+        // Hanh lang chi la toi uu. Neu tim kiem bi ket, hoac tuyen noi cac o khong qua kiem chung,
+        // chay lai dung A* luoi day du cu.
+        trace.Add($"{phase}: fallback A* toàn lưới");
+        foreach (double cellRef in GridFallbackRefs)
+        {
+            int cell = Math.Max(4, (int)Math.Round(cellRef * f.Scale));
+            string label = $"{phase} toàn-lưới {cell}";
+            var choice = TryFine(inflated, searchClear, certClear, f, role, legal, radiusRef,
+                                 cell, null, ref stateBudget, trace, label);
+            if (choice is null) continue;
+            if (choice.IsUrgent || !choice.IsShortFallback) return choice;
+            if (shortBest is null || choice.Shortest > shortBest.Shortest) shortBest = choice;
+        }
+
+        return shortBest;
+    }
+
+    // ================================================================ dung tuyen
+
+    /// <summary>
+    /// Chứng nhận lại một tuyến lấy từ cache trên tường của frame HIỆN TẠI. Cache không được tin
+    /// cậy: mọi kiểm tra hình học, lề nở, khoảng thoát và phạm vi đều chạy lại trước khi trả plan.
+    /// </summary>
+    public static BoardPlan ValidateCached(BoardFrame f, BoardRole role, WallScan scan,
+                                           BoardSegment[] segments, out string why)
+    {
+        var sw = Stopwatch.StartNew();
+        why = null;
+        if (!RouteInvariants(segments, role))
+        {
+            why = "cache có chuỗi đoạn không hợp lệ";
+            return null;
+        }
+
+        var wall = scan.Wall;
+        var legal = LegalBounds(wall, f);
+        var certMask = ApplyEnvelope(wall, f, role, legal);
+        var certClear = ImageOps.Clearance(certMask);
+        var (minClear, total) = Certificate(segments, certClear, f);
+
+        if (minClear < MinAcceptClearRef * f.Scale)
+        {
+            why = $"cache không đạt khoảng thoát ({minClear:F1}px)";
+            return null;
+        }
+        if (!ExtentAudit(segments, legal, f.Scale, out string extentWhy))
+        {
+            why = "cache: " + extentWhy;
+            return null;
+        }
+
+        Mask inflated = null;
+        double radius = 0;
+        foreach (double radiusRef in InflationRadiiRef)
+        {
+            var candidate = InflateFrom(certClear, f, role, radiusRef);
+            if (CrossesBlocked(segments, candidate)) continue;
+            inflated = candidate;
+            radius = radiusRef;
+            break;
+        }
+        if (inflated is null)
+        {
+            why = "cache không qua được lề nở tối thiểu";
+            return null;
+        }
+
+        why = "ok";
+        return Finish(f, role, scan, wall, inflated, legal, segments, minClear, total,
+                      radius, 0, sw, new List<string>
+                      {
+                          $"cache được chứng nhận lại trên frame hiện tại, nở {radius:F0}"
+                      }, "cache");
+    }
+
+    /// <summary>
+    /// Dựng tuyến hoàn chỉnh. Null nghĩa là tầng hiện tại chưa có tuyến được chứng nhận; đường
+    /// live phải chuyển ngay sang tầng fallback trên cùng frame sạch, tuyệt đối không chụp lại
+    /// frame đã có vệt dây rồi thử từ đầu.
+    ///
+    /// Thử lần lượt các bán kính nở từ RỘNG tới HẸP (18→6): lấy được tuyến với lề rộng thì tốt
+    /// hơn hẳn, chỉ khi bản đồ chật mới hạ lề xuống. Với mỗi bán kính thử ba cỡ lưới 12/10/8px.
+    /// </summary>
+    public static BoardPlan Plan(BoardFrame f, BoardRole role, WallScan scan, out string why)
+        => PlanWithRadii(f, role, scan, InflationRadiiRef, "tinh-chinh",
+                         MaxCandidateStates, out why);
+
+    /// <summary>
+    /// Cùng luật chứng nhận với <see cref="Plan"/>, nhưng chặn ngân sách tìm kiếm để dây không
+    /// vượt góc đầu trong lúc planner vét một bản đồ không có đường.
+    /// </summary>
+    public static BoardPlan PlanLive(BoardFrame f, BoardRole role, WallScan scan, out string why)
+        => PlanWithRadii(f, role, scan, InflationRadiiRef, "tinh-chinh",
+                         1_500_000, out why);
+
+    /// <summary>
+    /// Lối cứu hộ cho bảng chật: vẫn giữ nguyên chứng chỉ tường vật lý, chỉ giảm phần lề nở thêm.
+    /// Chỉ gọi sau khi chuỗi 18→6 không tìm được đường.
+    /// </summary>
+    public static BoardPlan PlanTight(BoardFrame f, BoardRole role, WallScan scan, out string why)
+        => PlanWithRadii(f, role, scan, TightInflationRadiiRef, "fallback-chat",
+                         1_500_000, out why);
+
+    internal static IReadOnlyDictionary<string, Mask> DiagnosticMasks(
+        BoardFrame f, BoardRole role, WallScan scan)
+    {
+        var result = new Dictionary<string, Mask>
+        {
+            ["00-wall"] = scan.Wall
+        };
+        var legal = LegalBounds(scan.Wall, f);
+        var cert = ApplyEnvelope(scan.Wall, f, role, legal);
+        result["01-certified"] = cert;
+        var clear = ImageOps.Clearance(cert);
+        foreach (double radius in InflationRadiiRef.Concat(TightInflationRadiiRef))
+            result[$"inflate-{radius:F0}"] = InflateFrom(clear, f, role, radius);
+        return result;
+    }
+
+    private static BoardPlan PlanWithRadii(BoardFrame f, BoardRole role, WallScan scan,
+                                           IReadOnlyList<double> radiiRef, string modePrefix,
+                                           int maxCandidateStates, out string why)
+    {
+        var sw = Stopwatch.StartNew();
+        var wall = scan.Wall;
+        var legal = LegalBounds(wall, f);
+        double scale = f.Scale;
+
+        // Mat na CHUNG NHAN: tuong vat ly + bien vung hop le, chi mo hai duong ham cong. Ca bay
+        // ban kinh no va moi phep do khoang thoat deu suy tu day, nen tinh dung MOT lan.
+        var certMask = ApplyEnvelope(wall, f, role, legal);
+        var trace = new List<string>();
+        var phaseWatch = Stopwatch.StartNew();
+        var certClear = ImageOps.Clearance(certMask);
+        trace.Add($"DT chính xác #1: {phaseWatch.Elapsed.TotalMilliseconds:F1}ms");
+        int candidateBudget = maxCandidateStates;
+        RouteChoice selected = null;
+        Mask selectedInf = null;
+        double selectedRadius = 0;
+        RouteChoice shortBest = null;
+        Mask shortInf = null;
+        double shortRadius = 0;
+
+        foreach (double radiusRef in radiiRef)
+        {
+            if (candidateBudget <= 0)
+            {
+                trace.Add("hết ngân sách chọn ứng viên");
+                break;
+            }
+
+            phaseWatch.Restart();
+            var inf = InflateFrom(certClear, f, role, radiusRef);
+            var derivedClear = SearchClearance(certClear, inf, f, radiusRef);
+            trace.Add($"ứng-viên nở {radiusRef:F0}: chuẩn bị {phaseWatch.Elapsed.TotalMilliseconds:F1}ms");
+            var choice = FindAtRadius(inf, derivedClear, certClear, f, role, legal, radiusRef,
+                                      ref candidateBudget, trace, $"ứng-viên nở {radiusRef:F0}");
+            if (choice is null) continue;
+
+            if (choice.IsShortFallback)
+            {
+                if (shortBest is null || choice.Shortest > shortBest.Shortest)
+                {
+                    shortBest = choice;
+                    shortInf = inf;
+                    shortRadius = radiusRef;
+                }
+                trace.Add($"nở {radiusRef:F0}: đoạn ngắn {choice.Shortest:F0}px → để dự phòng");
+                continue;
+            }
+
+            selected = choice;
+            selectedInf = inf;
+            selectedRadius = radiusRef;
+            break;
+        }
+
+        if (selected is null && shortBest is not null)
+        {
+            selected = shortBest;
+            selectedInf = shortInf;
+            selectedRadius = shortRadius;
+            trace.Add($"KHÔNG có tuyến nào tránh được đoạn ngắn — dùng dự phòng, " +
+                      $"đoạn ngắn nhất {selected.Shortest:F0}px " +
+                      $"(< {MinSegmentRef * scale:F0}px, cú rẽ ở đó có thể trượt)");
+        }
+
+        if (selected is null)
+        {
+            why = $"không dựng được tuyến ở tầng {modePrefix} " +
+                  $"(nở {string.Join("→", radiiRef.Select(x => x.ToString("F0")))})";
+            return null;
+        }
+
+        // Không cần DT thứ hai: mặt nạ bị chặn selectedInf đã là phép ngưỡng CHÍNH XÁC từ
+        // certClear. SearchClearance chỉ ảnh hưởng THỨ TỰ A*, còn ứng viên đã được kiểm độc lập
+        // bằng CrossesBlocked + Certificate(certClear) + ExtentAudit. Chạy lại A* trên một DT
+        // khác không tăng chứng cứ an toàn, chỉ trả thêm ~50ms ở ROI 2K.
+        var bestSegs = selected.Segs;
+        double bestMinClear = selected.MinClear, bestTotal = selected.Total;
+        string mode = selected.IsUrgent ? modePrefix + "-nhanh" : modePrefix;
+
+        if (selected.IsUrgent)
+        {
+            trace.Add("lối nhanh dùng chung hành lang: KHÔNG tinh chỉnh ngã rẽ");
+        }
+        else
+        {
+            var raw = bestSegs;
+            var (refined, notes) = RefineTurns(raw, certClear, f, role);
+            trace.AddRange(notes);
+            if (!ReferenceEquals(refined, raw))
+            {
+                if (!RouteInvariants(refined, role) || CrossesBlocked(refined, selectedInf))
+                {
+                    trace.Add("bỏ tinh chỉnh: tuyến chỉnh cắt mặt nạ đã nở");
+                }
+                else
+                {
+                    var (minc2, total2) = Certificate(refined, certClear, f);
+                    if (minc2 >= MinAcceptClearRef * scale &&
+                        ExtentAudit(refined, legal, scale, out _))
+                    {
+                        bestSegs = refined;
+                        bestMinClear = minc2;
+                        bestTotal = total2;
+                    }
+                    else trace.Add("bỏ tinh chỉnh: kiểm chứng cuối không đạt");
+                }
+            }
+        }
+
+        // Kiem tra cuoi doc lap voi tim kiem: START/GOAL, khong quay dau, khong cat tuong da no,
+        // chung chi tu tuong vat ly, va pham vi ban. Khong co gioi han do dai tuyen.
+        if (!RouteInvariants(bestSegs, role) || CrossesBlocked(bestSegs, selectedInf))
+        {
+            why = "tuyến cuối vi phạm hình học hoặc cắt tường";
+            return null;
+        }
+        (bestMinClear, bestTotal) = Certificate(bestSegs, certClear, f);
+        if (bestMinClear < MinAcceptClearRef * scale)
+        {
+            why = $"chứng chỉ cuối {bestMinClear:F1}px không đạt";
+            return null;
+        }
+        if (!ExtentAudit(bestSegs, legal, scale, out string extentWhy))
+        {
+            why = extentWhy;
+            return null;
+        }
+
+        // KHONG chan theo DO DAI tuyen. Xem ghi chu o cuoi class de biet vi sao cho chan cu da
+        // giet oan nhung ban do that.
+        why = "ok";
+        trace.Add($"A* trạng thái: {maxCandidateStates - candidateBudget}/{maxCandidateStates}");
+        return Finish(f, role, scan, wall, selectedInf, legal, bestSegs, bestMinClear, bestTotal,
+                      selectedRadius, selected.Cell, sw, trace, mode);
+    }
+
+    private static BoardPlan Finish(BoardFrame f, BoardRole role, WallScan scan, Mask wall,
+                                    Mask inflated, Rectangle legal, BoardSegment[] segs,
+                                    double minClear, double total, double radiusRef, int cell,
+                                    Stopwatch sw, List<string> notes, string mode) =>
+        new()
+        {
+            Segments = segs,
+            Role = role,
+            Obstacles = wall,
+            Inflated = inflated,
+            LegalBounds = legal,
+            ValueThreshold = scan.ValueThreshold,
+            InflationRadiusRef = radiusRef,
+            GridCell = cell,
+            MinClearance = minClear,
+            TotalLength = total,
+            BuildMs = sw.Elapsed.TotalMilliseconds,
+            LargeWalls = scan.LargeWalls,
+            MicroWalls = scan.MicroWalls,
+            SecondaryWalls = scan.SecondaryWalls,
+            RefineNotes = notes,
+            Mode = mode
+        };
+
+    // KHONG co dai do dai tuyen hop le o day, va day la ly do — de khong ai them lai:
+    //
+    // Ban C# dau tien chan tuyen ngoai dai 300–3000px (moc 1080p, tuc 400–4000px o 2K), lay tu
+    // CFG.MIN/MAX_ROUTE_LENGTH_PX_1080P. Ngay 22/08 no giet mot ban do that: START @97,175 →
+    // GOAL @192,1015 can tuyen 4343px, bi tu choi 15 lan lien roi bang tu dong vi day tu dam
+    // tuong. Bot dung im ca luot ma khong bam mot phim nao.
+    //
+    // Truy lai thi hai hang so do CHI ton tai trong core_v10.py/core_v13.py, va chi duoc doc boi
+    // hai ham DA CHET: build_plan (bo dung tuyen theo atlas cu) dung 300–3000, _planner_core dung
+    // 80–4050. Chuoi Python dang chay that (v75.py -> v75_planner.plan) khong co MOT hang so do
+    // dai nao — cu lay danh sach hang so cua v75_planner ra doc la thay. Tieu chi nhan cua no la
+    // KHOANG THOAT (MIN_ACCEPT_CLEAR_REF), pham vi ban (extent audit) va tinh hop le hinh hoc cua
+    // tung doan. Do dai chi la so bao cao.
+    //
+    // Cung mot loai bay voi TARGET_TOLERANCE/FINE_ZONE cua bo dieu khien (xem phan dau BoardBot):
+    // hang so cua nhanh Python da bi bo, port sang C# thanh ra chan mat duong dung.
+    //
+    // Neu can chan tuyen qua dai thi chan theo NGAN SACH THOI GIAN luc chay, khong phan pixel —
+    // BoardBot.RunRoute suy thoi gian cho phep tu chinh do dai tuyen.
+}
