@@ -18,19 +18,19 @@ internal sealed class CatchGuess
 
 /// <summary>
 /// Nhận loài lúc panel nhận cá đang hiện: chụp ô <see cref="FishingProfile.CatchTitle"/>
-/// rồi NCC với mẫu trong <c>catch-titles/</c>. Chỉ so loài trong danh sách thả — tập đóng,
-/// không đoán loài ngoài danh sách.
+/// rồi NCC với mẫu trong <c>catch-titles/</c>. Chỉ so loài trong danh sách đưa vào —
+/// tập đóng, không đoán loài ngoài danh sách (thả hoặc bán).
 /// </summary>
 internal static class CatchIdentifier
 {
-    public static CatchGuess Identify(FishingConfig cfg, Screen screen, FishingProfile profile)
+    public static CatchGuess Identify(
+        FishingConfig cfg, Screen screen, FishingProfile profile, IReadOnlyList<string> wanted)
     {
         if (profile?.CatchTitle.IsSet != true)
             return new CatchGuess { Note = "chưa khoanh ô tên cá" };
 
-        var wanted = profile.AutoReleaseItems;
         if (wanted is not { Count: > 0 })
-            return new CatchGuess { Note = "danh sách thả trống" };
+            return new CatchGuess { Note = "danh sách loài trống" };
 
         var abs = FishingConfig.ToAbsolute(screen, profile.CatchTitle);
         if (abs.Width < 8 || abs.Height < 8)

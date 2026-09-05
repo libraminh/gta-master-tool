@@ -1,10 +1,13 @@
 namespace GtaMiniGameBot;
 
+internal enum CatchCatalogKind { Release, Sell }
+
 /// <summary>
-/// Chọn loài tự ấn THẢ RA và chụp mẫu chữ tên trên panel nhận cá.
+/// Chọn loài tự ấn THẢ RA hoặc BÁN NGAY và chụp mẫu chữ tên trên panel nhận cá.
 ///
 /// Tách khỏi <see cref="ItemCatalogForm"/>: danh sách kia là "cá để đổ cốp", danh sách này
-/// là "cá không cất vào". Một loài có thể nằm ở cả hai — thả thì không bao giờ vào ba lô.
+/// là "cá không cất vào". Một loài có thể nằm ở cả hai — thả/bán thì không bao giờ vào ba lô.
+/// Thả Ra xét trước Bán Ngay nếu loài nằm cả hai danh sách.
 /// </summary>
 internal sealed class ReleaseCatalogForm : Form
 {
@@ -22,6 +25,7 @@ internal sealed class ReleaseCatalogForm : Form
     private readonly FishingConfig _cfg;
     private readonly Screen _screen;
     private readonly FishingProfile _profile;
+    private readonly CatchCatalogKind _kind;
 
     private readonly Label _status = new();
     private readonly FlowLayoutPanel _sheet = new();
@@ -29,14 +33,16 @@ internal sealed class ReleaseCatalogForm : Form
     private readonly TextBox _log = new();
     private readonly List<CheckBox> _boxes = new();
 
-    public ReleaseCatalogForm(FishingConfig cfg, Screen screen, FishingProfile profile)
+    public ReleaseCatalogForm(
+        FishingConfig cfg, Screen screen, FishingProfile profile, CatchCatalogKind kind)
     {
         _cfg = cfg;
         _screen = screen;
         _profile = profile;
+        _kind = kind;
         _profile.Normalize();
 
-        Text = "Loại thả ra — " + profile.Key;
+        Text = (_kind == CatchCatalogKind.Sell ? "Loại bán ngay — " : "Loại thả ra — ") + profile.Key;
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.Sizable;
         MinimizeBox = false;
@@ -54,8 +60,11 @@ internal sealed class ReleaseCatalogForm : Form
 
         Controls.Add(new Label
         {
-            Text = "Tick loài muốn tự ấn THẢ RA. Cần khoanh ô chữ tên trên panel nhận cá " +
-                   "rồi chụp một mẫu tên cho từng loài — không chắc thì bot vẫn CẤT VÀO.",
+            Text = _kind == CatchCatalogKind.Sell
+                ? "Tick loài muốn tự ấn BÁN NGAY. Dùng chung ô chữ tên với Thả ra. " +
+                  "Không chắc thì bot vẫn CẤT VÀO. Loài cũng nằm trong Thả ra sẽ bị thả, không bán."
+                : "Tick loài muốn tự ấn THẢ RA. Cần khoanh ô chữ tên trên panel nhận cá " +
+                  "rồi chụp một mẫu tên cho từng loài — không chắc thì bot vẫn CẤT VÀO.",
             Location = new Point(12, y),
             Size = new Size(916, 34),
             ForeColor = Color.DimGray
@@ -135,8 +144,7 @@ internal sealed class ReleaseCatalogForm : Form
         _boxes.Clear();
 
         string dir = ItemIconExtractor.ItemDir;
-        var chosen = new HashSet<string>(_profile.AutoReleaseItems ?? new List<string>(),
-                                         StringComparer.OrdinalIgnoreCase);
+        var chosen = new HashSet<string>(ChosenItems(), StringComparer.OrdinalIgnoreCase);
 
         var names = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         if (Directory.Exists(dir))
@@ -205,6 +213,14 @@ internal sealed class ReleaseCatalogForm : Form
             Append("viền xanh = đã có mẫu tên. Loài chưa có mẫu sẽ bị cất vào cho đến khi chụp.");
         if (!_profile.CatchTitle.IsSet)
             Append("chưa khoanh ô tên cá — bấm “Khoanh ô tên cá” lúc panel nhận cá đang hiện");
+        if (_kind == CatchCatalogKind.Sell)
+        {
+            var overlap = Ticked().Where(n =>
+                (_profile.AutoReleaseItems ?? new List<string>())
+                    .Contains(n, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (overlap.Count > 0)
+                Append("thả trước bán: " + string.Join(", ", overlap) + " — sẽ bị THẢ RA, không bán");
+        }
     }
 
     private static bool IsFishLike(string name)
@@ -214,6 +230,21 @@ internal sealed class ReleaseCatalogForm : Form
         if (words.Any(GearHeads.Contains)) return false;
         return words.Any(FishWords.Contains);
     }
+
+    private List<string> ChosenItems() =>
+        (_kind == CatchCatalogKind.Sell ? _profile.AutoSellItems : _profile.AutoReleaseItems)
+        ?? new List<string>();
+
+    private void AssignItems(List<string> items)
+    {
+        if (_kind == CatchCatalogKind.Sell) _profile.AutoSellItems = items;
+        else _profile.AutoReleaseItems = items;
+    }
+
+    private string DescribeStatus() =>
+        _kind == CatchCatalogKind.Sell
+            ? _profile.DescribeSellStatus(_profile.Key)
+            : _profile.DescribeReleaseStatus(_profile.Key);
 
     private List<string> Ticked() =>
         _boxes.Where(b => b.Checked).Select(b => (string)b.Tag).OrderBy(s => s).ToList();
@@ -241,17 +272,18 @@ internal sealed class ReleaseCatalogForm : Form
 
     private void UpdateStatus()
     {
-        _profile.AutoReleaseItems = Ticked();
-        _status.Text = _profile.DescribeReleaseStatus(_profile.Key);
+        AssignItems(Ticked());
+        _status.Text = DescribeStatus();
         _status.ForeColor = Ticked().Count == 0 ? Color.Firebrick : Color.DarkGreen;
     }
 
     private void Save()
     {
-        _profile.AutoReleaseItems = Ticked();
+        var items = Ticked();
+        AssignItems(items);
         try { _cfg.Save(); } catch (Exception ex) { Append("lưu cấu hình: " + ex.Message); }
-        Append($"đã lưu {_profile.AutoReleaseItems.Count} loại thả: " +
-               string.Join(", ", _profile.AutoReleaseItems));
+        string verb = _kind == CatchCatalogKind.Sell ? "bán" : "thả";
+        Append($"đã lưu {items.Count} loại {verb}: " + string.Join(", ", items));
     }
 
     private void PickTitle()

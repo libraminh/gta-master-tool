@@ -129,7 +129,8 @@ internal sealed class LogView : DrawPanel
             return LogLevel.Warn;
 
         if (Has(s, "cá cắn") || Has(s, "xong —") || Has(s, "đã kéo")
-            || Has(s, "CẤT VÀO @") || Has(s, "THẢ RA @") || Has(s, "đã mở") || Has(s, "thấy nút"))
+            || Has(s, "CẤT VÀO @") || Has(s, "THẢ RA @") || Has(s, "BÁN NGAY @")
+            || Has(s, "đã mở") || Has(s, "thấy nút"))
             return LogLevel.Good;
 
         return LogLevel.Info;

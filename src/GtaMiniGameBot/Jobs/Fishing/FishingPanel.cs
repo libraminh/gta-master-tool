@@ -30,11 +30,14 @@ internal sealed class FishingPanel : UserControl
     private readonly DarkButton _btnKgPerUnit = new();
     private readonly DarkCheck _releaseEnabled = new();
     private readonly DarkButton _btnReleaseCatalog = new();
+    private readonly DarkCheck _sellEnabled = new();
+    private readonly DarkButton _btnSellCatalog = new();
     private readonly DarkCheck _discordEnabled = new();
     private readonly DarkButton _btnDiscord = new();
     private readonly Label _discordStatus = new();
     private bool _syncingDiscordUi;
     private readonly Label _releaseStatus = new();
+    private readonly Label _sellStatus = new();
     private readonly DarkCheck _dumpEnabled = new();
     private readonly DarkCheck _splitEnabled = new();
     private readonly DarkSpin _everyN = new();
@@ -54,6 +57,7 @@ internal sealed class FishingPanel : UserControl
     private string _jobKey = HotkeyText.Job();
     private bool _syncingDumpUi;
     private bool _syncingReleaseUi;
+    private bool _syncingSellUi;
 
     // ---------------- phan hien so lieu ----------------
     private readonly PhaseTrack _phase = new();
@@ -84,6 +88,7 @@ internal sealed class FishingPanel : UserControl
         RefreshProfileLabel();
         RefreshDumpStatus();
         RefreshReleaseStatus();
+        RefreshSellStatus();
         LoadThumbs();
         ShowState(FishingState.Idle);
 
@@ -95,6 +100,7 @@ internal sealed class FishingPanel : UserControl
         Append("CẤT VÀO: ôm trọn khối nền màu của nút trái — bot lấy màu và kích thước nút từ ô này.");
         Append("Vùng quét: khoanh cả khoảng nút trượt lên/xuống — tên cá dài đẩy hàng nút xuống.");
         Append("Thả ra: chọn loài (mặc định Tôm càng) rồi khoanh chữ tên + chụp mẫu — khớp thì ấn THẢ RA.");
+        Append("Bán ngay: chọn loài, dùng chung ô tên — khớp thì ấn BÁN NGAY (nút phải của THẢ RA).");
         Append("Game nên cửa sổ không viền / fullscreen windowed — exclusive có thể che overlay.");
     }
 
@@ -401,6 +407,29 @@ internal sealed class FishingPanel : UserControl
             "Chọn loại thả ra…", OpenReleaseCatalog);
         y += Theme.Px(138);
 
+        // ---- Tu ban loai da chon ----
+        var sell = new DarkGroup
+        {
+            Title = "Bán ngay",
+            Bounds = new Rectangle(Theme.Px(12), y, w, Theme.Px(128))
+        };
+        host.Controls.Add(sell);
+
+        _sellEnabled.Text = "Tự bán loài đã chọn";
+        _sellEnabled.BackColor = Theme.Surface;
+        _sellEnabled.SetBounds(Theme.Px(12), Theme.Px(22), w - Theme.Px(24), Theme.Px(22));
+        _sellEnabled.CheckedChanged += OnSellEnabledChanged;
+        sell.Controls.Add(_sellEnabled);
+
+        _sellStatus.SetBounds(Theme.Px(12), Theme.Px(50), w - Theme.Px(24), Theme.Px(36));
+        _sellStatus.Font = Theme.DataSm;
+        _sellStatus.BackColor = Theme.Surface;
+        sell.Controls.Add(_sellStatus);
+
+        Btn(sell, _btnSellCatalog, Theme.Px(12), Theme.Px(90), Theme.Px(184),
+            "Chọn loại bán ngay…", OpenSellCatalog);
+        y += Theme.Px(138);
+
         // ---- Do ca vao cop xe ----
         var dump = new DarkGroup
         {
@@ -563,6 +592,7 @@ internal sealed class FishingPanel : UserControl
         RefreshProfileLabel();
         RefreshDumpStatus();
         RefreshReleaseStatus();
+        RefreshSellStatus();
         LoadThumbs();
         ClearLive();
     }
@@ -681,6 +711,29 @@ internal sealed class FishingPanel : UserControl
             : text.StartsWith("chưa chọn", StringComparison.Ordinal) ? Theme.Dim : Theme.Warn;
     }
 
+    private void RefreshSellStatus()
+    {
+        var screen = SelectedScreen;
+        var p = screen is null ? null : _cfg.TryGet(screen);
+
+        _syncingSellUi = true;
+        try { _sellEnabled.SetCheckedQuiet(_cfg.AutoSellEnabled == true); }
+        finally { _syncingSellUi = false; }
+
+        if (p is null)
+        {
+            _sellStatus.Text = "chưa có hồ sơ cho màn hình này";
+            _sellStatus.ForeColor = Theme.Dim;
+            return;
+        }
+
+        string text = p.DescribeSellStatus(p.Key);
+        _sellStatus.Text = text;
+        _sellStatus.ForeColor = text.Contains("đủ mẫu", StringComparison.Ordinal)
+            ? Theme.Good
+            : text.StartsWith("chưa chọn", StringComparison.Ordinal) ? Theme.Dim : Theme.Warn;
+    }
+
     /// <summary>
     /// Vẽ lại dòng trạng thái Discord và kéo checkbox về đúng thực tế. Cần vì
     /// <see cref="FishingConfig.Normalize"/> tự tắt cờ khi URL không đúng dạng webhook — bật
@@ -755,11 +808,35 @@ internal sealed class FishingPanel : UserControl
         if (screen is null) { Append("không chọn được màn hình"); return; }
 
         var p = _cfg.GetOrCreate(screen);
-        using (var f = new ReleaseCatalogForm(_cfg, screen, p))
+        using (var f = new ReleaseCatalogForm(_cfg, screen, p, CatchCatalogKind.Release))
             f.ShowDialog(FindForm());
 
         _cfg = FishingConfig.Load();
         RefreshReleaseStatus();
+        RefreshSellStatus();
+    }
+
+    private void OnSellEnabledChanged()
+    {
+        if (_syncingSellUi) return;
+        _cfg.AutoSellEnabled = _sellEnabled.Checked;
+        try { _cfg.Save(); } catch { }
+        Append(_sellEnabled.Checked ? "bật tự bán loài đã chọn" : "tắt tự bán");
+    }
+
+    private void OpenSellCatalog()
+    {
+        if (IsRunning) { Append("đang câu — dừng bot trước khi chọn loại bán"); return; }
+        var screen = SelectedScreen;
+        if (screen is null) { Append("không chọn được màn hình"); return; }
+
+        var p = _cfg.GetOrCreate(screen);
+        using (var f = new ReleaseCatalogForm(_cfg, screen, p, CatchCatalogKind.Sell))
+            f.ShowDialog(FindForm());
+
+        _cfg = FishingConfig.Load();
+        RefreshReleaseStatus();
+        RefreshSellStatus();
     }
 
     private void OpenKgPerUnit()
@@ -792,6 +869,7 @@ internal sealed class FishingPanel : UserControl
         RefreshProfileLabel();
         RefreshDumpStatus();
         RefreshReleaseStatus();
+        RefreshSellStatus();
     }
 
     private void RefreshProfileLabel()
@@ -1470,6 +1548,8 @@ internal sealed class FishingPanel : UserControl
         _btnKgPerUnit.Enabled = !running;
         _btnReleaseCatalog.Enabled = !running;
         _releaseEnabled.Enabled = !running;
+        _btnSellCatalog.Enabled = !running;
+        _sellEnabled.Enabled = !running;
         _dumpEnabled.Enabled = !running;
         _everyN.Enabled = !running;
         _dumpEvery.Enabled = !running;
@@ -1657,6 +1737,7 @@ internal sealed class FishingPanel : UserControl
         var feet = new List<string>();
         if (_state.CatchesSinceDump > 0) feet.Add($"chưa đổ: {_state.CatchesSinceDump} con");
         if (_state.Released > 0) feet.Add($"thả: {_state.Released}");
+        if (_state.Sold > 0) feet.Add($"bán: {_state.Sold}");
         _tileCatch.Foot = string.Join(" · ", feet);
 
         _tileRate.Value = _state.CatchesPerHour < 0 ? "--" : $"{_state.CatchesPerHour:0}";
