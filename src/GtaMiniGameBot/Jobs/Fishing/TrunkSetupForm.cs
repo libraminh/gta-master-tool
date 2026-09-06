@@ -11,9 +11,9 @@ internal sealed class TrunkSetupForm : Form
 {
     private enum Slot
     {
-        BagWeight, TrunkWeight, BagHeader, TrunkHeader, PauseMarker,
+        BagWeight, TrunkWeight, BagHeader, TrunkHeader, GroundHeader, EquipHeader, PauseMarker,
         AltInteract, AltTrunk, AltFuel, AltBand,
-        GridHotbar, GridBag, GridPockets, GridTrunk
+        GridHotbar, GridBag, GridPockets, GridGround, GridTrunk
     }
 
     /// <param name="Shot">Ảnh tĩnh cần có trước.</param>
@@ -23,7 +23,11 @@ internal sealed class TrunkSetupForm : Form
     private static readonly (string Key, string Label, string Instruction)[] Shots =
     {
         ("bag", "Kho đồ (Tab)",
-            "Mở kho đồ bằng phím Tab.\r\nCần thấy rõ: số KG ba lô, chữ BA LÔ, hàng phím nhanh bên trái và lưới ba lô."),
+            "Mở kho đồ bằng phím Tab.\r\nCần thấy rõ: số KG ba lô, chữ BA LÔ, hàng phím nhanh, lưới ba lô, " +
+            "và cột TRÊN ĐẤT bên phải (thả một món xuống đất nếu cột chưa hiện)."),
+        ("bag-equip", "Kho đồ — hết đồ đất",
+            "Nhặt hết đồ dưới chân, rồi mở Tab.\r\nCột phải phải là TRANG BỊ — không còn chữ TRÊN ĐẤT. " +
+            "Đừng chụp lúc còn đồ đất: chữ TRANG BỊ lúc đó nằm giữa màn, khoanh nhầm là bot khóa nhặt."),
         ("trunk", "Cốp xe đang mở",
             "Mở cốp xe (giữ Alt → Tương tác → Cốp xe).\r\nCần thấy rõ: chữ CỐP PHƯƠNG TIỆN, số KG cốp và lưới ô cốp."),
         ("alt2", "Menu Alt — 2 nút",
@@ -49,6 +53,14 @@ internal sealed class TrunkSetupForm : Form
             "Khoanh sát chữ “BA LÔ”. Bot dùng nó để biết kho đồ đã mở hay chưa.", false, "hdr-bag"),
         [Slot.TrunkHeader] = new("Chữ CỐP PHƯƠNG TIỆN", "trunk",
             "Khoanh sát chữ “CỐP PHƯƠNG TIỆN”. Bot dùng nó để biết cốp đã mở hay chưa.", false, "hdr-trunk"),
+        [Slot.GroundHeader] = new("Chữ TRÊN ĐẤT", "bag",
+            "Khoanh sát chữ vàng “TRÊN ĐẤT” (không lấy chữ xám nền). Hết đồ dưới chân thì cột " +
+            "này thành TRANG BỊ — có mẫu chữ thì bot mới dám kéo, không thì kéo nhầm trang bị. " +
+            "Ảnh kho đồ phải chụp lúc cột đất đang hiện.", false, "hdr-ground"),
+        [Slot.EquipHeader] = new("Chữ TRANG BỊ", "bag-equip",
+            "Khoanh sát chữ vàng “TRANG BỊ” trên cột PHẢI (chỗ vừa là TRÊN ĐẤT). " +
+            "Phải dùng ảnh “Kho đồ — hết đồ đất”. Đừng khoanh chữ TRANG BỊ giữa màn trên ảnh còn đất — " +
+            "chữ đó luôn hiện lúc còn cột đất, cửa sẽ khóa nhặt mãi.", false, "hdr-equip"),
         [Slot.PauseMarker] = new("Dấu menu tạm dừng", "pause",
             "Khoanh một chỗ chỉ menu tạm dừng mới có. Bỏ qua cũng được, " +
             "nhưng có thì bot phát hiện được lúc Esc bấm nhầm.", false, "hdr-pause"),
@@ -72,6 +84,10 @@ internal sealed class TrunkSetupForm : Form
             "với nó. Cột/hàng = 5×1. Bỏ qua được, nhưng bỏ qua thì cá rơi vào hàng này bot " +
             "không thấy. Lưu ý hàng này thường chứa MỒI: chỉ nên để bot kéo từ đây khi đang " +
             "nhận cá theo icon, đừng khai báo nó thành ô chứa cá.", true, null),
+        [Slot.GridGround] = new("Lưới trên đất", "bag",
+            "Khoanh trùm cả lưới 5×5 dưới chữ TRÊN ĐẤT, mép ngoài tới mép ngoài. Cột/hàng = 5×5. " +
+            "Bỏ qua được, nhưng bỏ qua thì cá rớt đất khi ba lô đầy bot sẽ không kéo vào lại. " +
+            "Chỉ kéo khi nhận ra icon là cá — trên đất có thể có đồ khác.", true, null),
         [Slot.GridTrunk] = new("Lưới cốp", "trunk",
             "Khoanh trùm cả lưới CỐP PHƯƠNG TIỆN. Chỉnh cột/hàng cho khớp.", true, null)
     };
@@ -104,7 +120,7 @@ internal sealed class TrunkSetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(940, 964);
+        ClientSize = new Size(940, 1006);
         Font = new Font("Segoe UI", 9F);
         BackColor = Color.White;
 
@@ -164,8 +180,8 @@ internal sealed class TrunkSetupForm : Form
         {
             Text = "2 · Khoanh vùng trên ảnh đã chụp",
             Location = new Point(12, y),
-            // 13 o, 2 cot => 7 hang. Hang cuoi ket thuc o 26 + 6*42 + 30 = 308.
-            Size = new Size(916, 330)
+            // 15 o, 2 cot => 8 hang. Hang cuoi ket thuc o 26 + 7*42 + 30 = 350.
+            Size = new Size(916, 372)
         };
         Controls.Add(boxCrop);
 
@@ -187,7 +203,7 @@ internal sealed class TrunkSetupForm : Form
             _slotLabels[slot] = lbl;
             i2++;
         }
-        y += 342;
+        y += 384;
 
         var boxOcr = new GroupBox
         {
@@ -391,6 +407,8 @@ internal sealed class TrunkSetupForm : Form
         Slot.TrunkWeight => (_profile.TrunkWeight.ToRectangle(), 1, 1),
         Slot.BagHeader => (_profile.BagHeader.ToRectangle(), 1, 1),
         Slot.TrunkHeader => (_profile.TrunkHeader.ToRectangle(), 1, 1),
+        Slot.GroundHeader => (_profile.GroundHeader.ToRectangle(), 1, 1),
+        Slot.EquipHeader => (_profile.EquipHeader.ToRectangle(), 1, 1),
         Slot.PauseMarker => (_profile.PauseMarker.ToRectangle(), 1, 1),
         Slot.AltInteract => (_profile.AltInteract.ToRectangle(), 1, 1),
         Slot.AltTrunk => (_profile.AltTrunk.ToRectangle(), 1, 1),
@@ -399,6 +417,7 @@ internal sealed class TrunkSetupForm : Form
         Slot.GridHotbar => (_profile.Hotbar.Area.ToRectangle(), _profile.Hotbar.Cols, _profile.Hotbar.Rows),
         Slot.GridBag => (_profile.Bag.Area.ToRectangle(), _profile.Bag.Cols, _profile.Bag.Rows),
         Slot.GridPockets => (_profile.Pockets.Area.ToRectangle(), _profile.Pockets.Cols, _profile.Pockets.Rows),
+        Slot.GridGround => (_profile.Ground.Area.ToRectangle(), _profile.Ground.Cols, _profile.Ground.Rows),
         // Tung la nhanh `_`. Ghi ro ra: them mot o moi vao enum ma quen sua day thi no lang le
         // tro thanh "luoi cop", va ben Apply thi lang le GHI DE luoi cop cua nguoi dung.
         Slot.GridTrunk => (_profile.Trunk.Area.ToRectangle(), _profile.Trunk.Cols, _profile.Trunk.Rows),
@@ -414,6 +433,8 @@ internal sealed class TrunkSetupForm : Form
             case Slot.TrunkWeight: _profile.TrunkWeight = rect; break;
             case Slot.BagHeader: _profile.BagHeader = rect; break;
             case Slot.TrunkHeader: _profile.TrunkHeader = rect; break;
+            case Slot.GroundHeader: _profile.GroundHeader = rect; break;
+            case Slot.EquipHeader: _profile.EquipHeader = rect; break;
             case Slot.PauseMarker: _profile.PauseMarker = rect; break;
             case Slot.AltInteract: _profile.AltInteract = rect; break;
             case Slot.AltTrunk: _profile.AltTrunk = rect; break;
@@ -422,6 +443,7 @@ internal sealed class TrunkSetupForm : Form
             case Slot.GridHotbar: _profile.Hotbar = Grid(r); break;
             case Slot.GridBag: _profile.Bag = Grid(r); break;
             case Slot.GridPockets: _profile.Pockets = Grid(r); break;
+            case Slot.GridGround: _profile.Ground = Grid(r); break;
             case Slot.GridTrunk: _profile.Trunk = Grid(r); break;
         }
     }
@@ -487,6 +509,7 @@ internal sealed class TrunkSetupForm : Form
         yield return ("phím nhanh", "bag", FishSlot.GridHotbar, _profile.Hotbar);
         yield return ("trên người", "bag", FishSlot.GridPockets, _profile.Pockets);
         yield return ("ba lô     ", "bag", FishSlot.GridBag, _profile.Bag);
+        yield return ("trên đất  ", "bag", null, _profile.Ground);
         yield return ("cốp       ", "trunk", null, _profile.Trunk);
     }
 

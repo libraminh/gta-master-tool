@@ -283,7 +283,8 @@ internal sealed class ItemCatalogForm : Form
                  {
                      ("phím nhanh", FishSlot.GridHotbar, _profile.Hotbar),
                      ("trên người", FishSlot.GridPockets, _profile.Pockets),
-                     ("ba lô", FishSlot.GridBag, _profile.Bag)
+                     ("ba lô", FishSlot.GridBag, _profile.Bag),
+                     ("trên đất", "ground", _profile.Ground)
                  })
         {
             if (!grid.IsSet) { Append($"{label}: chưa khoanh lưới"); continue; }

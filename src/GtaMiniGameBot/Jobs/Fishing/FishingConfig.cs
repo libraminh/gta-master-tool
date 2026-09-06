@@ -137,6 +137,20 @@ internal sealed class FishingProfile
     public FishingRect BagHeader { get; set; } = new();
     public FishingRect TrunkHeader { get; set; } = new();
 
+    /// <summary>
+    /// Chữ "TRÊN ĐẤT" trên cột phải kho đồ Tab. Cột đó đổi thành TRANG BỊ khi hết đồ
+    /// dưới chân — không có mẫu này thì bot không được quét lưới đất (kéo nhầm trang bị).
+    /// Tuỳ chọn: thiếu không chặn đổ cốp.
+    /// </summary>
+    public FishingRect GroundHeader { get; set; } = new();
+
+    /// <summary>
+    /// Chữ "TRANG BỊ" trên cột phải khi hết đồ đất (cột giữa biến mất, trang bị trượt sang).
+    /// Mẫu đối lập với <see cref="GroundHeader"/> — cùng chỗ, hai chữ. Khoanh chữ giữa màn
+    /// trên ảnh còn đất là sai: chữ đó luôn hiện lúc còn cột đất. Tuỳ chọn.
+    /// </summary>
+    public FishingRect EquipHeader { get; set; } = new();
+
     /// <summary>Tuỳ chọn: dấu hiệu menu tạm dừng, để bắt ca Esc bấm nhầm lúc lệch trạng thái.</summary>
     public FishingRect PauseMarker { get; set; } = new();
 
@@ -154,6 +168,12 @@ internal sealed class FishingProfile
     /// thì bỏ qua chứ KHÔNG được chặn đổ cốp.
     /// </summary>
     public GridSpec Pockets { get; set; } = new();
+    /// <summary>
+    /// Lưới "TRÊN ĐẤT" — 5×5 bên phải kho đồ Tab. Cá rơi xuống đây khi ba lô đầy chỗ
+    /// (hết ô hoặc hết kg). Tuỳ chọn: cấu hình cũ thiếu thì bỏ qua, không chặn đổ cốp.
+    /// Chỉ kéo khi nhận ra icon là cá — không khai báo ô, vì trên đất có thể là đồ khác.
+    /// </summary>
+    public GridSpec Ground { get; set; } = new();
     public GridSpec Trunk { get; set; } = new();
 
     /// <summary>
@@ -248,6 +268,8 @@ internal sealed class FishingProfile
         TrunkWeight ??= new FishingRect();
         BagHeader ??= new FishingRect();
         TrunkHeader ??= new FishingRect();
+        GroundHeader ??= new FishingRect();
+        EquipHeader ??= new FishingRect();
         PauseMarker ??= new FishingRect();
         AltBand ??= new FishingRect();
         AltInteract ??= new FishingRect();
@@ -257,10 +279,12 @@ internal sealed class FishingProfile
         Hotbar ??= new GridSpec();
         Bag ??= new GridSpec();
         Pockets ??= new GridSpec();
+        Ground ??= new GridSpec();
         Trunk ??= new GridSpec();
         Hotbar.Normalize(1, 5);
         Bag.Normalize(5, 5);
         Pockets.Normalize(5, 1);
+        Ground.Normalize(5, 5);
         Trunk.Normalize(5, 5);
 
         FishSlots ??= new List<FishSlot>();
@@ -318,12 +342,18 @@ internal sealed class FishingProfile
 
         if (missing.Count > 0) return "thiếu " + string.Join(", ", missing);
 
-        // Hai vung nay la TUY CHON, khong duoc goi la "thieu": moi ben doc chi kiem
+        // Cac vung nay la TUY CHON, khong duoc goi la "thieu": moi ben doc chi kiem
         // StartsWith("đủ") de bat/tat do cop (FishingPanel, TrunkSetupForm), nen dua chung
         // vao "missing" se lang le tat do cop cua MOI cau hinh dang co.
         var notes = new List<string>();
         if (!PauseMarker.IsSet) notes.Add("chưa khoanh menu tạm dừng");
         if (!Pockets.IsSet) notes.Add("chưa khoanh lưới trên người");
+        if (!Ground.IsSet) notes.Add("chưa khoanh lưới trên đất");
+        else
+        {
+            if (!GroundHeader.IsSet) notes.Add("chưa khoanh chữ TRÊN ĐẤT");
+            if (!EquipHeader.IsSet) notes.Add("chưa khoanh chữ TRANG BỊ");
+        }
 
         return notes.Count == 0
             ? "đủ cấu hình đổ cốp"

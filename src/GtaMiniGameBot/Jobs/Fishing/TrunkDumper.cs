@@ -37,6 +37,8 @@ internal sealed class TrunkDumper : IDisposable
     private readonly GridScanner _bag;
     /// <summary>Hàng "TRÊN NGƯỜI". null = người dùng chưa khoanh vùng đó.</summary>
     private readonly GridScanner _pockets;
+    /// <summary>Lưới "TRÊN ĐẤT". null = chưa khoanh — không nhặt cá rớt.</summary>
+    private readonly GridScanner _ground;
     private readonly GridScanner _trunk;
 
     /// <summary>
@@ -99,7 +101,7 @@ internal sealed class TrunkDumper : IDisposable
 
     private TrunkDumper(FishingConfig cfg, Screen screen, FishingProfile profile, Action<string> log,
                         TrunkOpener opener, WeightReader weight, WeightReader trunkWeight,
-                        GridScanner hotbar, GridScanner bag, GridScanner pockets,
+                        GridScanner hotbar, GridScanner bag, GridScanner pockets, GridScanner ground,
                         GridScanner trunk, ItemCatalog catalog, DigitAtlas atlas)
     {
         _cfg = cfg;
@@ -112,6 +114,7 @@ internal sealed class TrunkDumper : IDisposable
         _hotbar = hotbar;
         _bag = bag;
         _pockets = pockets;
+        _ground = ground;
         _trunk = trunk;
         _catalog = catalog;
 
@@ -187,11 +190,26 @@ internal sealed class TrunkDumper : IDisposable
         // thieu vung nay, chan cung o day la tat do cop cua tat ca nguoi dung.
         if (!p.Pockets.IsSet)
             log("chưa khoanh lưới TRÊN NGƯỜI — cá rơi vào hàng đó bot sẽ không thấy");
+        if (!p.Ground.IsSet)
+            log("chưa khoanh lưới TRÊN ĐẤT — cá rớt đất khi ba lô đầy bot sẽ không kéo vào lại");
+        else if (!byIcon)
+            log("đã khoanh lưới TRÊN ĐẤT nhưng chưa nhận cá theo icon — không kéo đồ rớt " +
+                "(trên đất có thể không phải cá)");
+        else
+        {
+            var boot = opener.ReadState();
+            if (!boot.GroundKnown)
+                log("chưa khoanh chữ TRÊN ĐẤT hoặc thiếu mẫu — không nhặt cá đất " +
+                    "(tránh kéo nhầm TRANG BỊ khi cột đất tắt)");
+            else if (!boot.EquipKnown)
+                log("chưa khoanh chữ TRANG BỊ — bot chỉ dựa chữ TRÊN ĐẤT, dễ kéo nhầm khi cột đổi");
+        }
 
         return new TrunkDumper(cfg, screen, p, log, opener, weight, trunkWeight,
             new GridScanner(cfg, screen, p.Hotbar),
             new GridScanner(cfg, screen, p.Bag),
             p.Pockets.IsSet ? new GridScanner(cfg, screen, p.Pockets) : null,
+            p.Ground.IsSet ? new GridScanner(cfg, screen, p.Ground) : null,
             new GridScanner(cfg, screen, p.Trunk),
             catalog, atlas);
     }
@@ -233,6 +251,16 @@ internal sealed class TrunkDumper : IDisposable
                     _log($"đọc KG hỏng {_ocrFails} lần liên tiếp — chuyển hẳn sang đếm cá " +
                          $"(mỗi {_cfg.CatchesPerDumpFallback} con đổ một lần)");
                 }
+            }
+
+            // Tab dang mo — dung luc cot TRÊN ĐẤT hien. Do cop xong ba lo vua trong thi
+            // nhat o day, khong doi WeightCheckEveryCatches con nua.
+            int picked = RecoverGroundFish(ct, r.Ok ? r.Value : -1, r.Ok ? r.Cap : -1);
+            if (picked > 0)
+            {
+                _bagWeight.ResetHistory();
+                var again = _bagWeight.Read();
+                if (again.Ok) r = again;
             }
             return r;
         }
@@ -877,15 +905,32 @@ internal sealed class TrunkDumper : IDisposable
     }
 
     /// <summary>
-    /// Kéo một ô. Chỉ tính là xong khi ô nguồn ĐÃ TRỐNG và ô đích ĐÃ CÓ ĐỒ — thiếu một trong
-    /// hai thì không phân biệt được "đã chuyển" với "nhấc lên rồi thả lại" hay "bị hoán đổi".
+    /// Kéo một ô sang cốp. Chỉ tính là xong khi ô nguồn ĐÃ TRỐNG và ô đích ĐÃ CÓ ĐỒ — thiếu
+    /// một trong hai thì không phân biệt được "đã chuyển" với "nhấc lên rồi thả lại" hay
+    /// "bị hoán đổi".
     /// </summary>
     private bool DragOne(GridScanner srcGrid, CellInfo src, CellInfo dest, CancellationToken ct)
+        => DragTo(srcGrid, src, _trunk, dest, "cốp", ct);
+
+    /// <summary>
+    /// Kéo giữa hai lưới bất kỳ. Cửa mặc định giống <see cref="DragOne"/>: nguồn trống và
+    /// đích có đồ. Đổi ô đích khi tha trượt — ưu tiên ô trống hẳn, không phải ô nhạt.
+    ///
+    /// <paramref name="requireDestOccupied"/> tắt khi kéo đất → ba lô: game hay xếp chồng
+    /// vào ổ cùng loài (phím nhanh / ba lô đã có), ô trống vừa nhắm vẫn trống. Lúc đó
+    /// nguồn đất trống là đủ — cá đã rời đất.
+    ///
+    /// <paramref name="srcPanelOk"/> cho lưới nguồn CÓ THỂ BIẾN MẤT vì chính cú kéo này —
+    /// đúng ca TRÊN ĐẤT. Không có nó thì vòng thử lại kéo tiếp vào thứ vừa thế chỗ.
+    /// </summary>
+    private bool DragTo(GridScanner srcGrid, CellInfo src, GridScanner destGrid, CellInfo dest,
+                        string destLabel, CancellationToken ct, bool requireDestOccupied = true,
+                        Func<bool> srcPanelOk = null)
     {
         var destCell = dest;
         for (int attempt = 1; attempt <= _cfg.DragRetries + 1; attempt++)
         {
-            _log($"kéo #{src.Index} → cốp #{destCell.Index}  ({src.Centre.X},{src.Centre.Y} → " +
+            _log($"kéo #{src.Index} → {destLabel} #{destCell.Index}  ({src.Centre.X},{src.Centre.Y} → " +
                  $"{destCell.Centre.X},{destCell.Centre.Y})  lần {attempt}");
 
             int slow = attempt - 1;
@@ -901,29 +946,256 @@ internal sealed class TrunkDumper : IDisposable
             InputSender.MoveCursorOnly(_park.X, _park.Y);
             Sleep(ct, 150);
 
+            // Cot nguon co the TAT VI CHINH cu keo nay: o cuoi roi khoi dat thi cot doi tu
+            // TRÊN ĐẤT sang TRANG BỊ, ROI luoi dat nhin thang vao icon ao/kinh. Quet xac minh
+            // se doc "nguon van con do" roi keo lai — tuc keo trang bi vao ba lo. Cot tat =
+            // luoi nguon da sach = cu keo NAY DA XONG.
+            if (srcPanelOk is not null && !srcPanelOk())
+                return true;
+
             var srcNow = srcGrid.ScanScreen().FirstOrDefault(c => c.Index == src.Index);
-            var dstNow = _trunk.ScanScreen().FirstOrDefault(c => c.Index == destCell.Index);
-            bool ok = srcNow is { State: CellState.Empty } && dstNow is not null && dstNow.State != CellState.Empty;
-            if (ok) return true;
+            var dstNow = destGrid.ScanScreen().FirstOrDefault(c => c.Index == destCell.Index);
+            bool srcGone = srcNow is { State: CellState.Empty };
+            bool destHas = dstNow is not null && dstNow.State != CellState.Empty;
+            if (srcGone && destHas) return true;
+            if (srcGone && !requireDestOccupied)
+            {
+                _log("   nguồn đã trống, đích còn trống — xếp chồng vào ổ sẵn có");
+                return true;
+            }
 
             _log($"   chưa chuyển được — nguồn={srcNow?.State}, đích={dstNow?.State}");
             if (attempt > _cfg.DragRetries) break;
 
-            // Doi o dich khac: mot o "trong" ma tha vao khong duoc thi van de co the o o dich,
-            // khong phai o cu keo.
-            // Uu tien o trong HAN. Doi sang mot o nhat la doi tu mot o co the dang co do sang
-            // mot o khac cung the — thua ra mot cu keo hoan doi nua.
-            var free = _trunk.ScanScreen()
+            var free = destGrid.ScanScreen()
                 .Where(c => c.State == CellState.Empty && c.Index != destCell.Index)
                 .ToList();
             var other = free.FirstOrDefault(c => !c.Faint) ?? free.FirstOrDefault();
             if (other is not null)
             {
                 destCell = other;
-                _log($"   đổi ô đích sang cốp #{destCell.Index}");
+                _log($"   đổi ô đích sang {destLabel} #{destCell.Index}");
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Tab đang mở: nếu lưới TRÊN ĐẤT có cá và ba lô còn chỗ, kéo vào. Chỉ nhận theo icon —
+    /// đoán bừa ô đất có đồ có thể là kéo cần/mồi/tiền. Không đụng <see cref="_sources"/>
+    /// vì lúc mở cốp cột phải là lưới cốp, không phải đất.
+    /// </summary>
+    private int RecoverGroundFish(CancellationToken ct, double bagKg, double bagCap)
+    {
+        if (_ground is null || !ByIcon) return 0;
+        if (!GroundPanelOpen()) return 0;
+
+        if (bagKg >= 0 && bagCap > 0 && bagKg >= _cfg.BagDumpKg(bagCap))
+        {
+            if (PeekGroundFish() is not null)
+                _log("trên đất có cá nhưng ba lô đã tới ngưỡng đổ — nhặt sau khi đổ cốp");
+            return 0;
+        }
+
+        int moved = 0;
+        // O keo that su hong (nguon van con do) — bo qua de khong xoay vong cung mot o
+        // va van vet cac loai con lai, giong vong do cop quet lai sau moi cu keo.
+        var skip = new HashSet<int>();
+        while (moved < _cfg.MaxDragsPerDump)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (!StillGroundPanel(moved > 0 ? "trước vòng" : null))
+                break;
+
+            var source = NextGroundFish(ct, out string scanNote, skip);
+            if (scanNote is not null) _log(scanNote);
+            if (source is null) break;
+
+            // Quét icon tốn thời gian — cá cuối vừa đi thì cột đổi TRANG BỊ giữa lúc quét.
+            if (!StillGroundPanel("sau quét"))
+                break;
+
+            var dest = NextEmptyBagCell(ct);
+            if (dest is null)
+            {
+                _log("ba lô không còn ô trống — để cá trên đất, nhặt sau khi đổ cốp");
+                break;
+            }
+
+            if (!StillGroundPanel("trước kéo"))
+                break;
+
+            // srcPanelOk: keo xong con cuoi la cot doi sang TRANG BỊ ngay. Khong co cua nay thi
+            // buoc quet xac minh trong DragTo doc nham icon trang bi la "nguon chua di" va keo lai.
+            if (!DragTo(_ground, source, _bag, dest, "ba lô", ct, requireDestOccupied: false,
+                        srcPanelOk: () => StillGroundPanel("sau kéo")))
+            {
+                _log($"kéo trên đất #{source.Index} vào ba lô thất bại — thử ô cá khác");
+                skip.Add(source.Index);
+                continue;
+            }
+
+            moved++;
+        }
+
+        if (moved > 0)
+            _log($"đã kéo {moved} ô cá từ trên đất vào ba lô");
+        return moved;
+    }
+
+    /// <summary>
+    /// Cột phải đang là TRÊN ĐẤT chứ không phải TRANG BỊ. Thiếu mẫu chữ đất thì false —
+    /// không quét lưới (kéo nhầm trang bị nặng hơn bỏ sót cá đất). Có mẫu TRANG BỊ thì
+    /// thấy chữ đó, hoặc điểm nó cao hơn đất, cũng không kéo.
+    /// </summary>
+    private bool GroundPanelOpen()
+    {
+        return LooksLikeGround(_opener.ReadState());
+    }
+
+    /// <summary>
+    /// Đọc lại hai chữ cột phải. Mất đất / thấy trang bị thì huỷ nguồn vừa quét — không kéo.
+    /// <paramref name="when"/> null = im lặng (cửa đầu vòng, chưa có gì để huỷ).
+    /// </summary>
+    private bool StillGroundPanel(string when)
+    {
+        var st = _opener.ReadState();
+        if (LooksLikeGround(st)) return true;
+        if (when is not null)
+            _log($"cột phải không phải TRÊN ĐẤT ({when}) — đất={st.GroundScore:F2} " +
+                 $"trang bị={st.EquipScore:F2} ngưỡng={_cfg.HeaderNccMin:F2}, thôi nhặt");
+        return false;
+    }
+
+    private static bool LooksLikeGround(ScreenState st)
+    {
+        if (!st.GroundKnown || !st.GroundOpen) return false;
+        if (st.EquipKnown && st.EquipOpen) return false;
+        if (st.EquipKnown && st.EquipScore > st.GroundScore) return false;
+        return true;
+    }
+
+    /// <summary>Một lần quét, không chờ tải — chỉ để biết có nên ghi log "để sau" hay không.</summary>
+    private CellInfo PeekGroundFish()
+    {
+        if (!GroundPanelOpen()) return null;
+        InputSender.MoveCursorOnly(_park.X, _park.Y);
+        return ScanGroundByIcon().Fish?.Cell;
+    }
+
+    private CellInfo NextGroundFish(CancellationToken ct, out string note, HashSet<int> skip = null)
+    {
+        ScanPass pass = null;
+
+        for (int attempt = 0; ; attempt++)
+        {
+            InputSender.MoveCursorOnly(_park.X, _park.Y);
+            Sleep(ct, 120);
+
+            pass = ScanGroundByIcon(skip);
+            if (pass.Fish is not null || pass.Loading is null || attempt >= _cfg.ScanRetries)
+                break;
+
+            _log($"lưới trên đất như đang tải icon ({pass.Loading}) — quét lại sau " +
+                 $"{_cfg.ScanRetryGapMs} ms (lượt {attempt + 1}/{_cfg.ScanRetries})");
+            Sleep(ct, _cfg.ScanRetryGapMs);
+        }
+
+        // Cot TRÊN ĐẤT chi hien khi co do duoi chan. Panel tat thi ROI nhin ra nen game,
+        // 25 o "co do" khong ro — xa het moi lan can ba lo la ngap log.
+        if (pass.Fish is not null) Flush(pass.Skipped);
+        else if (pass.Loading is not null)
+            _log($"trên đất vẫn như đang tải sau {_cfg.ScanRetries + 1} lượt quét ({pass.Loading})");
+
+        note = pass.Note;
+        return pass.Fish?.Cell;
+    }
+
+    /// <summary>
+    /// Quét chỉ lưới đất. Ô trống không ghi — mỗi lần cân ba lô mà xả 25 dòng trống là
+    /// không đọc được log. Ô có đồ mà không phải cá thì ghi, để biết vì sao không kéo.
+    ///
+    /// Cột TRÊN ĐẤT tắt thì ROI nhìn ra nền game: mọi ô "có đồ", điểm icon thấp. Không
+    /// coi đó là đang tải — nếu không thì mỗi lần cân ba lô chờ ScanRetries lần vô ích.
+    /// Dấu hiệu panel thật: có ít nhất một ô trống (ô kho đồ lệch 0.5–2, nền game thì không).
+    /// </summary>
+    private ScanPass ScanGroundByIcon(HashSet<int> skip = null)
+    {
+        var pass = new ScanPass();
+        if (_ground is null) return pass;
+
+        int empty = 0;
+        foreach (var (cell, gray) in _ground.ScanScreenPixels())
+        {
+            if (cell is null) continue;
+            if (skip is not null && skip.Contains(cell.Index)) continue;
+            if (cell.IsEmpty)
+            {
+                empty++;
+                if (cell.Faint)
+                    pass.Loading ??= $"trên đất #{cell.Index} lệch={cell.Std:F1}";
+                continue;
+            }
+
+            var guess = _catalog.Classify(gray, cell.Rect.Width, cell.Rect.Height);
+            string fishName = guess.FishName(_fishItems, _cfg.ItemNccMin);
+            if (fishName is null)
+            {
+                pass.Skipped.Add(guess.Name is null
+                    ? $"trên đất #{cell.Index} {guess}"
+                    : $"trên đất #{cell.Index} {guess.Name} {guess.Score:F2} — RÕ nhưng " +
+                      "không có trong danh sách cá");
+                if (guess.Score < _cfg.ItemLoadingScoreMax)
+                    pass.Loading ??= $"trên đất #{cell.Index} điểm {guess.Score:F2}";
+                continue;
+            }
+
+            pass.Note = guess.Name is null
+                ? $"kéo trên đất #{cell.Index} — {guess.Best} {guess.Score:F2}, lẫn với " +
+                  $"{guess.Runner} {guess.RunnerScore:F2} — cả hai đều là cá nên vẫn kéo"
+                : $"kéo trên đất #{cell.Index} — {guess}";
+            pass.Fish = (_ground, cell);
+            pass.Species = fishName;
+            return pass;
+        }
+
+        if (empty == 0 && pass.Fish is null)
+        {
+            pass.Loading = null;
+            pass.Skipped.Clear();
+        }
+
+        return pass;
+    }
+
+    /// <summary>Ô trống hẳn đầu tiên trong ba lô. Cùng cửa ô nhạt với <see cref="NextEmptyTrunkCell"/>.</summary>
+    private CellInfo NextEmptyBagCell(CancellationToken ct)
+    {
+        CellInfo faint = null;
+
+        for (int attempt = 0; ; attempt++)
+        {
+            faint = null;
+            foreach (var c in _bag.ScanScreen())
+            {
+                if (c.State != CellState.Empty) continue;
+                if (!c.Faint) return c;
+                faint ??= c;
+            }
+
+            if (faint is null || attempt >= _cfg.ScanRetries) break;
+
+            _log($"ba lô không có ô nào trống hẳn, sớm nhất là #{faint.Index} lệch={faint.Std:F1} " +
+                 $"— như đang tải icon, quét lại sau {_cfg.ScanRetryGapMs} ms " +
+                 $"(lượt {attempt + 1}/{_cfg.ScanRetries})");
+            Sleep(ct, _cfg.ScanRetryGapMs);
+        }
+
+        if (faint is not null)
+            _log($"cảnh báo: thả vào ba lô #{faint.Index} dù lệch={faint.Std:F1} cao đáng ngờ — " +
+                 "hết lượt quét mà không có ô nào trống hẳn");
+        return faint;
     }
 
     /// <summary>Thu dọn sau khi hỏng: nhả hết, Esc nếu đang có màn hình mở.</summary>
@@ -969,6 +1241,7 @@ internal sealed class TrunkDumper : IDisposable
         _hotbar?.Dispose();
         _bag?.Dispose();
         _pockets?.Dispose();
+        _ground?.Dispose();
         _trunk?.Dispose();
         _splitter?.Dispose();
     }
