@@ -980,7 +980,15 @@ internal sealed class FishingBot
         if (r == DumpResult.Ok)
         {
             _dumpsDone++;
-            Emit("--- đổ xong, câu tiếp ---");
+            Emit("--- đổ xong, nhặt cá trên đất rồi câu tiếp ---");
+            // Ba lo vua trong: mo Tab lai de keo ca rot dat vao. Neu doi lan can sau
+            // (WeightCheckEveryCatches con) thi ca dat de mat.
+            var w = _dumper.PeekBagWeight(ct);
+            if (w.Ok)
+            {
+                _lastBagKg = w.Value;
+                _lastBagCap = w.Cap;
+            }
             // Nguoi di vang biet chu trinh do cop van song. Khong ping, nhu moi tin Info.
             DiscordNotifier.NotifyInfo(_cfg, $"📦 Đã đổ cốp thành công — {_dumpsDone} lần",
                 _dumper.TrunkFreeKg >= 0

@@ -48,7 +48,8 @@ internal static class VerifyItems
         int hit = 0, seen = 0, faint = 0;
         foreach (var (label, grid) in new[] { ("hotbar", profile.Hotbar),
                                               ("pockets", profile.Pockets),
-                                              ("bag", profile.Bag) })
+                                              ("bag", profile.Bag),
+                                              ("ground", profile.Ground) })
         {
             if (!grid.IsSet) { Console.WriteLine($"{label}: chưa khoanh lưới"); continue; }
 
