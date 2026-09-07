@@ -82,7 +82,7 @@ internal sealed class NavInput : IDisposable
     private readonly object _mlock = new();
     private readonly double _xMultiplier;
     private double _tx, _ty, _rx, _ry, _fx, _fy, _ux, _uy;
-    private long _ySent;
+    private long _xSent, _ySent;
     private readonly Thread _mouseThread;
     private volatile bool _mouseStop;
 
@@ -370,6 +370,15 @@ internal sealed class NavInput : IDisposable
 
     public void ResetYSent() { lock (_mlock) _ySent = 0; }
 
+    /// <summary>
+    /// Tổng count X đã gửi thành công — count SAU hệ số nhân (vì <see cref="SetMouseXRate"/> đã nhân
+    /// vào <c>_tx</c>), nên chia thẳng được cho <see cref="NavTuning.MouseCountsPerDegree"/> ra độ.
+    /// Có dấu: dương = quay phải. Chỉ đúng nghĩa "góc đã quay" khi một pha độc quyền trục X.
+    /// </summary>
+    public long XSentCounts { get { lock (_mlock) return _xSent; } }
+
+    public void ResetXSent() { lock (_mlock) _xSent = 0; }
+
     /// <summary>Tích phân profile Y ngoài game — cùng tau/gia tốc luồng 240 Hz.</summary>
     public static int SimulateYCounts(double targetCps, double durationS)
     {
@@ -380,6 +389,26 @@ internal sealed class NavInput : IDisposable
         for (int i = 0; i < n; i++)
         {
             (rate, frac, int outp) = AxisStep(targetCps, rate, frac, dt, YTauS, YAccelCps2);
+            total += outp;
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// Tích phân profile X ngoài game — tau/gia tốc của X KHÁC Y nên không dùng chung
+    /// <see cref="SimulateYCounts"/> được. <paramref name="targetCps"/> là giá trị TRƯỚC hệ số, đúng như
+    /// tham số của <see cref="SetMouseXRate"/>; hàm tự nhân <paramref name="multiplier"/> vào để ra count
+    /// OS, cùng đơn vị với <see cref="XSentCounts"/>.
+    /// </summary>
+    public static int SimulateXCounts(double targetCps, double durationS, double multiplier)
+    {
+        double rate = 0, frac = 0;
+        const double dt = 1.0 / 240;
+        int n = Math.Max(1, (int)Math.Round(durationS * 240.0));
+        int total = 0;
+        for (int i = 0; i < n; i++)
+        {
+            (rate, frac, int outp) = AxisStep(targetCps * multiplier, rate, frac, dt, XTauS, XAccelCps2);
             total += outp;
         }
         return total;
@@ -464,6 +493,7 @@ internal sealed class NavInput : IDisposable
             lock (_mlock)
             {
                 _rx = rx; _fx = fx; _ry = ry; _fy = fy;
+                if (dx != 0) _xSent += dx;
                 if (dy != 0) _ySent += dy;
             }
         }

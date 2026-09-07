@@ -168,9 +168,18 @@ internal sealed class NavBot
     private int _wdRestartCount;
 
     // watch 30 s sau minigame
-    private bool _watchActive, _watchPending, _backoutActive;
-    private double _watchStarted, _backoutUntil;
+    private bool _watchActive, _watchPending;
+    private double _watchStarted;
     private int _watchCount;
+
+    // chuoi thoat ket cua chu ky NANG (NavRestartTurn) — mot khai niem duy nhat thay cho co _backoutActive
+    // cu, vi co do phai nho xoa o 4 noi va nho them vao 3 danh sach gate.
+    private string _turnPhase;
+    private double _turnPhaseStart, _turnCapS, _turnLastGainT, _turnFrozenAt, _turnDeg;
+    private int _turnSign;
+    private long _turnMark, _turnCountsTarget, _turnBestCounts;
+
+    private bool SevereTurnActive => _turnPhase is not null;
 
     // lop san phim
     private double _lastShiftKeepaliveT;
@@ -368,8 +377,8 @@ internal sealed class NavBot
         _capture.WantBoard = _job.Phase is not null
                              || _ixPhase is NavInteraction.Settle or NavInteraction.Watch;
 
-        // Backout S nghiem trong cua watch 30 s so huu input truoc moi thu.
-        if (_backoutActive && RestartWatchStep(now, focused)) return false;
+        // Chuoi thoat ket cua chu ky NANG (lui S -> quay ngang -> chay thang) so huu input truoc moi thu.
+        if (SevereTurnActive && RestartWatchStep(now, focused)) return false;
 
         // Bua an DANG DO dung ngay day, tren ca SimpleFlow — xem chu thich SurvivalOwnStep.
         if (SurvivalOwnStep(now, focused))
@@ -455,7 +464,7 @@ internal sealed class NavBot
         // Đang thấy [E] TƯƠNG TÁC thì không đi reset nghề — thử bấm E trước.
         if (snap.PromptVisible)
             _job.ResetBlind();
-        else if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
+        else if (_job.ShouldStart(now, target, world, candidates.Count, SevereTurnActive))
         {
             _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
             if (_job.Step(mini, snap, now, focused)) return false;
@@ -798,7 +807,7 @@ internal sealed class NavBot
         _cameraPhase = null;
         _cameraWaitUntil = 0;
         _wReclaimPending = false;
-        _backoutActive = false;
+        ClearSevereTurn();
         _watchActive = false;
         _watchPending = false;
         _input.StopMouseStream(immediate: true);
@@ -1566,6 +1575,7 @@ internal sealed class NavBot
         _input.StopMouseStream(immediate: true);
         _input.ReleaseOwnedOnce();
         _cameraPhase = null;
+        ClearSevereTurn();
         _simplePhase = "WORLD";
         _closeUntil = _postCheckUntil = _wait10Until = 0;
         _promptConsumed = false;
@@ -1590,7 +1600,8 @@ internal sealed class NavBot
     {
         if (!focused) { AutorunResetTimer(now); return false; }
         bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null || _survivalActive
-                                || _ixPhase == NavInteraction.Settle || _job.PausedForSurvival;
+                                || _ixPhase == NavInteraction.Settle || _job.PausedForSurvival
+                                || SevereTurnActive;
         if (intentionalBlock) { AutorunResetTimer(now); return false; }
 
         bool progress = false;
@@ -1632,8 +1643,7 @@ internal sealed class NavBot
     private void ArmRestartWatch(double now, string reason)
     {
         _watchCount = 0;
-        _backoutActive = false;
-        _backoutUntil = 0;
+        ClearSevereTurn();
         _watchActive = true;
         _watchStarted = now;
         _watchPending = false;
@@ -1656,40 +1666,54 @@ internal sealed class NavBot
         ClearPendingE();
     }
 
-    /// <summary><c>_post_mini_restart_watch_step</c>: 30 s không có minigame mới → reset camera + W; từ lần thứ 3 giữ S 2 s trước.</summary>
+    /// <summary>
+    /// <c>_post_mini_restart_watch_step</c>: 30 s không có minigame mới → reset camera + W; từ lần thứ 3
+    /// chạy chuỗi thoát kẹt <see cref="NavRestartTurn"/> (lùi S → quay ngang → chạy thẳng) trước.
+    /// </summary>
     private bool RestartWatchStep(double now, bool focused)
     {
-        if (!_watchActive) return false;
-        if (!focused)
+        // Watch bị tắt giữa chuỗi (arm lại / giao panel) mà pha còn sống thì không ai chạy nó nữa —
+        // huỷ hẳn, đừng để pha mồ côi khoá luôn điều hướng.
+        if (SevereTurnActive && !_watchActive)
         {
-            if (_backoutActive) { _input.ReleaseOwnedOnce(); _input.StopMouseStream(immediate: true); }
+            AbortSevereTurn("watch đã tắt giữa chuỗi");
             return false;
         }
+        if (!_watchActive) return false;
 
-        if (_backoutActive)
+        if (SevereTurnActive)
         {
-            if (now < _backoutUntil)
+            if (!focused)
             {
+                _input.ReleaseOwnedOnce();
                 _input.StopMouseStream(immediate: true);
-                _input.Apply(NavKey.S);
+                // Idempotent: hàm này chạy được hai lần trong một tick (guard đầu Tick + chỗ gọi sau),
+                // nên chỉ ĐẶT mốc đóng băng, không cộng dồn.
+                if (_turnFrozenAt <= 0) _turnFrozenAt = now;
                 return true;
             }
-            _input.ReleaseOwnedOnce();
-            _input.StopMouseStream(immediate: true);
-            _backoutActive = false;
-            _backoutUntil = 0;
-            RestartPrepareCore(now);
-            Emit("[WATCH 30s NẶNG] lùi S xong → reset camera → W → chạy");
-            StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
-            return true;
+            if (_turnFrozenAt > 0)
+            {
+                double frozen = Math.Max(0.0, now - _turnFrozenAt);
+                _turnPhaseStart += frozen;
+                _turnLastGainT += frozen;
+                _turnFrozenAt = 0;
+            }
+            return SevereTurnStep(now);
         }
+
+        if (!focused) return false;
 
         double timeout = Math.Max(10.0, NavTuning.PostMinigameRestartTimeoutS);
         double elapsed = now - _watchStarted;
         if (elapsed < timeout && !_watchPending) return false;
 
+        // SevereTurnActive nằm trong đây chứ không chỉ dựa vào short-circuit ở trên: khi mất focus hàm
+        // này trả false ở nhánh trên, guard đầu Tick không nuốt frame, và chỗ gọi sau trong Tick chạy
+        // hàm này LẦN THỨ HAI trong cùng một tick — thiếu cờ ở đây là một chu kỳ NẶNG lồng vào chu kỳ
+        // đang chạy, _watchCount nhảy hai bậc và mất một ô thang góc.
         bool unsafeNow = _simplePhase != "WORLD" || _cameraPhase is not null || _job.Phase is not null
-                         || _survivalActive || _ixPhase == NavInteraction.Settle;
+                         || _survivalActive || _ixPhase == NavInteraction.Settle || SevereTurnActive;
         if (unsafeNow)
         {
             if (!_watchPending)
@@ -1699,21 +1723,31 @@ internal sealed class NavBot
             }
             return false;
         }
-        _watchPending = false;
 
-        bool severe = _watchCount >= Math.Max(2, NavTuning.PostMinigameRestartSevereAfterFailedRestarts);
+        // Pending nghĩa là timeout đã trôi qua trong lúc BẬN (reset nghề, bữa ăn, reset camera), chứ
+        // không phải 30 s lái mà không gặp bảng nghề. Nổ chu kỳ ngay lúc vừa về WORLD là sai: chu kỳ
+        // NẶNG giờ quay tới 180° rồi đi bộ, làm thế ngay sau khi vừa nhận lại nghề ở NPC là tự đi khỏi
+        // bảng. Cho đủ một cửa sổ LÁI THẬT rồi mới tính.
+        if (_watchPending)
+        {
+            _watchPending = false;
+            _watchStarted = now;
+            Emit($"[WATCH 30s] WORLD rảnh lại → tính lại {timeout:F0}s lái thật trước khi khởi động lại");
+            return false;
+        }
+
+        int severeThreshold = Math.Max(2, NavTuning.PostMinigameRestartSevereAfterFailedRestarts);
+        bool severe = _watchCount >= severeThreshold;
         _watchCount++;
         _watchStarted = now;
 
         if (severe)
         {
-            double back = Math.Max(0.5, NavTuning.PostMinigameRestartSevereBackoutS);
             RestartPrepareCore(now);
             _cameraPhase = null;
-            _backoutActive = true;
-            _backoutUntil = now + back;
-            _input.Apply(NavKey.S);
-            Emit($"[WATCH 30s NẶNG] hai lần khởi động lại thất bại; chu kỳ #{_watchCount}: lùi S {back:F1}s → reset camera → W");
+            StartSevereTurn(now, _watchCount - severeThreshold - 1);
+            Emit($"[WATCH 30s NẶNG] hai lần khởi động lại thất bại; chu kỳ #{_watchCount}: lùi S {NavRestartTurn.BackoutS:F1}s → " +
+                 $"quay {_turnDeg:+0;-0}° → chạy thẳng {NavRestartTurn.ClearForwardS:F1}s → reset camera → W");
             return true;
         }
 
@@ -1721,5 +1755,123 @@ internal sealed class NavBot
         Emit($"[WATCH 30s] {elapsed:F1}s không có minigame mới → chu kỳ #{_watchCount}: reset camera → W → chạy");
         StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
         return true;
+    }
+
+    // ================================================================ chuoi thoat ket cua chu ky NANG
+
+    /// <summary>Vào pha đầu của chuỗi. <paramref name="severeIndex"/> 0 = chu kỳ NẶNG đầu tiên.</summary>
+    private void StartSevereTurn(double now, int severeIndex)
+    {
+        _turnDeg = NavRestartTurn.AngleForCycle(severeIndex);
+        _turnSign = _turnDeg >= 0 ? 1 : -1;
+        _turnCountsTarget = NavRestartTurn.CountsForDegrees(_turnDeg);
+        _turnCapS = NavRestartTurn.HardCapS(_turnDeg, NavTuning.PostMinigameRestartYawRateCps,
+                                            _cfg.Nav.MouseSpeedMultiplier);
+        _turnMark = _input.XSentCounts;
+        _turnBestCounts = 0;
+        _turnLastGainT = now;
+        _turnFrozenAt = 0;
+        _turnPhase = NavRestartTurn.Backout;
+        _turnPhaseStart = now;
+        _input.Apply(NavKey.S);
+    }
+
+    /// <summary>Xoá trạng thái chuỗi, KHÔNG chạm input — dùng ở những nơi input đã được xử lý.</summary>
+    private void ClearSevereTurn()
+    {
+        _turnPhase = null;
+        _turnPhaseStart = 0;
+        _turnFrozenAt = 0;
+        _turnBestCounts = 0;
+        _turnCountsTarget = 0;
+    }
+
+    private void AbortSevereTurn(string reason)
+    {
+        if (_turnPhase is null) return;
+        string was = _turnPhase;
+        ClearSevereTurn();
+        _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+        _input.Apply(NavKey.None);
+        Emit($"[WATCH 30s NẶNG] huỷ chuỗi ở pha {was}: {reason}");
+    }
+
+    /// <summary>Một tick của chuỗi. Luôn sở hữu frame (trả true) tới khi chuỗi nhường cho reset camera.</summary>
+    private bool SevereTurnStep(double now)
+    {
+        double elapsed = now - _turnPhaseStart;
+        long counts = Math.Abs(_input.XSentCounts - _turnMark);
+        if (counts > _turnBestCounts) { _turnBestCounts = counts; _turnLastGainT = now; }
+        bool stalled = _turnPhase == NavRestartTurn.Yaw
+                       && now - _turnLastGainT >= NavTuning.PostMinigameRestartYawStallS;
+
+        // Xét chuyển pha TRƯỚC khi phát rate của tick này: xét sau sẽ lố thêm một tick (~2.5°).
+        string next = NavRestartTurn.Advance(_turnPhase, elapsed, counts, _turnCountsTarget, stalled, _turnCapS);
+        if (next != _turnPhase)
+        {
+            EnterSevereTurnPhase(now, next, counts, stalled);
+            if (_turnPhase is null) return true;      // đã nhường cho reset camera
+        }
+
+        switch (_turnPhase)
+        {
+            case NavRestartTurn.Backout:
+                _input.StopMouseStream(immediate: true);
+                _input.Apply(NavKey.S);
+                return true;
+            case NavRestartTurn.Reacquire:
+                _input.Apply(NavKey.None);
+                return true;
+            case NavRestartTurn.Yaw:
+                // Lease chuột 120 ms: phải phát lại rate MỖI tick, không thì cú quay tự tắt dần.
+                _input.SetMouseXRate(_turnSign * NavTuning.PostMinigameRestartYawRateCps);
+                _input.Apply(NavKey.None);
+                return true;
+            default:
+                _input.Apply(NavKey.W);
+                return true;
+        }
+    }
+
+    private void EnterSevereTurnPhase(double now, string phase, long counts, bool stalled)
+    {
+        switch (phase)
+        {
+            case NavRestartTurn.Reacquire:
+                _input.ReleaseOwnedOnce();
+                _input.StopMouseStream(immediate: true);
+                // Đếm count chỉ biết cái mình GỬI, không biết cái game NHẬN. GTA nuốt delta chuột sau
+                // NUI là chuyện có thật (xem CameraResetReacquireSettleS) — nuốt mà vẫn đếm thì chuỗi
+                // báo "đã quay 180°" trong khi hướng không đổi. Xung W lấy lại quyền chuột trước.
+                _input.PulseWReacquire(NavTuning.CameraResetReacquireHoldMs);
+                Emit("[WATCH 30s NẶNG] lùi S xong → xung W lấy lại quyền chuột");
+                break;
+
+            case NavRestartTurn.Yaw:
+                _turnMark = _input.XSentCounts;
+                _turnBestCounts = 0;
+                _turnLastGainT = now;
+                Emit($"[WATCH 30s NẶNG] quay {_turnDeg:+0;-0}° = {_turnCountsTarget} count (cap {_turnCapS:F1}s)");
+                break;
+
+            case NavRestartTurn.ClearForward:
+                _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+                string why = counts >= _turnCountsTarget ? "đủ count" : stalled ? "TẮC" : "hết cap";
+                Emit($"[WATCH 30s NẶNG] quay xong {_turnSign * counts / NavTuning.MouseCountsPerDegree:+0.0;-0.0}° " +
+                     $"({counts}/{_turnCountsTarget} count, {why}) → chạy thẳng {NavRestartTurn.ClearForwardS:F1}s");
+                _input.DoublePressWStart(NavTuning.TransitionWTakeoverGapMs, NavTuning.AutorunWatchdogWRearmS);
+                break;
+
+            case NavRestartTurn.Done:
+                _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+                ClearSevereTurn();
+                _cameraPhase = null;
+                Emit("[WATCH 30s NẶNG] chạy thẳng xong → reset camera → W → chạy");
+                StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
+                return;
+        }
+
+        _turnPhase = phase;
+        _turnPhaseStart = now;
     }
 }
