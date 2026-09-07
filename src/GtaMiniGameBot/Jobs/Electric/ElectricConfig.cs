@@ -54,7 +54,7 @@ internal sealed class ElectricProfile
     /// <summary>Khe (px) tách ô phím khỏi chữ, đo lúc khoanh.</summary>
     public int PromptGapSplit { get; set; }
 
-    /// <summary>ROI / màu / phím đã xác minh của đồng hồ bánh-nước trên đúng độ phân giải này.</summary>
+    /// <summary>ROI / màu của đồng hồ bánh-nước trên đúng độ phân giải này (phím thì nằm ở cấu hình chung).</summary>
     public SurvivalHudProfile SurvivalHud { get; set; } = new();
 
     [JsonIgnore]
@@ -132,11 +132,7 @@ internal sealed class ElectricProfile
         string prompt = IsPromptCalibrated
             ? $"prompt {PromptBand.W}×{PromptBand.H} chữ {PromptTextH}px"
             : "chưa khoanh [E] TƯƠNG TÁC";
-        string eat = SurvivalHud.IsReady
-            ? "ăn uống đã hiệu chuẩn"
-            : SurvivalHud.IsHudReady
-                ? "HUD ăn uống đã khoanh, chưa test phím"
-                : "chưa hiệu chuẩn ăn uống";
+        string eat = SurvivalHud.IsHudReady ? "ăn uống đã hiệu chuẩn" : "chưa hiệu chuẩn ăn uống";
         return $"{Key} — {how}; bảng {board.W}×{board.H}, quét dây {wire.W}×{wire.H}; {prompt}; {eat}";
     }
 }

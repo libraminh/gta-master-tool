@@ -91,6 +91,60 @@ internal static class VerifySurvival
         Check(ref fail, SurvivalSettings.SlotKeys("6").SequenceEqual(new ushort[] { 0x36 }),
               "\"6\" → một phím", "");
         Check(ref fail, SurvivalSettings.SlotKeys("").Length == 0, "chuỗi rỗng → không có phím nào", "");
+
+        // ---- o du phong: dat / xoa / khu hoi ----
+        var s = new SurvivalSettings { FoodSlots = "5", WaterSlots = "4" };
+        s.Normalize();
+        Check(ref fail, s.BackupSlot(true) == SurvivalSettings.NoSlot,
+              "chưa đặt ô dự phòng → NoSlot", $"'{s.BackupSlot(true)}'");
+
+        s.SetBackupSlot(true, '6');
+        Check(ref fail, s.FoodSlots == "5,6" && s.BackupSlot(true) == '6',
+              "đặt ô dự phòng bánh = 6", s.FoodSlots);
+        Check(ref fail, s.PrimarySlot(true) == '5', "đặt dự phòng không đổi ô chính", $"{s.PrimarySlot(true)}");
+
+        s.SetBackupSlot(true, SurvivalSettings.NoSlot);
+        Check(ref fail, s.FoodSlots == "5" && s.BackupSlot(true) == SurvivalSettings.NoSlot,
+              "xoá ô dự phòng bằng NoSlot", s.FoodSlots);
+
+        // Trung o chinh cung loai thi khong dat.
+        s.SetBackupSlot(true, '5');
+        Check(ref fail, s.FoodSlots == "5", "dự phòng trùng ô chính → không đặt", s.FoodSlots);
+
+        // Trung o cua loai kia: DropOverlap cho BANH thang va doi o nuoc sang o khac. Panel chan tu
+        // truoc nen duong nay chi la luoi an toan; dieu phai dung la hai loai KHONG BAO GIO chung o.
+        s.SetBackupSlot(true, '4');
+        bool shared = s.FoodSlots.Any(c => c >= '1' && c <= '9' && s.WaterSlots.Contains(c));
+        Check(ref fail, !shared, "dự phòng trùng ô nước → hai loại vẫn không chung ô",
+              $"bánh={s.FoodSlots} nước={s.WaterSlots}");
+
+        // Doi o chinh phai GIU dung o du phong dang co, khong phai o chinh cu.
+        var keep = new SurvivalSettings { FoodSlots = "5,6", WaterSlots = "4" };
+        keep.Normalize();
+        keep.SetPrimarySlot(true, '3');
+        Check(ref fail, keep.FoodSlots == "3,6", "đổi ô chính vẫn giữ ô dự phòng", keep.FoodSlots);
+
+        // O chinh moi la o du phong cu → doi cho hai o.
+        var swap = new SurvivalSettings { FoodSlots = "5,6", WaterSlots = "4" };
+        swap.Normalize();
+        swap.SetPrimarySlot(true, '6');
+        Check(ref fail, swap.FoodSlots == "6,5", "ô chính mới = ô dự phòng cũ → đổi chỗ", swap.FoodSlots);
+
+        // Khong tu sinh o du phong khi chi co mot o.
+        var lone = new SurvivalSettings { FoodSlots = "5", WaterSlots = "4" };
+        lone.Normalize();
+        lone.SetPrimarySlot(true, '3');
+        Check(ref fail, lone.FoodSlots == "3", "một ô → đổi ô chính không tự tạo dự phòng", lone.FoodSlots);
+
+        // ---- KeysFor: cau hinh la nguon DUY NHAT, profile khong con ghi de ----
+        var order = new SurvivalSettings { FoodSlots = "5,6", WaterSlots = "4,7" };
+        order.Normalize();
+        Check(ref fail, order.KeysFor(food: true).SequenceEqual(new ushort[] { 0x35, 0x36 }),
+              "KeysFor: ô chính trước, dự phòng sau", "");
+        Check(ref fail, order.KeysFor(food: false).SequenceEqual(new ushort[] { 0x34, 0x37 }),
+              "KeysFor nước: 4 rồi 7", "");
+        Check(ref fail, typeof(SurvivalSettings).GetMethod("KeysFor")!.GetParameters().Length == 1,
+              "KeysFor chỉ còn 1 tham số — không còn đường cho profile ghi đè", "");
         return fail;
     }
 
@@ -432,6 +486,23 @@ internal static class VerifySurvival
         string reason = SurvivalGate.WaitReason(SurvivalActKind.Pending, false, true, 80, 38);
         Check(ref fail, reason.Contains("38") && reason.Contains("bảng"),
               "log chờ ghi mức ổn định và lý do", reason);
+
+        // ---- dieu kien chay: CHI con hieu chuan HUD, khong con doi test phim ----
+        var cfg = new SurvivalSettings { Enabled = true };
+        var roi = FishingRect.FromRelative(new Rectangle(10, 10, 40, 40));
+        var hudReady = new SurvivalHudProfile
+        {
+            FoodRoi = roi, WaterRoi = roi,
+            FoodHudReady = true, WaterHudReady = true
+        };
+        Check(ref fail, cfg.CanRun(hudReady),
+              "HUD xong là chạy — không còn đòi test phím", "");
+
+        var noHud = new SurvivalHudProfile { FoodRoi = roi, WaterRoi = roi };
+        Check(ref fail, !cfg.CanRun(noHud), "chưa hiệu chuẩn HUD → vẫn bị chặn", "");
+        Check(ref fail, !new SurvivalSettings { Enabled = false }.CanRun(hudReady),
+              "tắt tự ăn → không chạy", "");
+        Check(ref fail, !cfg.CanRun(null), "không có profile → không chạy", "");
         return fail;
     }
 

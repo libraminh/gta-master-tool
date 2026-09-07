@@ -239,9 +239,9 @@ internal sealed class NavBot
             {
                 if (_cfg.Survival.CanRun(_profile.SurvivalHud))
                     Emit($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}, " +
-                         $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% (đã hiệu chuẩn HUD + phím)");
+                         $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% (đã hiệu chuẩn HUD)");
                 else
-                    Emit("ăn uống: BẬT nhưng CHƯA hiệu chuẩn — không chạy mù; mở wizard và test phím trước");
+                    Emit("ăn uống: BẬT nhưng CHƯA hiệu chuẩn HUD — không chạy mù; khoanh HUD và chụp LOW/HIGH trước");
             }
 
             if (AfterMinigame) EnterPostMinigame(now0);
@@ -1342,10 +1342,10 @@ internal sealed class NavBot
         var kind = SurvivalGate.Decide(_job.Phase, _simplePhase, _cameraPhase, _ixPhase, panel, _eDown);
         if (kind == SurvivalActKind.Start && _cfg.Survival.CanRun(_profile.SurvivalHud)) return;
         _lastSurvivalWaitLog = now;
-        string why = _cfg.Survival.CanRun(_profile.SurvivalHud)
-            ? SurvivalGate.WaitReason(kind, r.FoodLow, r.WaterLow, r.FoodPct, r.WaterPct)
-            : SurvivalGate.WaitReason(kind, r.FoodLow, r.WaterLow, r.FoodPct, r.WaterPct)
-              + " — chưa hiệu chuẩn HUD/phím, không chạy mù";
+        string why = SurvivalGate.WaitReason(kind, r.FoodLow, r.WaterLow, r.FoodPct, r.WaterPct)
+                     + (_cfg.Survival.CanRun(_profile.SurvivalHud)
+                         ? ""
+                         : " — chưa hiệu chuẩn HUD, không chạy mù");
         Emit("[ĂN UỐNG] " + why);
     }
 
@@ -1392,14 +1392,14 @@ internal sealed class NavBot
 
         if (r.FoodLow && now >= _survivalFoodBlockUntil && now >= _survivalFoodRearmUntil)
         {
-            var slots = _cfg.Survival.KeysFor(food: true, _profile.SurvivalHud);
+            var slots = _cfg.Survival.KeysFor(food: true);
             if (slots.Length > 0)
                 items.Add(new SurvivalItem { Name = "BÁNH", Slots = slots, Baseline = r.FoodPct });
         }
 
         if (r.WaterLow && now >= _survivalWaterBlockUntil && now >= _survivalWaterRearmUntil)
         {
-            var slots = _cfg.Survival.KeysFor(food: false, _profile.SurvivalHud);
+            var slots = _cfg.Survival.KeysFor(food: false);
             if (slots.Length > 0)
                 items.Add(new SurvivalItem { Name = "NƯỚC", Slots = slots, Baseline = r.WaterPct });
         }
