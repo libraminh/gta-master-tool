@@ -181,6 +181,10 @@ internal sealed class NavBot
 
     private bool SevereTurnActive => _turnPhase is not null;
 
+    // bang nghe mo ngoai y muon — doc theo yeu cau, co nhip
+    private JobBoardInfo _boardProbe;
+    private double _boardProbeT;
+
     // lop san phim
     private double _lastShiftKeepaliveT;
 
@@ -368,10 +372,18 @@ internal sealed class NavBot
         snap = OverlayPrompt(snap, prompt);
 
         // Minigame > mọi thứ: panel mở vì bất kỳ lý do nào (kể cả reset nghề / SEARCH360) đều giao giải.
-        if (TryInterruptForPanel(now, focused, snap))
+        if (TryInterruptForPanel(now, focused, snap, out bool jobBoardOpen))
         {
             _arrived = true;
             return true;
+        }
+
+        // Bảng nghề thì KHÔNG giao cho bộ giải — chạy luôn luồng reset nghề rồi đi tiếp.
+        if (jobBoardOpen
+            && EnterJobBoardIfOpen(now, snap.Board ?? _boardProbe, "BẢNG NGHỀ MỞ NGOÀI Ý MUỐN"))
+        {
+            StatusLine(now, "[RESET NGHỀ] bảng nghề mở ngoài ý muốn", snap);
+            return false;
         }
 
         _capture.WantBoard = _job.Phase is not null
@@ -429,7 +441,7 @@ internal sealed class NavBot
             return false;
         }
 
-        if (PendingSettleStep(now, focused, snap, mini, out arrived))
+        if (PendingSettleStep(now, focused, snap, out arrived))
         {
             if (arrived) { _arrived = true; return true; }
             StatusLine(now, $"[PROMPT/E] pha={_ixPhase}", snap);
@@ -446,7 +458,7 @@ internal sealed class NavBot
             return false;
         }
 
-        if (PendingWatchPoll(now, focused, snap, mini, out arrived))
+        if (PendingWatchPoll(now, focused, snap, out arrived))
         {
             if (arrived) { _arrived = true; return true; }
             StatusLine(now, $"[PROMPT/E] pha={_ixPhase ?? _job.Phase}", snap);
@@ -775,10 +787,23 @@ internal sealed class NavBot
     /// <summary>
     /// Panel điện/nước hiện vì bất kỳ lý do nào — huỷ reset nghề/bữa/camera và giao bộ giải.
     /// Sau E cố ý: một hit là đủ. Đi nền: cổng 2–3 hit; bảng NPC (3 nút cyan) huỷ ứng viên.
+    ///
+    /// Trả true = có minigame, bot dừng và giao cho bộ giải. <paramref name="jobBoardOpen"/> báo ra ngoài
+    /// rằng panel đang mở là BẢNG NGHỀ — không được trả true cho ca đó vì chỗ gọi hiểu true là "đã tới".
     /// </summary>
-    private bool TryInterruptForPanel(double now, bool focused, WorldSnapshot snap)
+    private bool TryInterruptForPanel(double now, bool focused, WorldSnapshot snap, out bool jobBoardOpen)
     {
+        jobBoardOpen = false;
         if (!focused) return false;
+
+        // Chốt bảng nghề phải nằm TRƯỚC nhánh pendingE: nhánh đó return sớm, nên suốt 4,22 s sau E một
+        // false-positive của PanelVisible() vẫn kết thúc nav thành "Arrived" và giao bảng nghề cho bộ giải.
+        if (snap.Board is not null)
+        {
+            _panelInterrupt.Reset();
+            jobBoardOpen = true;
+            return false;
+        }
 
         bool pendingE = _ixPhase is NavInteraction.Settle or NavInteraction.Watch;
         if (pendingE)
@@ -787,14 +812,15 @@ internal sealed class NavBot
         if (now - _lastPanelPoll < NavTuning.PanelInterruptPollS) return false;
         _lastPanelPoll = now;
 
-        if (snap.Board is not null)
-        {
-            _panelInterrupt.Reset();
-            return false;
-        }
-
         bool visible = PanelVisible?.Invoke() == true;
-        if (!_panelInterrupt.Note(visible, npcBoard: false)) return false;
+
+        // Cổng ngắt chốt trong 0,25 s (2 hit × 125 ms) nên phải đọc bảng NGAY, bỏ qua nhịp — chậm một
+        // nhịp là bảng nghề bị giao cho bộ giải minigame. Kết quả được cache nên không tốn thêm lần đọc
+        // nào khi panel là minigame thật.
+        bool npcBoard = visible && ProbeJobBoard(now, force: true) is not null;
+        if (npcBoard) jobBoardOpen = true;
+
+        if (!_panelInterrupt.Note(visible, npcBoard)) return false;
         if (!_panelInterrupt.Confirmed(_job.Phase is not null)) return false;
         return HandoffAmbientPanel(now, afterE: false);
     }
@@ -821,13 +847,13 @@ internal sealed class NavBot
     }
 
     /// <summary>SETTLE: đứng yên nhận phím E. Hết settle mà chưa có bảng → WATCH (lai tiếp).</summary>
-    private bool PendingSettleStep(double now, bool focused, WorldSnapshot snap, NavFrame mini, out bool arrived)
+    private bool PendingSettleStep(double now, bool focused, WorldSnapshot snap, out bool arrived)
     {
         arrived = false;
         ReleaseETick(now);
         if (_ixPhase != NavInteraction.Settle) return false;
         if (PollPanel(now, focused)) { arrived = true; return HandoffAmbientPanel(now, afterE: true); }
-        if (TryAfterEJobBoard(now, snap, mini)) return true;
+        if (TryAfterEJobBoard(now, snap)) return true;
         if (now < _ixSettleUntil)
         {
             _input.StopMouseStream(immediate: true);
@@ -844,13 +870,19 @@ internal sealed class NavBot
     }
 
     /// <summary>WATCH: không chiếm frame — chỉ thăm dò panel hoặc hết hạn.</summary>
-    private bool PendingWatchPoll(double now, bool focused, WorldSnapshot snap, NavFrame mini, out bool arrived)
+    private bool PendingWatchPoll(double now, bool focused, WorldSnapshot snap, out bool arrived)
     {
         arrived = false;
         if (_ixPhase != NavInteraction.Watch) return false;
         if (PollPanel(now, focused)) { arrived = true; return HandoffAmbientPanel(now, afterE: true); }
-        if (TryAfterEJobBoard(now, snap, mini)) return true;
+        if (TryAfterEJobBoard(now, snap)) return true;
         if (now < _ixWatchUntil) return false;
+
+        // Đây là khoảnh khắc quyền đọc bảng chết: ClearPendingE() bên dưới tắt WantBoard, và từ đó
+        // snap.Board vĩnh viễn null. Đọc cưỡng bức một lần trước khi mất quyền — bảng nghề mở chậm hơn
+        // cửa sổ 4,22 s chính là ca làm bot đứng im vô hạn.
+        if (EnterJobBoardIfOpen(now, ProbeJobBoard(now, force: true), "MỞ NHẦM BẢNG NGHỀ")) return true;
+
         _promptConsumed = false;
         _eRetryUntil = now + NavTuning.InteractionRetryS;
         ClearPendingE();
@@ -886,32 +918,54 @@ internal sealed class NavBot
     /// Sau E: bảng nghề 3 nút cyan. Còn điểm vàng → ESC (đi ngang NPC). Mất vàng → vào WaitBoard.
     /// Đang recovery thì để JobRecovery giữ. Trả true = occupy tick (đã vào recovery).
     /// </summary>
-    private bool TryAfterEJobBoard(double now, WorldSnapshot snap, NavFrame mini)
+    private bool TryAfterEJobBoard(double now, WorldSnapshot snap) =>
+        EnterJobBoardIfOpen(now, snap.Board, "E MỞ BẢNG NGHỀ");
+
+    // ================================================================ bang nghe mo ngoai y muon
+
+    /// <summary>
+    /// Đọc bảng nghề theo yêu cầu, có nhịp <see cref="NavTuning.JobBoardProbeCooldownS"/>. Trong lúc chờ
+    /// nhịp thì trả lại kết quả gần nhất nếu còn hiệu lực.
+    /// <paramref name="force"/> bỏ qua nhịp — bắt buộc ở chỗ phải thắng cuộc đua chốt panel 0,25 s.
+    /// </summary>
+    private JobBoardInfo ProbeJobBoard(double now, bool force)
     {
-        if (snap.Board is null) return false;
-        bool inJob = _job.Phase is not null;
-        bool yellow = YellowDotDetector.Detect(mini, _s, _originX, _originY).Count > 0;
-
-        if (NavInteraction.AfterEEscAccidentalNpc(inJob, yellow))
-        {
-            TapEscWorld("BẢNG NGHỀ NHƯNG CÒN ĐIỂM VÀNG — đóng, không nghỉ việc");
-            ClearPendingE();
-            _promptConsumed = true;
-            return false;
-        }
-        if (!NavInteraction.AfterEEnterOpenBoard(inJob, yellow)) return false;
-
-        _job.EnterAtOpenBoard(now, "E MỞ BẢNG NGHỀ");
-        ClearPendingE();
-        return true;
+        if (!force && now - _boardProbeT < NavTuning.JobBoardProbeCooldownS)
+            return now - _boardProbeT <= NavTuning.JobBoardProbeCacheS ? _boardProbe : null;
+        _boardProbeT = now;
+        _boardProbe = _capture.ReadBoardNow(now);
+        return _boardProbe;
     }
 
-    private void TapEscWorld(string label)
+    /// <summary>
+    /// Bảng nghề đang mở mà bot chưa ở trong luồng reset nghề → chạy luôn luồng đó (nghỉ việc → xin lại →
+    /// về điểm vàng). Không phân biệt "mở nhầm" hay "cố ý": vào luồng là đường đã được thử kỹ, và
+    /// <c>OnJobFinished</c> ở cuối luồng tự dựng KHIÊN E NPC nên bot không bấm E lại vào đúng NPC đó.
+    ///
+    /// Trả true = đã vào luồng, chỗ gọi phải chiếm tick.
+    /// </summary>
+    private bool EnterJobBoardIfOpen(double now, JobBoardInfo info, string reason)
     {
-        _input.ForceKeyUp(NavKey.Esc, 2);
-        _input.SendKeyEvent(NavKey.Esc, up: false);
-        _input.SendKeyEvent(NavKey.Esc, up: true);
-        Emit("[ESC] " + label);
+        if (info is null || _job.Phase is not null) return false;
+
+        // Khiên đang dựng nghĩa là VỪA reset nghề xong — đừng reset lần nữa, đi tiếp. Chốt này cũng bù
+        // cho việc EnterAtOpenBoard không đi qua JobRecoveryCooldownS (ResetSession không chạm _lastFinish).
+        if (_postJobIgnoreNpcE) return false;
+
+        // Hai chủ frame dưới đây giữ tick vô điều kiện và sẽ bỏ đói _job.Step quá hạn JobBoardOpenRetryS.
+        CancelSurvival(now, "bảng nghề mở");
+        AbortSevereTurn("bảng nghề mở");
+
+        _cameraPhase = null;
+        _cameraWaitUntil = 0;
+        _wReclaimPending = false;
+        _panelInterrupt.Reset();
+        _input.StopMouseStream(immediate: true);
+        ReleaseETick(double.MaxValue);
+        _input.ReleaseOwnedOnce();
+        ClearPendingE();
+        _job.EnterAtOpenBoard(now, reason);
+        return true;
     }
 
     private void ResumeWorld(double now, string reason)
@@ -1630,6 +1684,17 @@ internal sealed class NavBot
         if (progress) { _wdLastProgressT = now; return false; }
 
         double idle = now - _wdLastProgressT;
+
+        // Đứng một chỗ tuy vẫn tưởng đang đi = dấu hiệu có panel chặn. Đây là đường cứu chính cho bảng
+        // nghề mở ngoài cửa sổ sau E: bắt trong ~5 s thay vì chờ tới lần khởi động lại 30 s (mà lần đó
+        // cũng không đóng được bảng, chỉ bấm W lại).
+        if (idle >= NavTuning.JobBoardProbeIdleS
+            && EnterJobBoardIfOpen(now, ProbeJobBoard(now, force: false), $"BẢNG NGHỀ CHẶN ĐƯỜNG {idle:F1}s"))
+        {
+            AutorunResetTimer(now);
+            return true;
+        }
+
         if (idle >= NavTuning.AutorunIdleWatchdogS)
         {
             AutorunRestart(now, $"KHÔNG TIẾN {idle:F1}s");
@@ -1734,6 +1799,15 @@ internal sealed class NavBot
             _watchStarted = now;
             Emit($"[WATCH 30s] WORLD rảnh lại → tính lại {timeout:F0}s lái thật trước khi khởi động lại");
             return false;
+        }
+
+        // Trước khi lùi/quay/khởi động lại: 30 s không có minigame mới cũng là dấu hiệu có panel chặn.
+        // Phải return NGAY nếu vào luồng — unsafeNow đã tính ở trên nên chạy tiếp sẽ vừa reset nghề vừa
+        // quay 180° trong cùng một tick.
+        if (EnterJobBoardIfOpen(now, ProbeJobBoard(now, force: false), "BẢNG NGHỀ CHẶN 30s"))
+        {
+            _watchStarted = now;
+            return true;
         }
 
         int severeThreshold = Math.Max(2, NavTuning.PostMinigameRestartSevereAfterFailedRestarts);

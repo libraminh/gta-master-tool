@@ -416,6 +416,18 @@ internal static class NavTuning
     public const int JobRecoveryAfterSearchRounds = 3;
     public const double JobRecoveryBlindTriggerS = 6.0;
     public const double JobRecoveryCooldownS = 20.0;
+
+    /// <summary>
+    /// Nhịp tối thiểu giữa hai lần đọc bảng nghề theo yêu cầu (<c>NavCapture.ReadBoardNow</c>) — mỗi lần
+    /// tốn ~15–25 ms trên tick điều hướng nên không được gọi liên tục.
+    /// </summary>
+    public const double JobBoardProbeCooldownS = 2.5;
+
+    /// <summary>Hiệu lực của kết quả đọc gần nhất, dùng cho cờ <c>npcBoard</c> của cổng ngắt panel.</summary>
+    public const double JobBoardProbeCacheS = 3.0;
+
+    /// <summary>Không tiến quá lâu thì nghi có panel chặn → đọc bảng nghề. Ngắn hơn nhiều watchdog 30 s.</summary>
+    public const double JobBoardProbeIdleS = 5.0;
     public const double JobRecoveryTargetConf = 0.42;
     public const double JobRecoveryWorldConf = 0.50;
     public const int JobRecoveryPromptFrames = 4;

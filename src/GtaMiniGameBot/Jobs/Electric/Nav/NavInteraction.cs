@@ -109,16 +109,9 @@ internal static class NavInteraction
         return elapsed >= noPromptTimeoutS;
     }
 
-    /// <summary>
-    /// Sau E nhanh: bảng nghề mở trong khi minimap còn điểm vàng → đi ngang NPC, ESC.
-    /// Đang reset nghề thì JobRecovery giữ bảng.
-    /// </summary>
-    public static bool AfterEEscAccidentalNpc(bool inJobRecovery, bool yellowVisible) =>
-        !inJobRecovery && yellowVisible;
-
-    /// <summary>Bảng nghề mở, không còn điểm vàng, chưa trong recovery → vào WaitBoard.</summary>
-    public static bool AfterEEnterOpenBoard(bool inJobRecovery, bool yellowVisible) =>
-        !inJobRecovery && !yellowVisible;
+    // Bo doi AfterEEscAccidentalNpc/AfterEEnterOpenBoard: chung quyet dinh theo "minimap con diem vang
+    // hay khong", ma panel bang nghe che kin minimap nen yellowVisible luon false — nhanh ESC la code
+    // chet. Gio bang nghe mo ngoai y muon thi chay luon luong reset nghe, xem NavBot.EnterJobBoardIfOpen.
 }
 
 /// <summary>

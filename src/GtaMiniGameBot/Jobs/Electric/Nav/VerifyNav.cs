@@ -632,16 +632,6 @@ internal static class VerifyNav
                   clear, NavTuning.JobPostRehireMinGuardS, NavTuning.JobPostRehireNoPromptTimeoutS),
               "chưa thấy + timeout + đủ frame → gỡ khiên", "");
 
-        Check(ref fail, NavInteraction.AfterEEscAccidentalNpc(false, true),
-              "sau E: bảng nghề + còn điểm vàng → ESC", "");
-        Check(ref fail, !NavInteraction.AfterEEscAccidentalNpc(true, true),
-              "sau E: đang reset nghề → không ESC nhầm", "");
-        Check(ref fail, NavInteraction.AfterEEnterOpenBoard(false, false),
-              "sau E: bảng nghề + mất vàng → vào WaitBoard", "");
-        Check(ref fail, !NavInteraction.AfterEEnterOpenBoard(true, false),
-              "sau E: đang reset nghề → JobRecovery giữ bảng", "");
-        Check(ref fail, !NavInteraction.AfterEEnterOpenBoard(false, true),
-              "sau E: còn điểm vàng → không nghỉ việc", "");
         return fail;
     }
 
@@ -733,6 +723,31 @@ internal static class VerifyNav
             Box(bmp, 500, 650, 200, 50, Cyan);
             Box(bmp, 800, 650, 200, 50, Cyan);
             Check(ref fail, JobBoardReader.Read(Frame(bmp), S1) is null, "hai nút → chưa phải bảng", "");
+        }
+
+        // Blob rac cyan BEN TRAI ba nut: ban cu lay 3 khoi trai nhat nen vua lat State vua dich toa do
+        // click sang nut 2. Chon theo hang phai giu dung ba nut that.
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 250, 780, 200, 50, Cyan);                 // artwork, khác hàng
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Box(bmp, 1100, 650, 190, 50, Cyan);
+            var b = JobBoardReader.Read(Frame(bmp), S1);
+            Check(ref fail, b is not null && b.State == "EMPLOYED" && Math.Abs(b.Cx - 1195) <= 2,
+                  "blob rác khác hàng → vẫn khoá đúng ba nút",
+                  b is null ? "null" : $"{b.State} ratio={b.Ratio:F3} ({b.Cx},{b.Cy})");
+        }
+
+        // Bon khoi CUNG hang thi khong doan bua — tha khong nhan con hon bam sai nut.
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 300, 650, 150, 50, Cyan);                 // trong ROI, cách nút 1 đủ xa để không dính
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Box(bmp, 1100, 650, 190, 50, Cyan);
+            Check(ref fail, JobBoardReader.Read(Frame(bmp), S1) is null,
+                  "bốn khối cùng hàng → không nhận, tránh bấm sai nút", "");
         }
         return fail;
     }

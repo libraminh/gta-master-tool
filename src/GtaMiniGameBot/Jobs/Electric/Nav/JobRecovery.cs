@@ -72,6 +72,29 @@ internal static class JobBoardReader
         rects.Sort((a, b) => a.Box.X.CompareTo(b.Box.X));
         if (rects.Count < 3) return null;
 
+        // Hơn 3 khối lọt lưới nghĩa là có mảng artwork cyan cùng cỡ nút (panel thật có khối teal lớn nửa
+        // trái nằm trong ROI). Bản cũ cứ lấy 3 khối TRÁI NHẤT, nên một khối rác bên trái sẽ đẩy
+        // rects[1]/rects[2] sang nút 1/nút 2 — vừa lật State vừa dịch toạ độ click sang nút khác.
+        // Ba nút thật luôn cùng một hàng, nên chọn theo hàng; hàng không đúng 3 khối thì thà không nhận.
+        if (rects.Count > 3)
+        {
+            int rowTol = Math.Max(4, (int)(0.01 * h));
+            List<Blob> row = null;
+            foreach (var seed in rects)
+            {
+                int cy = seed.Box.Y + seed.Box.Height / 2;
+                var same = rects.FindAll(r => Math.Abs(r.Box.Y + r.Box.Height / 2 - cy) <= rowTol);
+                if (same.Count != 3) continue;
+                int hMin = int.MaxValue, hMax = 0;
+                foreach (var r in same) { hMin = Math.Min(hMin, r.Box.Height); hMax = Math.Max(hMax, r.Box.Height); }
+                if (hMax > hMin * 1.35) continue;              // ba nút cao xấp xỉ nhau
+                row = same;
+                break;
+            }
+            if (row is null) return null;
+            rects = row;
+        }
+
         int w2 = rects[1].Box.Width;
         var r3 = rects[2].Box;
         double ratio = r3.Width / Math.Max(1.0, w2);

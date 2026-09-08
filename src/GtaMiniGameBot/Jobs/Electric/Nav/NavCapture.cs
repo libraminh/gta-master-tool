@@ -182,6 +182,21 @@ internal sealed class NavCapture : IDisposable
         lock (_frameLock) return Obstacle.AnalyzeSide(WorldFrame(now), now, out note);
     }
 
+    /// <summary>
+    /// Đọc bảng nghề trên khung world mới nhất, THEO YÊU CẦU — không phụ thuộc <see cref="WantBoard"/>.
+    ///
+    /// Vì sao cần: <see cref="WantBoard"/> chỉ bật trong cửa sổ 4,22 s sau khi bấm E (và suốt lúc reset
+    /// nghề), nên bảng nghề mở ngoài cửa sổ đó là vô hình với bot — nhân vật đứng cứng trong panel mà bộ
+    /// lái vẫn bấm W. Hàm này cho gọi tại các mốc nghi ngờ mà không phải thêm writer thứ ba cho cờ đó.
+    ///
+    /// Cùng khuôn <see cref="AnalyzeObstacleSide"/>: không chụp màn thêm, đọc buffer mới nhất của luồng
+    /// quét dưới khoá khung, tốn ~15–25 ms nên PHẢI có nhịp ở chỗ gọi, đừng gọi mỗi tick.
+    /// </summary>
+    public JobBoardInfo ReadBoardNow(double now)
+    {
+        lock (_frameLock) return JobBoardReader.Read(WorldFrame(now), _s);
+    }
+
     public void Dispose()
     {
         StopScanner();
