@@ -80,6 +80,7 @@ internal static class VerifyNav
         fail += Ket1Cases();
         fail += MouseCases();
         fail += CameraResetCases();
+        fail += RestartTurnCases();
         fail += WatchdogCases();
         fail += PromptCases();
         fail += InteractionCases();
@@ -386,6 +387,87 @@ internal static class VerifyNav
         return fail;
     }
 
+    /// <summary>Chuỗi thoát kẹt của chu kỳ NẶNG — <see cref="NavRestartTurn"/>.</summary>
+    private static int RestartTurnCases()
+    {
+        int fail = 0;
+        const double rate = NavTuning.PostMinigameRestartYawRateCps;
+
+        // ---- thu tu pha: mot tick thieu thi dung nguyen, du thi chuyen ----
+        long target = NavRestartTurn.CountsForDegrees(45.0);
+        double cap = NavRestartTurn.HardCapS(45.0, rate, 4.0);
+        string phase = NavRestartTurn.Backout;
+        var seen = new List<string> { phase };
+        double[] hold = { NavRestartTurn.BackoutS, NavTuning.CameraResetReacquireSettleS, 0.0, NavRestartTurn.ClearForwardS };
+        for (int i = 0; i < hold.Length; i++)
+        {
+            // Pha YAW chot bang count chu khong bang thoi gian: o buoc do ep count du/thieu.
+            bool yaw = phase == NavRestartTurn.Yaw;
+            long few = yaw ? target - 1 : 0, enough = yaw ? target : 0;
+            Check(ref fail, NavRestartTurn.Advance(phase, hold[i] - 0.001, few, target, false, cap) == phase,
+                  $"chưa đủ {phase} thì đứng nguyên", "");
+            phase = NavRestartTurn.Advance(phase, hold[i], enough, target, false, cap);
+            seen.Add(phase);
+        }
+        Check(ref fail, string.Join(">", seen) == string.Join(">", NavRestartTurn.Sequence),
+              "lùi S → reacquire → quay → chạy thẳng → xong", string.Join(">", seen));
+
+        // ---- ba loi ra cua pha quay ----
+        Check(ref fail, NavRestartTurn.Advance(NavRestartTurn.Yaw, 0.1, target, target, false, cap) == NavRestartTurn.ClearForward,
+              "đủ count thì thoát pha quay", "");
+        Check(ref fail, NavRestartTurn.Advance(NavRestartTurn.Yaw, 0.1, 5, target, true, cap) == NavRestartTurn.ClearForward,
+              "tắc (không tăng count) thì bỏ pha quay", "");
+        Check(ref fail, NavRestartTurn.Advance(NavRestartTurn.Yaw, cap, 5, target, false, cap) == NavRestartTurn.ClearForward,
+              "hết cap thì bỏ pha quay", $"cap={cap:F2}s");
+
+        // ---- thang goc: dao ben, bien do khong giam, lap dung 8 o ----
+        var ladder = NavTuning.PostMinigameRestartYawLadderDeg;
+        bool alternating = true, growing = true, wraps = true;
+        for (int i = 0; i < ladder.Length; i++)
+        {
+            double a = NavRestartTurn.AngleForCycle(i);
+            if (i > 0 && Math.Sign(a) == Math.Sign(NavRestartTurn.AngleForCycle(i - 1))) alternating = false;
+            if (i > 0 && Math.Abs(a) < Math.Abs(NavRestartTurn.AngleForCycle(i - 1))) growing = false;
+        }
+        for (int i = 0; i <= 20; i++)
+            if (NavRestartTurn.AngleForCycle(i) != ladder[i % ladder.Length]) wraps = false;
+        Check(ref fail, alternating, "thang góc đảo bên mỗi chu kỳ", string.Join(",", ladder));
+        Check(ref fail, growing, "biên độ thang góc không giảm", string.Join(",", ladder));
+        Check(ref fail, wraps && NavRestartTurn.AngleForCycle(-1) == ladder[^1],
+              "thang góc lặp vòng, chịu được index âm", $"{NavRestartTurn.AngleForCycle(20):+0;-0}");
+        Check(ref fail, NavRestartTurn.CountsForDegrees(-90.0) == NavRestartTurn.CountsForDegrees(90.0)
+                        && NavRestartTurn.CountsForDegrees(90.0) >= (long)(90 * 16.89),
+              "count mục tiêu lấy trị tuyệt đối", $"{NavRestartTurn.CountsForDegrees(-90.0)}");
+
+        // ---- CAP PHAI DU CHO MOI O THANG, O MOI HE SO CHUOT ----
+        // Day la ca chan dung lop loi ma KET1 dang mac: dich 168 do voi cap 950 ms o 420 cps chi quay
+        // noi ~94 do. Cap phai SUY RA tu hieu chuan, khong duoc la so literal.
+        foreach (double mult in new[] { 0.25, 1.0, 4.0, 20.0 })
+        {
+            foreach (double deg in ladder)
+            {
+                double capS = NavRestartTurn.HardCapS(deg, rate, mult);
+                int sent = NavInput.SimulateXCounts(rate, capS, mult);
+                long need = NavRestartTurn.CountsForDegrees(deg);
+                Check(ref fail, sent >= need,
+                      $"cap đủ quay {deg:+0;-0}° ở hệ số chuột ×{mult:F2}",
+                      $"{sent}/{need} count trong {capS:F2}s");
+            }
+        }
+
+        // ---- hieu chuan phai khop con so ghi trong InputSender ----
+        Check(ref fail, Math.Abs(NavTuning.MouseCountsPerDegree - 16.89) < 1e-9,
+              "hiệu chuẩn 16.89 count/độ (đo 25/08)", $"{NavTuning.MouseCountsPerDegree:F2}");
+        Check(ref fail, rate > 0 && rate <= 600,
+              "tốc độ quay nằm trong dải KET1, không dùng 1850 cps của SEARCH360", $"{rate:F0} cps");
+        // 45 do o 1850 cps chi mat ~0.10 s — ngan hon ca ramp XTauS = 0.050, ly do khong dung con do.
+        double fastS = NavRestartTurn.CountsForDegrees(45.0) / (NavTuning.Lost360RateCps * 4.0);
+        Check(ref fail, fastS < 0.12,
+              "ghi nhận: 1850 cps quay 45° ngắn hơn ramp nên bị loại", $"{fastS * 1000:F0}ms");
+
+        return fail;
+    }
+
     private static int WatchdogCases()
     {
         int fail = 0;
@@ -550,16 +632,6 @@ internal static class VerifyNav
                   clear, NavTuning.JobPostRehireMinGuardS, NavTuning.JobPostRehireNoPromptTimeoutS),
               "chưa thấy + timeout + đủ frame → gỡ khiên", "");
 
-        Check(ref fail, NavInteraction.AfterEEscAccidentalNpc(false, true),
-              "sau E: bảng nghề + còn điểm vàng → ESC", "");
-        Check(ref fail, !NavInteraction.AfterEEscAccidentalNpc(true, true),
-              "sau E: đang reset nghề → không ESC nhầm", "");
-        Check(ref fail, NavInteraction.AfterEEnterOpenBoard(false, false),
-              "sau E: bảng nghề + mất vàng → vào WaitBoard", "");
-        Check(ref fail, !NavInteraction.AfterEEnterOpenBoard(true, false),
-              "sau E: đang reset nghề → JobRecovery giữ bảng", "");
-        Check(ref fail, !NavInteraction.AfterEEnterOpenBoard(false, true),
-              "sau E: còn điểm vàng → không nghỉ việc", "");
         return fail;
     }
 
@@ -651,6 +723,31 @@ internal static class VerifyNav
             Box(bmp, 500, 650, 200, 50, Cyan);
             Box(bmp, 800, 650, 200, 50, Cyan);
             Check(ref fail, JobBoardReader.Read(Frame(bmp), S1) is null, "hai nút → chưa phải bảng", "");
+        }
+
+        // Blob rac cyan BEN TRAI ba nut: ban cu lay 3 khoi trai nhat nen vua lat State vua dich toa do
+        // click sang nut 2. Chon theo hang phai giu dung ba nut that.
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 250, 780, 200, 50, Cyan);                 // artwork, khác hàng
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Box(bmp, 1100, 650, 190, 50, Cyan);
+            var b = JobBoardReader.Read(Frame(bmp), S1);
+            Check(ref fail, b is not null && b.State == "EMPLOYED" && Math.Abs(b.Cx - 1195) <= 2,
+                  "blob rác khác hàng → vẫn khoá đúng ba nút",
+                  b is null ? "null" : $"{b.State} ratio={b.Ratio:F3} ({b.Cx},{b.Cy})");
+        }
+
+        // Bon khoi CUNG hang thi khong doan bua — tha khong nhan con hon bam sai nut.
+        using (var bmp = NewFrame())
+        {
+            Box(bmp, 300, 650, 150, 50, Cyan);                 // trong ROI, cách nút 1 đủ xa để không dính
+            Box(bmp, 500, 650, 200, 50, Cyan);
+            Box(bmp, 800, 650, 200, 50, Cyan);
+            Box(bmp, 1100, 650, 190, 50, Cyan);
+            Check(ref fail, JobBoardReader.Read(Frame(bmp), S1) is null,
+                  "bốn khối cùng hàng → không nhận, tránh bấm sai nút", "");
         }
         return fail;
     }

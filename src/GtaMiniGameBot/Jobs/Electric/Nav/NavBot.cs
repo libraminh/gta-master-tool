@@ -168,9 +168,22 @@ internal sealed class NavBot
     private int _wdRestartCount;
 
     // watch 30 s sau minigame
-    private bool _watchActive, _watchPending, _backoutActive;
-    private double _watchStarted, _backoutUntil;
+    private bool _watchActive, _watchPending;
+    private double _watchStarted;
     private int _watchCount;
+
+    // chuoi thoat ket cua chu ky NANG (NavRestartTurn) — mot khai niem duy nhat thay cho co _backoutActive
+    // cu, vi co do phai nho xoa o 4 noi va nho them vao 3 danh sach gate.
+    private string _turnPhase;
+    private double _turnPhaseStart, _turnCapS, _turnLastGainT, _turnFrozenAt, _turnDeg;
+    private int _turnSign;
+    private long _turnMark, _turnCountsTarget, _turnBestCounts;
+
+    private bool SevereTurnActive => _turnPhase is not null;
+
+    // bang nghe mo ngoai y muon — doc theo yeu cau, co nhip
+    private JobBoardInfo _boardProbe;
+    private double _boardProbeT;
 
     // lop san phim
     private double _lastShiftKeepaliveT;
@@ -230,9 +243,9 @@ internal sealed class NavBot
             {
                 if (_cfg.Survival.CanRun(_profile.SurvivalHud))
                     Emit($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}, " +
-                         $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% (đã hiệu chuẩn HUD + phím)");
+                         $"dưới {NavTuning.SurvivalLowThresholdPct:F0}% (đã hiệu chuẩn HUD)");
                 else
-                    Emit("ăn uống: BẬT nhưng CHƯA hiệu chuẩn — không chạy mù; mở wizard và test phím trước");
+                    Emit("ăn uống: BẬT nhưng CHƯA hiệu chuẩn HUD — không chạy mù; khoanh HUD và chụp LOW/HIGH trước");
             }
 
             if (AfterMinigame) EnterPostMinigame(now0);
@@ -359,17 +372,25 @@ internal sealed class NavBot
         snap = OverlayPrompt(snap, prompt);
 
         // Minigame > mọi thứ: panel mở vì bất kỳ lý do nào (kể cả reset nghề / SEARCH360) đều giao giải.
-        if (TryInterruptForPanel(now, focused, snap))
+        if (TryInterruptForPanel(now, focused, snap, out bool jobBoardOpen))
         {
             _arrived = true;
             return true;
         }
 
+        // Bảng nghề thì KHÔNG giao cho bộ giải — chạy luôn luồng reset nghề rồi đi tiếp.
+        if (jobBoardOpen
+            && EnterJobBoardIfOpen(now, snap.Board ?? _boardProbe, "BẢNG NGHỀ MỞ NGOÀI Ý MUỐN"))
+        {
+            StatusLine(now, "[RESET NGHỀ] bảng nghề mở ngoài ý muốn", snap);
+            return false;
+        }
+
         _capture.WantBoard = _job.Phase is not null
                              || _ixPhase is NavInteraction.Settle or NavInteraction.Watch;
 
-        // Backout S nghiem trong cua watch 30 s so huu input truoc moi thu.
-        if (_backoutActive && RestartWatchStep(now, focused)) return false;
+        // Chuoi thoat ket cua chu ky NANG (lui S -> quay ngang -> chay thang) so huu input truoc moi thu.
+        if (SevereTurnActive && RestartWatchStep(now, focused)) return false;
 
         // Bua an DANG DO dung ngay day, tren ca SimpleFlow — xem chu thich SurvivalOwnStep.
         if (SurvivalOwnStep(now, focused))
@@ -420,7 +441,7 @@ internal sealed class NavBot
             return false;
         }
 
-        if (PendingSettleStep(now, focused, snap, mini, out arrived))
+        if (PendingSettleStep(now, focused, snap, out arrived))
         {
             if (arrived) { _arrived = true; return true; }
             StatusLine(now, $"[PROMPT/E] pha={_ixPhase}", snap);
@@ -437,7 +458,7 @@ internal sealed class NavBot
             return false;
         }
 
-        if (PendingWatchPoll(now, focused, snap, mini, out arrived))
+        if (PendingWatchPoll(now, focused, snap, out arrived))
         {
             if (arrived) { _arrived = true; return true; }
             StatusLine(now, $"[PROMPT/E] pha={_ixPhase ?? _job.Phase}", snap);
@@ -455,7 +476,7 @@ internal sealed class NavBot
         // Đang thấy [E] TƯƠNG TÁC thì không đi reset nghề — thử bấm E trước.
         if (snap.PromptVisible)
             _job.ResetBlind();
-        else if (_job.ShouldStart(now, target, world, candidates.Count, _backoutActive))
+        else if (_job.ShouldStart(now, target, world, candidates.Count, SevereTurnActive))
         {
             _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
             if (_job.Step(mini, snap, now, focused)) return false;
@@ -766,10 +787,23 @@ internal sealed class NavBot
     /// <summary>
     /// Panel điện/nước hiện vì bất kỳ lý do nào — huỷ reset nghề/bữa/camera và giao bộ giải.
     /// Sau E cố ý: một hit là đủ. Đi nền: cổng 2–3 hit; bảng NPC (3 nút cyan) huỷ ứng viên.
+    ///
+    /// Trả true = có minigame, bot dừng và giao cho bộ giải. <paramref name="jobBoardOpen"/> báo ra ngoài
+    /// rằng panel đang mở là BẢNG NGHỀ — không được trả true cho ca đó vì chỗ gọi hiểu true là "đã tới".
     /// </summary>
-    private bool TryInterruptForPanel(double now, bool focused, WorldSnapshot snap)
+    private bool TryInterruptForPanel(double now, bool focused, WorldSnapshot snap, out bool jobBoardOpen)
     {
+        jobBoardOpen = false;
         if (!focused) return false;
+
+        // Chốt bảng nghề phải nằm TRƯỚC nhánh pendingE: nhánh đó return sớm, nên suốt 4,22 s sau E một
+        // false-positive của PanelVisible() vẫn kết thúc nav thành "Arrived" và giao bảng nghề cho bộ giải.
+        if (snap.Board is not null)
+        {
+            _panelInterrupt.Reset();
+            jobBoardOpen = true;
+            return false;
+        }
 
         bool pendingE = _ixPhase is NavInteraction.Settle or NavInteraction.Watch;
         if (pendingE)
@@ -778,14 +812,15 @@ internal sealed class NavBot
         if (now - _lastPanelPoll < NavTuning.PanelInterruptPollS) return false;
         _lastPanelPoll = now;
 
-        if (snap.Board is not null)
-        {
-            _panelInterrupt.Reset();
-            return false;
-        }
-
         bool visible = PanelVisible?.Invoke() == true;
-        if (!_panelInterrupt.Note(visible, npcBoard: false)) return false;
+
+        // Cổng ngắt chốt trong 0,25 s (2 hit × 125 ms) nên phải đọc bảng NGAY, bỏ qua nhịp — chậm một
+        // nhịp là bảng nghề bị giao cho bộ giải minigame. Kết quả được cache nên không tốn thêm lần đọc
+        // nào khi panel là minigame thật.
+        bool npcBoard = visible && ProbeJobBoard(now, force: true) is not null;
+        if (npcBoard) jobBoardOpen = true;
+
+        if (!_panelInterrupt.Note(visible, npcBoard)) return false;
         if (!_panelInterrupt.Confirmed(_job.Phase is not null)) return false;
         return HandoffAmbientPanel(now, afterE: false);
     }
@@ -798,7 +833,7 @@ internal sealed class NavBot
         _cameraPhase = null;
         _cameraWaitUntil = 0;
         _wReclaimPending = false;
-        _backoutActive = false;
+        ClearSevereTurn();
         _watchActive = false;
         _watchPending = false;
         _input.StopMouseStream(immediate: true);
@@ -812,13 +847,13 @@ internal sealed class NavBot
     }
 
     /// <summary>SETTLE: đứng yên nhận phím E. Hết settle mà chưa có bảng → WATCH (lai tiếp).</summary>
-    private bool PendingSettleStep(double now, bool focused, WorldSnapshot snap, NavFrame mini, out bool arrived)
+    private bool PendingSettleStep(double now, bool focused, WorldSnapshot snap, out bool arrived)
     {
         arrived = false;
         ReleaseETick(now);
         if (_ixPhase != NavInteraction.Settle) return false;
         if (PollPanel(now, focused)) { arrived = true; return HandoffAmbientPanel(now, afterE: true); }
-        if (TryAfterEJobBoard(now, snap, mini)) return true;
+        if (TryAfterEJobBoard(now, snap)) return true;
         if (now < _ixSettleUntil)
         {
             _input.StopMouseStream(immediate: true);
@@ -835,13 +870,19 @@ internal sealed class NavBot
     }
 
     /// <summary>WATCH: không chiếm frame — chỉ thăm dò panel hoặc hết hạn.</summary>
-    private bool PendingWatchPoll(double now, bool focused, WorldSnapshot snap, NavFrame mini, out bool arrived)
+    private bool PendingWatchPoll(double now, bool focused, WorldSnapshot snap, out bool arrived)
     {
         arrived = false;
         if (_ixPhase != NavInteraction.Watch) return false;
         if (PollPanel(now, focused)) { arrived = true; return HandoffAmbientPanel(now, afterE: true); }
-        if (TryAfterEJobBoard(now, snap, mini)) return true;
+        if (TryAfterEJobBoard(now, snap)) return true;
         if (now < _ixWatchUntil) return false;
+
+        // Đây là khoảnh khắc quyền đọc bảng chết: ClearPendingE() bên dưới tắt WantBoard, và từ đó
+        // snap.Board vĩnh viễn null. Đọc cưỡng bức một lần trước khi mất quyền — bảng nghề mở chậm hơn
+        // cửa sổ 4,22 s chính là ca làm bot đứng im vô hạn.
+        if (EnterJobBoardIfOpen(now, ProbeJobBoard(now, force: true), "MỞ NHẦM BẢNG NGHỀ")) return true;
+
         _promptConsumed = false;
         _eRetryUntil = now + NavTuning.InteractionRetryS;
         ClearPendingE();
@@ -877,32 +918,54 @@ internal sealed class NavBot
     /// Sau E: bảng nghề 3 nút cyan. Còn điểm vàng → ESC (đi ngang NPC). Mất vàng → vào WaitBoard.
     /// Đang recovery thì để JobRecovery giữ. Trả true = occupy tick (đã vào recovery).
     /// </summary>
-    private bool TryAfterEJobBoard(double now, WorldSnapshot snap, NavFrame mini)
+    private bool TryAfterEJobBoard(double now, WorldSnapshot snap) =>
+        EnterJobBoardIfOpen(now, snap.Board, "E MỞ BẢNG NGHỀ");
+
+    // ================================================================ bang nghe mo ngoai y muon
+
+    /// <summary>
+    /// Đọc bảng nghề theo yêu cầu, có nhịp <see cref="NavTuning.JobBoardProbeCooldownS"/>. Trong lúc chờ
+    /// nhịp thì trả lại kết quả gần nhất nếu còn hiệu lực.
+    /// <paramref name="force"/> bỏ qua nhịp — bắt buộc ở chỗ phải thắng cuộc đua chốt panel 0,25 s.
+    /// </summary>
+    private JobBoardInfo ProbeJobBoard(double now, bool force)
     {
-        if (snap.Board is null) return false;
-        bool inJob = _job.Phase is not null;
-        bool yellow = YellowDotDetector.Detect(mini, _s, _originX, _originY).Count > 0;
-
-        if (NavInteraction.AfterEEscAccidentalNpc(inJob, yellow))
-        {
-            TapEscWorld("BẢNG NGHỀ NHƯNG CÒN ĐIỂM VÀNG — đóng, không nghỉ việc");
-            ClearPendingE();
-            _promptConsumed = true;
-            return false;
-        }
-        if (!NavInteraction.AfterEEnterOpenBoard(inJob, yellow)) return false;
-
-        _job.EnterAtOpenBoard(now, "E MỞ BẢNG NGHỀ");
-        ClearPendingE();
-        return true;
+        if (!force && now - _boardProbeT < NavTuning.JobBoardProbeCooldownS)
+            return now - _boardProbeT <= NavTuning.JobBoardProbeCacheS ? _boardProbe : null;
+        _boardProbeT = now;
+        _boardProbe = _capture.ReadBoardNow(now);
+        return _boardProbe;
     }
 
-    private void TapEscWorld(string label)
+    /// <summary>
+    /// Bảng nghề đang mở mà bot chưa ở trong luồng reset nghề → chạy luôn luồng đó (nghỉ việc → xin lại →
+    /// về điểm vàng). Không phân biệt "mở nhầm" hay "cố ý": vào luồng là đường đã được thử kỹ, và
+    /// <c>OnJobFinished</c> ở cuối luồng tự dựng KHIÊN E NPC nên bot không bấm E lại vào đúng NPC đó.
+    ///
+    /// Trả true = đã vào luồng, chỗ gọi phải chiếm tick.
+    /// </summary>
+    private bool EnterJobBoardIfOpen(double now, JobBoardInfo info, string reason)
     {
-        _input.ForceKeyUp(NavKey.Esc, 2);
-        _input.SendKeyEvent(NavKey.Esc, up: false);
-        _input.SendKeyEvent(NavKey.Esc, up: true);
-        Emit("[ESC] " + label);
+        if (info is null || _job.Phase is not null) return false;
+
+        // Khiên đang dựng nghĩa là VỪA reset nghề xong — đừng reset lần nữa, đi tiếp. Chốt này cũng bù
+        // cho việc EnterAtOpenBoard không đi qua JobRecoveryCooldownS (ResetSession không chạm _lastFinish).
+        if (_postJobIgnoreNpcE) return false;
+
+        // Hai chủ frame dưới đây giữ tick vô điều kiện và sẽ bỏ đói _job.Step quá hạn JobBoardOpenRetryS.
+        CancelSurvival(now, "bảng nghề mở");
+        AbortSevereTurn("bảng nghề mở");
+
+        _cameraPhase = null;
+        _cameraWaitUntil = 0;
+        _wReclaimPending = false;
+        _panelInterrupt.Reset();
+        _input.StopMouseStream(immediate: true);
+        ReleaseETick(double.MaxValue);
+        _input.ReleaseOwnedOnce();
+        ClearPendingE();
+        _job.EnterAtOpenBoard(now, reason);
+        return true;
     }
 
     private void ResumeWorld(double now, string reason)
@@ -1333,10 +1396,10 @@ internal sealed class NavBot
         var kind = SurvivalGate.Decide(_job.Phase, _simplePhase, _cameraPhase, _ixPhase, panel, _eDown);
         if (kind == SurvivalActKind.Start && _cfg.Survival.CanRun(_profile.SurvivalHud)) return;
         _lastSurvivalWaitLog = now;
-        string why = _cfg.Survival.CanRun(_profile.SurvivalHud)
-            ? SurvivalGate.WaitReason(kind, r.FoodLow, r.WaterLow, r.FoodPct, r.WaterPct)
-            : SurvivalGate.WaitReason(kind, r.FoodLow, r.WaterLow, r.FoodPct, r.WaterPct)
-              + " — chưa hiệu chuẩn HUD/phím, không chạy mù";
+        string why = SurvivalGate.WaitReason(kind, r.FoodLow, r.WaterLow, r.FoodPct, r.WaterPct)
+                     + (_cfg.Survival.CanRun(_profile.SurvivalHud)
+                         ? ""
+                         : " — chưa hiệu chuẩn HUD, không chạy mù");
         Emit("[ĂN UỐNG] " + why);
     }
 
@@ -1383,14 +1446,14 @@ internal sealed class NavBot
 
         if (r.FoodLow && now >= _survivalFoodBlockUntil && now >= _survivalFoodRearmUntil)
         {
-            var slots = _cfg.Survival.KeysFor(food: true, _profile.SurvivalHud);
+            var slots = _cfg.Survival.KeysFor(food: true);
             if (slots.Length > 0)
                 items.Add(new SurvivalItem { Name = "BÁNH", Slots = slots, Baseline = r.FoodPct });
         }
 
         if (r.WaterLow && now >= _survivalWaterBlockUntil && now >= _survivalWaterRearmUntil)
         {
-            var slots = _cfg.Survival.KeysFor(food: false, _profile.SurvivalHud);
+            var slots = _cfg.Survival.KeysFor(food: false);
             if (slots.Length > 0)
                 items.Add(new SurvivalItem { Name = "NƯỚC", Slots = slots, Baseline = r.WaterPct });
         }
@@ -1566,6 +1629,7 @@ internal sealed class NavBot
         _input.StopMouseStream(immediate: true);
         _input.ReleaseOwnedOnce();
         _cameraPhase = null;
+        ClearSevereTurn();
         _simplePhase = "WORLD";
         _closeUntil = _postCheckUntil = _wait10Until = 0;
         _promptConsumed = false;
@@ -1590,7 +1654,8 @@ internal sealed class NavBot
     {
         if (!focused) { AutorunResetTimer(now); return false; }
         bool intentionalBlock = _simplePhase != "WORLD" || _cameraPhase is not null || _survivalActive
-                                || _ixPhase == NavInteraction.Settle || _job.PausedForSurvival;
+                                || _ixPhase == NavInteraction.Settle || _job.PausedForSurvival
+                                || SevereTurnActive;
         if (intentionalBlock) { AutorunResetTimer(now); return false; }
 
         bool progress = false;
@@ -1619,6 +1684,17 @@ internal sealed class NavBot
         if (progress) { _wdLastProgressT = now; return false; }
 
         double idle = now - _wdLastProgressT;
+
+        // Đứng một chỗ tuy vẫn tưởng đang đi = dấu hiệu có panel chặn. Đây là đường cứu chính cho bảng
+        // nghề mở ngoài cửa sổ sau E: bắt trong ~5 s thay vì chờ tới lần khởi động lại 30 s (mà lần đó
+        // cũng không đóng được bảng, chỉ bấm W lại).
+        if (idle >= NavTuning.JobBoardProbeIdleS
+            && EnterJobBoardIfOpen(now, ProbeJobBoard(now, force: false), $"BẢNG NGHỀ CHẶN ĐƯỜNG {idle:F1}s"))
+        {
+            AutorunResetTimer(now);
+            return true;
+        }
+
         if (idle >= NavTuning.AutorunIdleWatchdogS)
         {
             AutorunRestart(now, $"KHÔNG TIẾN {idle:F1}s");
@@ -1632,8 +1708,7 @@ internal sealed class NavBot
     private void ArmRestartWatch(double now, string reason)
     {
         _watchCount = 0;
-        _backoutActive = false;
-        _backoutUntil = 0;
+        ClearSevereTurn();
         _watchActive = true;
         _watchStarted = now;
         _watchPending = false;
@@ -1656,40 +1731,54 @@ internal sealed class NavBot
         ClearPendingE();
     }
 
-    /// <summary><c>_post_mini_restart_watch_step</c>: 30 s không có minigame mới → reset camera + W; từ lần thứ 3 giữ S 2 s trước.</summary>
+    /// <summary>
+    /// <c>_post_mini_restart_watch_step</c>: 30 s không có minigame mới → reset camera + W; từ lần thứ 3
+    /// chạy chuỗi thoát kẹt <see cref="NavRestartTurn"/> (lùi S → quay ngang → chạy thẳng) trước.
+    /// </summary>
     private bool RestartWatchStep(double now, bool focused)
     {
-        if (!_watchActive) return false;
-        if (!focused)
+        // Watch bị tắt giữa chuỗi (arm lại / giao panel) mà pha còn sống thì không ai chạy nó nữa —
+        // huỷ hẳn, đừng để pha mồ côi khoá luôn điều hướng.
+        if (SevereTurnActive && !_watchActive)
         {
-            if (_backoutActive) { _input.ReleaseOwnedOnce(); _input.StopMouseStream(immediate: true); }
+            AbortSevereTurn("watch đã tắt giữa chuỗi");
             return false;
         }
+        if (!_watchActive) return false;
 
-        if (_backoutActive)
+        if (SevereTurnActive)
         {
-            if (now < _backoutUntil)
+            if (!focused)
             {
+                _input.ReleaseOwnedOnce();
                 _input.StopMouseStream(immediate: true);
-                _input.Apply(NavKey.S);
+                // Idempotent: hàm này chạy được hai lần trong một tick (guard đầu Tick + chỗ gọi sau),
+                // nên chỉ ĐẶT mốc đóng băng, không cộng dồn.
+                if (_turnFrozenAt <= 0) _turnFrozenAt = now;
                 return true;
             }
-            _input.ReleaseOwnedOnce();
-            _input.StopMouseStream(immediate: true);
-            _backoutActive = false;
-            _backoutUntil = 0;
-            RestartPrepareCore(now);
-            Emit("[WATCH 30s NẶNG] lùi S xong → reset camera → W → chạy");
-            StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
-            return true;
+            if (_turnFrozenAt > 0)
+            {
+                double frozen = Math.Max(0.0, now - _turnFrozenAt);
+                _turnPhaseStart += frozen;
+                _turnLastGainT += frozen;
+                _turnFrozenAt = 0;
+            }
+            return SevereTurnStep(now);
         }
+
+        if (!focused) return false;
 
         double timeout = Math.Max(10.0, NavTuning.PostMinigameRestartTimeoutS);
         double elapsed = now - _watchStarted;
         if (elapsed < timeout && !_watchPending) return false;
 
+        // SevereTurnActive nằm trong đây chứ không chỉ dựa vào short-circuit ở trên: khi mất focus hàm
+        // này trả false ở nhánh trên, guard đầu Tick không nuốt frame, và chỗ gọi sau trong Tick chạy
+        // hàm này LẦN THỨ HAI trong cùng một tick — thiếu cờ ở đây là một chu kỳ NẶNG lồng vào chu kỳ
+        // đang chạy, _watchCount nhảy hai bậc và mất một ô thang góc.
         bool unsafeNow = _simplePhase != "WORLD" || _cameraPhase is not null || _job.Phase is not null
-                         || _survivalActive || _ixPhase == NavInteraction.Settle;
+                         || _survivalActive || _ixPhase == NavInteraction.Settle || SevereTurnActive;
         if (unsafeNow)
         {
             if (!_watchPending)
@@ -1699,21 +1788,40 @@ internal sealed class NavBot
             }
             return false;
         }
-        _watchPending = false;
 
-        bool severe = _watchCount >= Math.Max(2, NavTuning.PostMinigameRestartSevereAfterFailedRestarts);
+        // Pending nghĩa là timeout đã trôi qua trong lúc BẬN (reset nghề, bữa ăn, reset camera), chứ
+        // không phải 30 s lái mà không gặp bảng nghề. Nổ chu kỳ ngay lúc vừa về WORLD là sai: chu kỳ
+        // NẶNG giờ quay tới 180° rồi đi bộ, làm thế ngay sau khi vừa nhận lại nghề ở NPC là tự đi khỏi
+        // bảng. Cho đủ một cửa sổ LÁI THẬT rồi mới tính.
+        if (_watchPending)
+        {
+            _watchPending = false;
+            _watchStarted = now;
+            Emit($"[WATCH 30s] WORLD rảnh lại → tính lại {timeout:F0}s lái thật trước khi khởi động lại");
+            return false;
+        }
+
+        // Trước khi lùi/quay/khởi động lại: 30 s không có minigame mới cũng là dấu hiệu có panel chặn.
+        // Phải return NGAY nếu vào luồng — unsafeNow đã tính ở trên nên chạy tiếp sẽ vừa reset nghề vừa
+        // quay 180° trong cùng một tick.
+        if (EnterJobBoardIfOpen(now, ProbeJobBoard(now, force: false), "BẢNG NGHỀ CHẶN 30s"))
+        {
+            _watchStarted = now;
+            return true;
+        }
+
+        int severeThreshold = Math.Max(2, NavTuning.PostMinigameRestartSevereAfterFailedRestarts);
+        bool severe = _watchCount >= severeThreshold;
         _watchCount++;
         _watchStarted = now;
 
         if (severe)
         {
-            double back = Math.Max(0.5, NavTuning.PostMinigameRestartSevereBackoutS);
             RestartPrepareCore(now);
             _cameraPhase = null;
-            _backoutActive = true;
-            _backoutUntil = now + back;
-            _input.Apply(NavKey.S);
-            Emit($"[WATCH 30s NẶNG] hai lần khởi động lại thất bại; chu kỳ #{_watchCount}: lùi S {back:F1}s → reset camera → W");
+            StartSevereTurn(now, _watchCount - severeThreshold - 1);
+            Emit($"[WATCH 30s NẶNG] hai lần khởi động lại thất bại; chu kỳ #{_watchCount}: lùi S {NavRestartTurn.BackoutS:F1}s → " +
+                 $"quay {_turnDeg:+0;-0}° → chạy thẳng {NavRestartTurn.ClearForwardS:F1}s → reset camera → W");
             return true;
         }
 
@@ -1721,5 +1829,123 @@ internal sealed class NavBot
         Emit($"[WATCH 30s] {elapsed:F1}s không có minigame mới → chu kỳ #{_watchCount}: reset camera → W → chạy");
         StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
         return true;
+    }
+
+    // ================================================================ chuoi thoat ket cua chu ky NANG
+
+    /// <summary>Vào pha đầu của chuỗi. <paramref name="severeIndex"/> 0 = chu kỳ NẶNG đầu tiên.</summary>
+    private void StartSevereTurn(double now, int severeIndex)
+    {
+        _turnDeg = NavRestartTurn.AngleForCycle(severeIndex);
+        _turnSign = _turnDeg >= 0 ? 1 : -1;
+        _turnCountsTarget = NavRestartTurn.CountsForDegrees(_turnDeg);
+        _turnCapS = NavRestartTurn.HardCapS(_turnDeg, NavTuning.PostMinigameRestartYawRateCps,
+                                            _cfg.Nav.MouseSpeedMultiplier);
+        _turnMark = _input.XSentCounts;
+        _turnBestCounts = 0;
+        _turnLastGainT = now;
+        _turnFrozenAt = 0;
+        _turnPhase = NavRestartTurn.Backout;
+        _turnPhaseStart = now;
+        _input.Apply(NavKey.S);
+    }
+
+    /// <summary>Xoá trạng thái chuỗi, KHÔNG chạm input — dùng ở những nơi input đã được xử lý.</summary>
+    private void ClearSevereTurn()
+    {
+        _turnPhase = null;
+        _turnPhaseStart = 0;
+        _turnFrozenAt = 0;
+        _turnBestCounts = 0;
+        _turnCountsTarget = 0;
+    }
+
+    private void AbortSevereTurn(string reason)
+    {
+        if (_turnPhase is null) return;
+        string was = _turnPhase;
+        ClearSevereTurn();
+        _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+        _input.Apply(NavKey.None);
+        Emit($"[WATCH 30s NẶNG] huỷ chuỗi ở pha {was}: {reason}");
+    }
+
+    /// <summary>Một tick của chuỗi. Luôn sở hữu frame (trả true) tới khi chuỗi nhường cho reset camera.</summary>
+    private bool SevereTurnStep(double now)
+    {
+        double elapsed = now - _turnPhaseStart;
+        long counts = Math.Abs(_input.XSentCounts - _turnMark);
+        if (counts > _turnBestCounts) { _turnBestCounts = counts; _turnLastGainT = now; }
+        bool stalled = _turnPhase == NavRestartTurn.Yaw
+                       && now - _turnLastGainT >= NavTuning.PostMinigameRestartYawStallS;
+
+        // Xét chuyển pha TRƯỚC khi phát rate của tick này: xét sau sẽ lố thêm một tick (~2.5°).
+        string next = NavRestartTurn.Advance(_turnPhase, elapsed, counts, _turnCountsTarget, stalled, _turnCapS);
+        if (next != _turnPhase)
+        {
+            EnterSevereTurnPhase(now, next, counts, stalled);
+            if (_turnPhase is null) return true;      // đã nhường cho reset camera
+        }
+
+        switch (_turnPhase)
+        {
+            case NavRestartTurn.Backout:
+                _input.StopMouseStream(immediate: true);
+                _input.Apply(NavKey.S);
+                return true;
+            case NavRestartTurn.Reacquire:
+                _input.Apply(NavKey.None);
+                return true;
+            case NavRestartTurn.Yaw:
+                // Lease chuột 120 ms: phải phát lại rate MỖI tick, không thì cú quay tự tắt dần.
+                _input.SetMouseXRate(_turnSign * NavTuning.PostMinigameRestartYawRateCps);
+                _input.Apply(NavKey.None);
+                return true;
+            default:
+                _input.Apply(NavKey.W);
+                return true;
+        }
+    }
+
+    private void EnterSevereTurnPhase(double now, string phase, long counts, bool stalled)
+    {
+        switch (phase)
+        {
+            case NavRestartTurn.Reacquire:
+                _input.ReleaseOwnedOnce();
+                _input.StopMouseStream(immediate: true);
+                // Đếm count chỉ biết cái mình GỬI, không biết cái game NHẬN. GTA nuốt delta chuột sau
+                // NUI là chuyện có thật (xem CameraResetReacquireSettleS) — nuốt mà vẫn đếm thì chuỗi
+                // báo "đã quay 180°" trong khi hướng không đổi. Xung W lấy lại quyền chuột trước.
+                _input.PulseWReacquire(NavTuning.CameraResetReacquireHoldMs);
+                Emit("[WATCH 30s NẶNG] lùi S xong → xung W lấy lại quyền chuột");
+                break;
+
+            case NavRestartTurn.Yaw:
+                _turnMark = _input.XSentCounts;
+                _turnBestCounts = 0;
+                _turnLastGainT = now;
+                Emit($"[WATCH 30s NẶNG] quay {_turnDeg:+0;-0}° = {_turnCountsTarget} count (cap {_turnCapS:F1}s)");
+                break;
+
+            case NavRestartTurn.ClearForward:
+                _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+                string why = counts >= _turnCountsTarget ? "đủ count" : stalled ? "TẮC" : "hết cap";
+                Emit($"[WATCH 30s NẶNG] quay xong {_turnSign * counts / NavTuning.MouseCountsPerDegree:+0.0;-0.0}° " +
+                     $"({counts}/{_turnCountsTarget} count, {why}) → chạy thẳng {NavRestartTurn.ClearForwardS:F1}s");
+                _input.DoublePressWStart(NavTuning.TransitionWTakeoverGapMs, NavTuning.AutorunWatchdogWRearmS);
+                break;
+
+            case NavRestartTurn.Done:
+                _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+                ClearSevereTurn();
+                _cameraPhase = null;
+                Emit("[WATCH 30s NẶNG] chạy thẳng xong → reset camera → W → chạy");
+                StartCameraReset(now, "MINIGAME_IDLE_60S_RESTART");
+                return;
+        }
+
+        _turnPhase = phase;
+        _turnPhaseStart = now;
     }
 }

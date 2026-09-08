@@ -59,7 +59,7 @@ internal sealed class SurvivalWizardForm : Form
         RefreshReadout();
     }
 
-    /// <summary>True = đã lưu profile HUD (chưa gồm test phím).</summary>
+    /// <summary>True = đã lưu profile HUD.</summary>
     public static bool Run(IWin32Window owner, Bitmap still, Screen screen,
         ElectricConfig cfg, ElectricProfile profile)
     {
@@ -412,10 +412,6 @@ internal sealed class SurvivalWizardForm : Form
         hud.ApplyRing(false, waterRing);
         hud.FoodHudReady = true;
         hud.WaterHudReady = true;
-        hud.FoodSlotVerified = false;
-        hud.WaterSlotVerified = false;
-        hud.FoodVerifiedSlots = "";
-        hud.WaterVerifiedSlots = "";
         hud.Normalize();
         _profile.SurvivalHud = hud;
 
@@ -545,7 +541,6 @@ internal static class SurvivalHotbarTest
                 var v = watch.Observe(stable, t, out double after);
                 if (v == SurvivalUseVerdict.Success)
                 {
-                    hud.MarkSlotVerified(food, slot);
                     log($"test {who}: ĐẠT phím {slot} {before.Value:F0}% → {after:F0}%");
                     return true;
                 }

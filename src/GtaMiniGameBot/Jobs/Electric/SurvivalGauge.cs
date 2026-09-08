@@ -17,7 +17,7 @@ internal sealed class SurvivalSettings
     public double WaterCenterXRef { get; set; } = 210.0;
     public double WaterCenterYRef { get; set; } = 1047.0;
 
-    /// <summary>Ô hotbar bánh: phím chính rồi (tuỳ chọn) ô dự phòng đã test riêng.</summary>
+    /// <summary>Ô hotbar bánh: phím chính rồi (tuỳ chọn) ô dự phòng. Tối đa 2 ô, đặt trong panel.</summary>
     public string FoodSlots { get; set; } = "6";
 
     /// <summary>Ô hotbar nước. Không được trùng ô bánh.</summary>
@@ -48,18 +48,20 @@ internal sealed class SurvivalSettings
         return s.RoiRef(x0, y0, x1, y1);
     }
 
-    public bool CanRun(SurvivalHudProfile hud) => Enabled && hud is { IsReady: true };
+    /// <summary>
+    /// Điều kiện chạy: CHỈ cần hiệu chuẩn HUD. Không có HUD thì bộ đọc tụt về tâm/màu hardcode theo
+    /// 1080p (xem <see cref="SurvivalRing.FromSettings"/>) và đọc ra số rác, nên đó vẫn là chốt cứng.
+    /// Test phím thì KHÔNG còn là điều kiện — người dùng tự kiểm trong game; hai nút Test chỉ còn là
+    /// tiện ích tự kiểm.
+    /// </summary>
+    public bool CanRun(SurvivalHudProfile hud) => Enabled && hud is { IsHudReady: true };
 
-    public ushort[] KeysFor(bool food, SurvivalHudProfile hud)
-    {
-        string raw = food ? FoodSlots : WaterSlots;
-        if (hud is not null)
-        {
-            string verified = food ? hud.FoodVerifiedSlots : hud.WaterVerifiedSlots;
-            if (!string.IsNullOrWhiteSpace(verified)) raw = verified;
-        }
-        return SlotKeys(raw);
-    }
+    /// <summary>
+    /// Phím theo thứ tự thử: ô chính trước, rồi ô dự phòng nếu có. Nguồn duy nhất là cấu hình này —
+    /// trước đây profile có danh sách "đã test" ghi đè chỗ này, làm ô chọn trong UI thành vô hiệu và
+    /// làm bot bấm phím còn sót từ lần test trước. Đã bỏ hẳn.
+    /// </summary>
+    public ushort[] KeysFor(bool food) => SlotKeys(food ? FoodSlots : WaterSlots);
 
     public char PrimarySlot(bool food)
     {
@@ -77,16 +79,53 @@ internal sealed class SurvivalSettings
         DropOverlap();
     }
 
+    /// <summary>Chưa đặt ô dự phòng.</summary>
+    public const char NoSlot = '\0';
+
+    /// <summary>Ô dự phòng của loại này — <see cref="NoSlot"/> nếu chưa đặt. Là ô hợp lệ THỨ HAI.</summary>
+    public char BackupSlot(bool food)
+    {
+        string slots = food ? FoodSlots : WaterSlots;
+        bool seenPrimary = false;
+        foreach (char c in slots ?? "")
+        {
+            if (c < '1' || c > '9') continue;
+            if (!seenPrimary) { seenPrimary = true; continue; }
+            return c;
+        }
+        return NoSlot;
+    }
+
+    /// <summary>Đặt / xoá ô dự phòng. Ký tự ngoài '1'..'9' = xoá.</summary>
+    public void SetBackupSlot(bool food, char slot)
+    {
+        char primary = PrimarySlot(food);
+        string next = slot < '1' || slot > '9' || slot == primary
+            ? primary.ToString()
+            : primary + "," + slot;
+        if (food) FoodSlots = next;
+        else WaterSlots = next;
+        DropOverlap();
+    }
+
+    /// <summary>
+    /// Đổi ô chính mà GIỮ đúng ô dự phòng đang có. Nếu ô chính mới chính là ô dự phòng cũ thì đổi chỗ
+    /// hai ô. Không tự sinh ô dự phòng từ ô chính cũ — ô dự phòng là tuỳ chọn, chỉ có khi người dùng
+    /// tự đặt; bản cũ lấy "ký tự hợp lệ đầu tiên khác ô chính" nên nó vừa nuốt ô dự phòng đã chọn,
+    /// vừa lặng lẽ tạo ô dự phòng mà không ai yêu cầu.
+    /// </summary>
     private static string KeepBackup(char primary, string raw)
     {
-        char backup = '\0';
+        char oldPrimary = NoSlot, oldBackup = NoSlot;
         foreach (char c in raw ?? "")
         {
-            if (c < '1' || c > '9' || c == primary) continue;
-            backup = c;
-            break;
+            if (c < '1' || c > '9') continue;
+            if (oldPrimary == NoSlot) oldPrimary = c;
+            else { oldBackup = c; break; }
         }
-        return backup == '\0' ? primary.ToString() : primary + "," + backup;
+        char backup = primary == oldBackup ? oldPrimary : oldBackup;
+        if (backup == primary || backup < '1' || backup > '9') backup = NoSlot;
+        return backup == NoSlot ? primary.ToString() : primary + "," + backup;
     }
 
     private void DropOverlap()
@@ -160,14 +199,9 @@ internal sealed class SurvivalHudProfile
 
     public bool FoodHudReady { get; set; }
     public bool WaterHudReady { get; set; }
-    public bool FoodSlotVerified { get; set; }
-    public bool WaterSlotVerified { get; set; }
-    public string FoodVerifiedSlots { get; set; } = "";
-    public string WaterVerifiedSlots { get; set; } = "";
 
     public bool HasRois => FoodRoi.IsSet && WaterRoi.IsSet;
     public bool IsHudReady => FoodHudReady && WaterHudReady;
-    public bool IsReady => IsHudReady && FoodSlotVerified && WaterSlotVerified;
 
     public void Normalize()
     {
@@ -179,17 +213,11 @@ internal sealed class SurvivalHudProfile
         FoodVMin = Math.Clamp(FoodVMin <= 0 ? 70 : FoodVMin, 20, 255);
         WaterSMin = Math.Clamp(WaterSMin <= 0 ? 80 : WaterSMin, 20, 255);
         WaterVMin = Math.Clamp(WaterVMin <= 0 ? 70 : WaterVMin, 20, 255);
-        FoodVerifiedSlots = SurvivalSettings.SlotKeys(FoodVerifiedSlots).Length == 0
-            ? "" : string.Join(",", SurvivalSettings.SlotKeys(FoodVerifiedSlots).Select(k => (char)k));
-        WaterVerifiedSlots = SurvivalSettings.SlotKeys(WaterVerifiedSlots).Length == 0
-            ? "" : string.Join(",", SurvivalSettings.SlotKeys(WaterVerifiedSlots).Select(k => (char)k));
         if (!HasRois)
         {
             FoodHudReady = false;
             WaterHudReady = false;
         }
-        if (!FoodHudReady) FoodSlotVerified = false;
-        if (!WaterHudReady) WaterSlotVerified = false;
     }
 
     public Rectangle CaptureRoi(int screenW, int screenH)
@@ -222,28 +250,6 @@ internal sealed class SurvivalHudProfile
         }
     }
 
-    public void MarkSlotVerified(bool food, char slot)
-    {
-        if (slot < '1' || slot > '9') return;
-        if (food)
-        {
-            FoodSlotVerified = true;
-            FoodVerifiedSlots = MergeSlot(FoodVerifiedSlots, slot);
-        }
-        else
-        {
-            WaterSlotVerified = true;
-            WaterVerifiedSlots = MergeSlot(WaterVerifiedSlots, slot);
-        }
-    }
-
-    private static string MergeSlot(string raw, char slot)
-    {
-        var keys = SurvivalSettings.SlotKeys(raw).Select(k => (char)k).ToList();
-        if (!keys.Contains(slot)) keys.Insert(0, slot);
-        if (keys.Count > 2) keys.RemoveRange(2, keys.Count - 2);
-        return string.Join(",", keys);
-    }
 }
 
 /// <summary>Một vòng cung đã đo trên một khung. <c>Pct</c> là NaN khi không đọc được icon.</summary>

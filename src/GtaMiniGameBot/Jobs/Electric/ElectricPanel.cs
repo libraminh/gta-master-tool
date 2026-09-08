@@ -32,6 +32,8 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkButton _btnTestWater = new();
     private readonly DarkPick _foodSlot = new();
     private readonly DarkPick _waterSlot = new();
+    private readonly DarkPick _foodBackup = new();
+    private readonly DarkPick _waterBackup = new();
     private readonly Label _eatStatus = new();
     private readonly DarkButton _btnToggle = new();
     private readonly DarkCheck _autoWalk = new();
@@ -111,7 +113,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(548),
+            Height = Theme.Px(580),
             BackColor = Theme.Ground
         };
 
@@ -206,7 +208,7 @@ internal sealed class ElectricPanel : UserControl
         var eatBox = new DarkGroup
         {
             Title = "Tự ăn bánh / uống nước",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(352), w, Theme.Px(136))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(352), w, Theme.Px(168))
         };
         host.Controls.Add(eatBox);
 
@@ -243,16 +245,31 @@ internal sealed class ElectricPanel : UserControl
         _btnTestWater.Click += (_, _) => TestSurvivalSlot(food: false);
         eatBox.Controls.Add(_btnTestWater);
 
+        // Hang o du phong: bot bam o chinh, khong len muc thi bam o nay (NavBot "thu o du phong").
+        Lab(eatBox, "Dự phòng bánh:", Theme.Px(12), Theme.Px(82), Theme.Px(100));
+        _foodBackup.SetBounds(Theme.Px(116), Theme.Px(78), Theme.Px(56), Theme.Px(24));
+        FillSlotsOptional(_foodBackup, _cfg.Survival.BackupSlot(true));
+        _foodBackup.SelectedIndexChanged += OnFoodBackupChanged;
+        eatBox.Controls.Add(_foodBackup);
+
+        Lab(eatBox, "Dự phòng nước:", Theme.Px(184), Theme.Px(82), Theme.Px(100));
+        _waterBackup.SetBounds(Theme.Px(288), Theme.Px(78), Theme.Px(56), Theme.Px(24));
+        FillSlotsOptional(_waterBackup, _cfg.Survival.BackupSlot(false));
+        _waterBackup.SelectedIndexChanged += OnWaterBackupChanged;
+        eatBox.Controls.Add(_waterBackup);
+
+        Lab(eatBox, $"(tuỳ chọn: chọn {NoSlotText} nếu không có)", Theme.Px(356), Theme.Px(82), Theme.Px(240));
+
         _eatStatus.AutoSize = false;
         _eatStatus.Font = Theme.DataSm;
         _eatStatus.BackColor = Theme.Surface;
-        _eatStatus.SetBounds(Theme.Px(12), Theme.Px(82), w - Theme.Px(24), Theme.Px(44));
+        _eatStatus.SetBounds(Theme.Px(12), Theme.Px(112), w - Theme.Px(24), Theme.Px(44));
         eatBox.Controls.Add(_eatStatus);
 
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(496), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(528), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -281,6 +298,49 @@ internal sealed class ElectricPanel : UserControl
         }
         pick.SelectedIndex = idx;
         _syncingSlots = false;
+    }
+
+    /// <summary>Ô "chưa đặt" của hai pick dự phòng — cùng glyph mà panel khác dùng cho "chưa có giá trị".</summary>
+    private const string NoSlotText = "—";
+
+    /// <summary>
+    /// Như <see cref="FillSlots"/> nhưng có ô rỗng ở đầu. Phải luôn gán <c>SelectedIndex</c> tường minh:
+    /// <c>Items.Clear()</c> KHÔNG reset index trong <see cref="DarkPick"/>, index cũ sống tới lúc gán.
+    /// </summary>
+    private void FillSlotsOptional(DarkPick pick, char selected)
+    {
+        _syncingSlots = true;
+        pick.Items.Clear();
+        pick.Items.Add(NoSlotText);
+        int idx = 0;
+        for (char c = '1'; c <= '9'; c++)
+        {
+            pick.Items.Add(c.ToString());
+            if (c == selected) idx = pick.Items.Count - 1;
+        }
+        pick.SelectedIndex = idx;
+        _syncingSlots = false;
+    }
+
+    /// <summary>
+    /// Trả cả bốn pick về đúng cấu hình sau khi lưu. Cần vì <c>DropOverlap</c> ở tầng model có thể bỏ ô
+    /// trùng trong im lặng — không đồng bộ lại thì UI hiện một đằng, config một nẻo.
+    /// </summary>
+    private void SyncSlotPicks()
+    {
+        FillSlots(_foodSlot, _cfg.Survival.PrimarySlot(true));
+        FillSlots(_waterSlot, _cfg.Survival.PrimarySlot(false));
+        FillSlotsOptional(_foodBackup, _cfg.Survival.BackupSlot(true));
+        FillSlotsOptional(_waterBackup, _cfg.Survival.BackupSlot(false));
+    }
+
+    /// <summary>Ô này đã bị loại kia hoặc chính loại này dùng chưa? Bỏ qua ô chưa đặt.</summary>
+    private bool SlotTaken(char slot, bool food, bool asPrimary)
+    {
+        if (slot < '1' || slot > '9') return false;
+        var s = _cfg.Survival;
+        if (slot == s.PrimarySlot(!food) || slot == s.BackupSlot(!food)) return true;
+        return asPrimary ? slot == s.BackupSlot(food) : slot == s.PrimarySlot(food);
     }
 
     private static void Lab(Control host, string text, int x, int y, int w)
@@ -421,52 +481,86 @@ internal sealed class ElectricPanel : UserControl
             return;
         }
 
+        // Canh bao nhung KHONG return: hai dong duoi van la thong tin can thay.
         if (!_cfg.Survival.CanRun(_profile.SurvivalHud))
-        {
-            Append("ăn uống: BẬT nhưng CHƯA hiệu chuẩn — bot sẽ không chạy mù. " +
-                   "Khoanh HUD, chụp LOW/HIGH, rồi Test bánh và Test nước.");
-            return;
-        }
+            Append("ăn uống: BẬT nhưng CHƯA hiệu chuẩn HUD — bot sẽ không chạy mù. " +
+                   "Khoanh HUD và chụp LOW/HIGH trước.");
 
-        Append($"ăn uống: BẬT — bánh ô {_cfg.Survival.FoodSlots}, nước ô {_cfg.Survival.WaterSlots}");
+        Append($"ăn uống: BẬT — {SlotSummary()}");
         if (!_cfg.AutoWalk)
             Append("lưu ý: ăn uống nằm trong bộ tự đi, phải bật “Tự tìm điểm vàng…” mới có tác dụng");
     }
 
-    private void OnFoodSlotChanged()
+    private void OnFoodSlotChanged() => OnPrimarySlotChanged(true, _foodSlot, "bánh");
+
+    private void OnWaterSlotChanged() => OnPrimarySlotChanged(false, _waterSlot, "nước");
+
+    private void OnPrimarySlotChanged(bool food, DarkPick pick, string who)
     {
         if (_syncingSlots) return;
-        if (_foodSlot.SelectedItem is not string t || t.Length != 1) return;
+        if (pick.SelectedItem is not string t || t.Length != 1) return;
         char slot = t[0];
-        if (slot == _cfg.Survival.PrimarySlot(false))
+        if (slot < '1' || slot > '9') return;
+        if (SlotTaken(slot, food, asPrimary: true))
         {
-            Append("ô bánh trùng ô nước — chọn ô khác");
-            FillSlots(_foodSlot, _cfg.Survival.PrimarySlot(true));
+            Append($"ô {who} trùng ô khác đang dùng — chọn ô khác");
+            FillSlots(pick, _cfg.Survival.PrimarySlot(food));
             return;
         }
-        _cfg.Survival.SetPrimarySlot(true, slot);
-        _profile.SurvivalHud.FoodSlotVerified = false;
+        _cfg.Survival.SetPrimarySlot(food, slot);
         _cfg.Save();
+        SyncSlotPicks();
         RefreshEatStatus();
-        Append($"ô bánh: {slot} — cần Test bánh lại");
+        Append($"ô {who}: {slot}");
     }
 
-    private void OnWaterSlotChanged()
+    private void OnFoodBackupChanged() => OnBackupSlotChanged(true, _foodBackup, "bánh");
+
+    private void OnWaterBackupChanged() => OnBackupSlotChanged(false, _waterBackup, "nước");
+
+    private void OnBackupSlotChanged(bool food, DarkPick pick, string who)
     {
         if (_syncingSlots) return;
-        if (_waterSlot.SelectedItem is not string t || t.Length != 1) return;
-        char slot = t[0];
-        if (slot == _cfg.Survival.PrimarySlot(true))
+        if (pick.SelectedItem is not string t) return;
+
+        // Phai xet o rong TRUOC: "—" cung dai 1 ky tu nen no lot qua moi phep kiem chu so.
+        if (t == NoSlotText)
         {
-            Append("ô nước trùng ô bánh — chọn ô khác");
-            FillSlots(_waterSlot, _cfg.Survival.PrimarySlot(false));
+            _cfg.Survival.SetBackupSlot(food, SurvivalSettings.NoSlot);
+            _cfg.Save();
+            SyncSlotPicks();
+            RefreshEatStatus();
+            Append($"bỏ ô dự phòng {who}");
             return;
         }
-        _cfg.Survival.SetPrimarySlot(false, slot);
-        _profile.SurvivalHud.WaterSlotVerified = false;
+
+        if (t.Length != 1 || t[0] < '1' || t[0] > '9') return;
+        char slot = t[0];
+        if (SlotTaken(slot, food, asPrimary: false))
+        {
+            Append($"ô dự phòng {who} trùng ô khác đang dùng — chọn ô khác");
+            FillSlotsOptional(pick, _cfg.Survival.BackupSlot(food));
+            return;
+        }
+        _cfg.Survival.SetBackupSlot(food, slot);
         _cfg.Save();
+        SyncSlotPicks();
         RefreshEatStatus();
-        Append($"ô nước: {slot} — cần Test nước lại");
+        Append($"ô dự phòng {who}: {slot}");
+    }
+
+    /// <summary>Ô đang dùng, viết cho người đọc. Sau khi bỏ chốt test thì đây mới là thông tin cần thấy.</summary>
+    private string SlotSummary()
+    {
+        var s = _cfg.Survival;
+        string One(bool food)
+        {
+            char backup = s.BackupSlot(food);
+            return backup == SurvivalSettings.NoSlot
+                ? $"{s.PrimarySlot(food)} (không có dự phòng)"
+                : $"{s.PrimarySlot(food)} (dự phòng {backup})";
+        }
+        return $"bánh ô {One(true)}, nước ô {One(false)}";
     }
 
     private void RefreshEatStatus()
@@ -475,15 +569,13 @@ internal sealed class ElectricPanel : UserControl
         string hudNote = hud.IsHudReady
             ? $"HUD đã khoanh (bánh {hud.FoodCx:F0},{hud.FoodCy:F0} r {hud.FoodRmin:F0}–{hud.FoodRmax:F0})"
             : "chưa khoanh / chưa chụp LOW-HIGH";
-        string keys = $"phím bánh {(hud.FoodSlotVerified ? "đã test" : "chưa test")}, " +
-                      $"nước {(hud.WaterSlotVerified ? "đã test" : "chưa test")}";
-        _eatStatus.Text = hud.IsReady
-            ? $"Sẵn sàng: {hudNote}; {keys}."
-            : $"Chưa sẵn sàng — {hudNote}; {keys}. Bật tự ăn lúc này chỉ hiện cảnh báo, không chạy mù.";
-        _eatStatus.ForeColor = hud.IsReady ? Theme.GoodText : Theme.WarnText;
-        _autoEat.Text = hud.IsReady
+        _eatStatus.Text = hud.IsHudReady
+            ? $"Sẵn sàng: {hudNote}; {SlotSummary()}."
+            : $"Chưa sẵn sàng — {hudNote}. Bật tự ăn lúc này chỉ hiện cảnh báo, không chạy mù.";
+        _eatStatus.ForeColor = hud.IsHudReady ? Theme.GoodText : Theme.WarnText;
+        _autoEat.Text = hud.IsHudReady
             ? "Tự ăn / uống khi dưới 50%"
-            : "Tự ăn / uống khi dưới 50%  (chưa hiệu chuẩn)";
+            : "Tự ăn / uống khi dưới 50%  (chưa hiệu chuẩn HUD)";
     }
 
     private void RefreshNote() =>
@@ -524,7 +616,7 @@ internal sealed class ElectricPanel : UserControl
                    $"r {_profile.SurvivalHud.FoodRmin:F0}–{_profile.SurvivalHud.FoodRmax:F0}; " +
                    $"nước tâm ({_profile.SurvivalHud.WaterCx:F0},{_profile.SurvivalHud.WaterCy:F0}) " +
                    $"r {_profile.SurvivalHud.WaterRmin:F0}–{_profile.SurvivalHud.WaterRmax:F0}. " +
-                   "Còn phải Test bánh và Test nước.");
+                   $"Đã sẵn sàng — {SlotSummary()}.");
         }
         catch (Exception ex) { Append("hiệu chuẩn ăn uống lỗi: " + ex.Message); }
         finally { bmp.Dispose(); }
@@ -796,6 +888,8 @@ internal sealed class ElectricPanel : UserControl
         _btnTestWater.Enabled = !running;
         _foodSlot.Enabled = !running;
         _waterSlot.Enabled = !running;
+        _foodBackup.Enabled = !running;
+        _waterBackup.Enabled = !running;
         _screens.Enabled = !running;
         _modes.Enabled = !running;
         _autoWalk.Enabled = !running;

@@ -380,10 +380,54 @@ internal static class NavTuning
     public const int PostMinigameRestartSevereAfterFailedRestarts = 2;
     public const double PostMinigameRestartSevereBackoutS = 2.0;
 
+    /// <summary>
+    /// Count chuột trên một độ yaw, ĐO SAU hệ số nhân — 16.89 đo trên máy này ngày 25/08, cùng con số
+    /// ghi ở <c>Core/InputSender.cs</c>. Trước đây chỉ là chú thích; giờ nó điều khiển luồng chạy (chốt
+    /// góc quay của chu kỳ NẶNG) nên phải là hằng số có ca kiểm. Đổi con này khi độ nhạy chuột trong
+    /// game đổi, ĐỪNG bù bằng cách chỉnh tốc độ quay.
+    /// </summary>
+    public const double MouseCountsPerDegree = 16.89;
+
+    /// <summary>
+    /// Tốc độ quay của chu kỳ NẶNG (cps, TRƯỚC hệ số) — cùng dải với KET1 chứ không dùng
+    /// <see cref="Lost360RateCps"/>: 1850 cps quay 45° chỉ mất ~103 ms, ngắn hơn cả ramp
+    /// <c>XTauS = 0.050</c>, góc ra hụt và không lặp lại được.
+    /// </summary>
+    public const double PostMinigameRestartYawRateCps = 420.0;
+
+    /// <summary>Không tăng thêm count trong khoảng này thì coi cú quay là tắc và bỏ pha.</summary>
+    public const double PostMinigameRestartYawStallS = 0.400;
+
+    /// <summary>
+    /// Chạy thẳng sau khi quay, không lái. Thiếu pha này thì servo bám điểm vàng bẻ lại hướng cũ sau
+    /// vài trăm ms và cú quay thành vô nghĩa — KET1 có CLEAR_FORWARD 650 ms đúng vì lý do đó.
+    /// </summary>
+    public const double PostMinigameRestartClearForwardS = 0.900;
+
+    /// <summary>
+    /// Thang góc theo từng chu kỳ NẶNG, đảo bên và tăng dần biên độ rồi lặp. Ladder chỉ tiến TRONG một
+    /// chuỗi kẹt: <see cref="NavRestartTurn"/> đọc nó theo số chu kỳ, mà số chu kỳ về 0 mỗi lần arm lại
+    /// watch (tức mỗi lần giải xong một minigame).
+    /// </summary>
+    public static readonly double[] PostMinigameRestartYawLadderDeg =
+        { 45.0, -45.0, 90.0, -90.0, 135.0, -135.0, 180.0, -180.0 };
+
     // ================================================================ reset nghe (job recovery)
     public const int JobRecoveryAfterSearchRounds = 3;
     public const double JobRecoveryBlindTriggerS = 6.0;
     public const double JobRecoveryCooldownS = 20.0;
+
+    /// <summary>
+    /// Nhịp tối thiểu giữa hai lần đọc bảng nghề theo yêu cầu (<c>NavCapture.ReadBoardNow</c>) — mỗi lần
+    /// tốn ~15–25 ms trên tick điều hướng nên không được gọi liên tục.
+    /// </summary>
+    public const double JobBoardProbeCooldownS = 2.5;
+
+    /// <summary>Hiệu lực của kết quả đọc gần nhất, dùng cho cờ <c>npcBoard</c> của cổng ngắt panel.</summary>
+    public const double JobBoardProbeCacheS = 3.0;
+
+    /// <summary>Không tiến quá lâu thì nghi có panel chặn → đọc bảng nghề. Ngắn hơn nhiều watchdog 30 s.</summary>
+    public const double JobBoardProbeIdleS = 5.0;
     public const double JobRecoveryTargetConf = 0.42;
     public const double JobRecoveryWorldConf = 0.50;
     public const int JobRecoveryPromptFrames = 4;
@@ -501,4 +545,74 @@ internal static class NavCameraReset
         Final when elapsed >= NavTuning.CameraResetFinalSettleS => WReclaim,
         _ => phase
     };
+}
+
+/// <summary>
+/// Chuỗi thoát kẹt của chu kỳ NẶNG (watch 30 s sau minigame): lùi S → xung W lấy lại quyền chuột →
+/// QUAY NGANG một góc trong thang → chạy thẳng một đoạn → xong (nhường cho reset camera).
+///
+/// Vì sao phải có pha quay: <see cref="NavCameraReset"/> chỉ chạm trục Y (cúi xuống đất rồi ngẩng lên),
+/// nên "lùi S 2 s → reset camera → W" của bản cũ đưa nhân vật về đúng chỗ cũ theo đúng hướng cũ. Log
+/// thật cho thấy nó lặp từ chu kỳ #3 tới #12 mà không thoát được.
+///
+/// Góc chốt bằng ĐẾM COUNT (<see cref="NavInput.XSentCounts"/>) chứ không bằng thời gian: luồng chuột
+/// 240 Hz có ramp <c>XTauS = 0.050</c> hai đầu và có thể tụt lease 120 ms, nên rate × duration luôn
+/// hụt góc. Cap thời gian ở đây chỉ là lưới chặn, và nó được SUY RA từ hiệu chuẩn — đừng đặt số literal:
+/// KET1 đã mắc đúng lỗi đó (đích 168° với cap 950 ms ở 420 cps chỉ quay nổi ≈94°).
+/// </summary>
+internal static class NavRestartTurn
+{
+    public const string Backout = "BACKOUT_S";
+    public const string Reacquire = "REACQUIRE_INPUT";
+    public const string Yaw = "YAW_TURN";
+    public const string ClearForward = "CLEAR_FORWARD";
+    public const string Done = "DONE";
+
+    public static readonly string[] Sequence = { Backout, Reacquire, Yaw, ClearForward, Done };
+
+    /// <summary>Góc của chu kỳ NẶNG thứ <paramref name="severeIndex"/> (0 = chu kỳ NẶNG đầu tiên).</summary>
+    public static double AngleForCycle(int severeIndex)
+    {
+        var ladder = NavTuning.PostMinigameRestartYawLadderDeg;
+        if (ladder is null || ladder.Length == 0) return 45.0;
+        int i = severeIndex % ladder.Length;
+        if (i < 0) i += ladder.Length;
+        return ladder[i];
+    }
+
+    /// <summary>Count OS cần gửi để quay <paramref name="deg"/> độ — luôn dương.</summary>
+    public static long CountsForDegrees(double deg) =>
+        (long)Math.Ceiling(Math.Abs(deg) * NavTuning.MouseCountsPerDegree);
+
+    /// <summary>
+    /// Lưới chặn thời gian cho pha quay: thời gian lý tưởng của góc này ở tốc độ này, nhân dư cho ramp
+    /// hai đầu và các lần tụt lease. SUY RA từ hiệu chuẩn nên tự đúng với mọi
+    /// <see cref="NavSettings.MouseSpeedMultiplier"/> (0.25 → 180° cần ~29 s).
+    /// </summary>
+    public static double HardCapS(double deg, double cps, double multiplier)
+    {
+        double effCps = Math.Abs(cps) * Math.Max(0.01, multiplier);
+        if (effCps < 1.0) return 30.0;
+        double ideal = CountsForDegrees(deg) / effCps;
+        return Math.Clamp(ideal * 2.5 + 0.60, 0.35, 45.0);
+    }
+
+    /// <summary>
+    /// Máy pha thuần — không chạm input, để <c>VerifyNav</c> lùa được bằng count tổng hợp.
+    /// <paramref name="countsDone"/> là |count đã gửi| kể từ đầu pha quay.
+    /// </summary>
+    public static string Advance(string phase, double elapsed, long countsDone, long countsTarget,
+                                bool stalled, double capS) => phase switch
+    {
+        Backout when elapsed >= BackoutS => Reacquire,
+        Reacquire when elapsed >= NavTuning.CameraResetReacquireSettleS => Yaw,
+        Yaw when countsDone >= countsTarget || stalled || elapsed >= capS => ClearForward,
+        ClearForward when elapsed >= ClearForwardS => Done,
+        _ => phase
+    };
+
+    /// <summary>Giữ đúng sàn phòng hờ mà bản cũ đã có (<c>Math.Max(0.5, …)</c>).</summary>
+    public static double BackoutS => Math.Max(0.5, NavTuning.PostMinigameRestartSevereBackoutS);
+
+    public static double ClearForwardS => Math.Max(0.25, NavTuning.PostMinigameRestartClearForwardS);
 }
