@@ -54,7 +54,9 @@ $UserDataDir = Join-Path $env:APPDATA 'GtaMiniGameBot'
 
 # Thu muc chi dung khi setup (anh tinh full man hinh) hoac la rac debug -
 # khong can cho bot chay, va shots/ nang ~27 MB nen tuyet doi khong gom vao.
-$ExcludedDirs = @('shots', 'unknown')
+# 'debug' khong dau gach: bo loc tien to chi bat 'debug-', nen debug/ tung lot vao
+# zip mang theo anh chup game that (ten nguoi, chat, HUD).
+$ExcludedDirs = @('shots', 'unknown', 'debug')
 $ExcludedDirPrefix = 'debug-'
 
 # Nhung gi ban portable phai mang theo, khop voi AppPaths.MigrateFromExeFolder.
@@ -194,6 +196,13 @@ Write-Host "Build tu nhanh $branch, commit $sha."
 $stamp = Get-Date -Format 'yyyyMMdd'
 $Staging = Join-Path $env:TEMP "gta-portable-$sha-$stamp"
 if (Test-Path $Staging) { Remove-Item -Path $Staging -Recurse -Force }
+
+# csproj tro OutputPath vao thu muc app cua repo, nen buoc Build (publish phu thuoc
+# vao no) ghi thang vao do va de mat ban dang dung, dong thoi chot FailIfAppRunning
+# bat phai tat app. De o day cho no ghi ra TEMP. PHAI nam NGOAI $Staging - de ben
+# trong la output buoc Build bi nen vao zip.
+$BuildTmp = "$Staging-build"
+if (Test-Path $BuildTmp) { Remove-Item -Path $BuildTmp -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $Staging | Out-Null
 
 $csproj = Join-Path $RepoRoot 'src\GtaMiniGameBot\GtaMiniGameBot.csproj'
@@ -205,6 +214,8 @@ Write-Host "Publish self-contained win-x64..."
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `
+    -p:OutputPath="$BuildTmp\" `
+    -p:SkipAppLockCheck=true `
     -o $Staging
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish that bai (exit $LASTEXITCODE)." }
 
@@ -276,6 +287,7 @@ Write-Host "Nen ra zip..."
 Compress-Archive -Path (Join-Path $Staging '*') -DestinationPath $zip -CompressionLevel Optimal
 
 Remove-Item -Path $Staging -Recurse -Force
+if (Test-Path $BuildTmp) { Remove-Item -Path $BuildTmp -Recurse -Force }
 
 $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
 Write-Host ""
