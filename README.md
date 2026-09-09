@@ -20,7 +20,7 @@ Nếu exe đang mở: **không kill**. Báo đúng câu này rồi dừng:
 
 `Đang chạy app\GtaMiniGameBot.exe. Tắt app rồi bảo build lại.`
 
-Đóng gói share: `tools/build-portable.ps1` (zip trong `dist\`, không đổi `app\`).
+Đóng gói share: `tools/build-portable.ps1` (zip trong `dist\`, không đụng `app\` — bước Build ghi ra `%TEMP%`).
 
 ## Verify nghề Điện
 
