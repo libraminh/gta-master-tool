@@ -415,3 +415,34 @@ internal sealed class CapacityBar : DrawPanel
             new Rectangle(0, Theme.Px(38), Width, Theme.Px(16)), Theme.Dimmer, Theme.Left);
     }
 }
+
+/// <summary>
+/// Một dòng màn hình trong <see cref="DarkPick"/>.
+///
+/// <see cref="Screen"/> null nghia la muc "tu dong" — overlay dung no de bam theo cua so game
+/// thay vi ep cung mot man. Panel job khong dung nhanh null, chung luon truyen Screen that.
+/// </summary>
+internal sealed class ScreenItem
+{
+    public Screen Screen { get; }
+
+    public ScreenItem(Screen s) => Screen = s;
+
+    /// <summary>DeviceName rỗng khi tự động — dùng để so khớp lúc nạp cài đặt.</summary>
+    public string DeviceName => Screen?.DeviceName ?? "";
+
+    /// <summary>Gắn nhãn cả 2K lẫn FHD — job hỗ trợ cả hai, nên nói rõ cái nào là cái nào.</summary>
+    public override string ToString()
+    {
+        if (Screen is null) return "Tự động — bám theo cửa sổ game";
+
+        var b = Screen.Bounds;
+        string tag = (b.Width, b.Height) switch
+        {
+            (2560, 1440) => "  (2K)",
+            (1920, 1080) => "  (FHD)",
+            _ => ""
+        };
+        return $"{Screen.DeviceName}  {b.Width}×{b.Height}{tag}{(Screen.Primary ? "  chính" : "")}";
+    }
+}

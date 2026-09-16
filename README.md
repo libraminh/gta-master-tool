@@ -40,6 +40,8 @@ tường hiện tại trước khi gửi phím.
 ## Dữ liệu
 
 - Config / ROI / icon: `%AppData%\GtaMiniGameBot` (`AppPaths`).
+- `app.json` (`AppSettings`) — cài đặt chung: cờ log debug + overlay (bật/tắt, màn hình). Chỉnh ở tab
+  Tiện ích. File này nhiều mục dùng chung, sửa phải đọc-sửa-ghi qua `AppSettings.Current`.
 - Log / debug: `%AppData%\GtaMiniGameBot\logs\`
   - `bot-log.txt` — mặc định tắt, bật ở tab Tiện ích.
   - `overlay-log.txt`, `debug\` (dump dầu).
