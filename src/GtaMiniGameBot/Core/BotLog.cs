@@ -1,5 +1,4 @@
 using System.Text;
-using System.Text.Json;
 
 namespace GtaMiniGameBot;
 
@@ -11,37 +10,18 @@ internal static class BotLog
 {
     public static string LogPath => Path.Combine(AppPaths.Logs, "bot-log.txt");
     private static readonly Encoding Encoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
-    private static readonly JsonSerializerOptions Opts = new()
-    {
-        WriteIndented = true,
-        PropertyNameCaseInsensitive = true
-    };
 
-    public static bool Enabled { get; private set; }
+    public static bool Enabled => AppSettings.Current.DebugFileLog;
 
-    public static string SettingsPath => Path.Combine(AppPaths.Root, "app.json");
-
-    public static void Load()
-    {
-        Enabled = false;
-        try
-        {
-            if (!File.Exists(SettingsPath)) return;
-            var cfg = JsonSerializer.Deserialize<Settings>(File.ReadAllText(SettingsPath), Opts);
-            if (cfg is not null) Enabled = cfg.DebugFileLog;
-        }
-        catch { /* file hong -> tat, dung nhu mac dinh */ }
-    }
-
+    /// <summary>
+    /// Co nam trong app.json, chung file voi cai dat overlay. Vi the o day chi doc/ghi qua
+    /// <see cref="AppSettings.Current"/> — dung mot object rieng roi WriteAllText se xoa
+    /// sach cac muc khac trong file. Nap thi da co AppSettings.Load() luc khoi dong.
+    /// </summary>
     public static void SetEnabled(bool on)
     {
-        Enabled = on;
-        try
-        {
-            File.WriteAllText(SettingsPath,
-                JsonSerializer.Serialize(new Settings { DebugFileLog = on }, Opts));
-        }
-        catch { /* khong ghi duoc thi van giu flag trong RAM */ }
+        AppSettings.Current.DebugFileLog = on;
+        AppSettings.Current.Save();
     }
 
     /// <summary>
@@ -59,10 +39,5 @@ internal static class BotLog
                 Encoding);
         }
         catch { }
-    }
-
-    private sealed class Settings
-    {
-        public bool DebugFileLog { get; set; }
     }
 }

@@ -556,18 +556,6 @@ internal sealed class FishingPanel : UserControl
         host.Controls.Add(box);
     }
 
-    private sealed class ScreenItem
-    {
-        public Screen Screen { get; }
-        public ScreenItem(Screen s) => Screen = s;
-        public override string ToString()
-        {
-            var b = Screen.Bounds;
-            string tag = b.Width == 2560 && b.Height == 1440 ? "  (2K)" : "";
-            return $"{Screen.DeviceName}  {b.Width}×{b.Height}{tag}";
-        }
-    }
-
     private Screen SelectedScreen => (_screens.SelectedItem as ScreenItem)?.Screen;
 
     private void FillScreens()

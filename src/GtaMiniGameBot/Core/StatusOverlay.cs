@@ -63,9 +63,17 @@ internal sealed class StatusOverlay : Form
         if (Visible) Invalidate();
     }
 
+    /// <summary>
+    /// Hiện thẻ và bám theo cửa sổ game.
+    ///
+    /// Cong bat/tat nam o day chu khong o ben goi, de ca hai duong — job chay va nut test 5 giay —
+    /// deu bi chan bang mot cho, khong sot.
+    /// </summary>
     public void ShowOn(string windowMatch)
     {
         if (IsDisposed) return;
+        if (!AppSettings.Current.OverlayEnabled) { Hide(); return; }
+
         _windowMatch = string.IsNullOrWhiteSpace(windowMatch) ? "PlayXGTA" : windowMatch;
         _ticks = 0;
 
@@ -118,13 +126,18 @@ internal sealed class StatusOverlay : Form
     }
 
     /// <summary>
-    /// Goc tren-trai cua so game, nhung chi nhan neu cua so do nam tren man hinh
-    /// game — khong thi the de bay sang man phu roi khong ai thay.
+    /// Goc tren-trai cua so game, neo vao man hinh dang hien the.
+    ///
+    /// Man hinh lay theo cai dat: rong = TU DONG, tuc suy ra tu chinh rect cua so game
+    /// (<see cref="Screen.FromRectangle"/> tra man giao nhieu nhat) nen keo game sang man nao
+    /// the bam theo man do. Co DeviceName = user ep cung, the o yen tren man do du game o dau.
+    ///
+    /// Truoc day cho nay goi Prefer2kOrPrimary(): may hai man CUNG 2560x1440 thi no luon tra
+    /// man dau, game o man hai khong giao bounds nen the roi ve goc man mot — dung loi da gap.
     /// </summary>
     private (int x, int y, string source) AnchorPoint()
     {
-        var screen = FishingConfig.Prefer2kOrPrimary();
-        var bounds = screen.Bounds;
+        var forced = ForcedScreen();
 
         var game = Native.FindWindowByTitleContains(_windowMatch);
         if (game != IntPtr.Zero
@@ -133,15 +146,35 @@ internal sealed class StatusOverlay : Form
             && r.Width > 50 && r.Height > 50)
         {
             var rect = new Rectangle(r.Left, r.Top, r.Width, r.Height);
-            if (bounds.IntersectsWith(rect))
+
+            // Tu dong: man suy ra TU rect nen khoi phai thu giao nhau nua.
+            // Ep cung: chi bam theo cua so khi no that su nam tren man do.
+            var target = forced ?? Screen.FromRectangle(rect);
+            if (forced is null || forced.Bounds.IntersectsWith(rect))
+            {
+                var b = target.Bounds;
                 return (
-                    Math.Clamp(rect.Left + MarginPx, bounds.Left, bounds.Right - CardW),
-                    Math.Clamp(rect.Top + MarginPx, bounds.Top, bounds.Bottom - CardH),
+                    Math.Clamp(rect.Left + MarginPx, b.Left, b.Right - CardW),
+                    Math.Clamp(rect.Top + MarginPx, b.Top, b.Bottom - CardH),
                     $"cửa sổ “{TitleOf(game)}” tại ({rect.Left},{rect.Top}) {rect.Width}x{rect.Height}");
+            }
         }
 
+        var screen = forced ?? FishingConfig.Prefer2kOrPrimary();
+        var bounds = screen.Bounds;
         return (bounds.Left + MarginPx, bounds.Top + MarginPx,
             $"màn hình {screen.DeviceName} ({bounds.Left},{bounds.Top}) {bounds.Width}x{bounds.Height}");
+    }
+
+    /// <summary>
+    /// Man user ep cung, hoac null khi de tu dong. Rut day man hinh ra thi DeviceName da luu
+    /// khong con khop — tra null de lui ve tu dong, KHONG sua file config: cam lai la chay tiep.
+    /// </summary>
+    private static Screen ForcedScreen()
+    {
+        string want = AppSettings.Current.OverlayScreen;
+        if (string.IsNullOrWhiteSpace(want)) return null;
+        return Screen.AllScreens.FirstOrDefault(s => s.DeviceName == want);
     }
 
     protected override void OnPaint(PaintEventArgs e)

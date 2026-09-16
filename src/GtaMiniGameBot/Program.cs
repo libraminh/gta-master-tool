@@ -226,7 +226,7 @@ internal static class Program
         }
 
         AppPaths.MigrateFromExeFolder();
-        BotLog.Load();
+        AppSettings.Load();
         LogHousekeeping.RunAtStart();
 
         Application.EnableVisualStyles();

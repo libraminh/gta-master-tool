@@ -15,12 +15,19 @@ internal sealed class UtilsPanel : UserControl
     private readonly Label _ctrlHold = new();
     private readonly Label _focus = new();
     private readonly DarkButton _btnTestOverlay = new();
+    private readonly DarkCheck _overlayOn = new();
+    private readonly DarkPick _overlayScreen = new();
     private readonly DarkCheck _debugLog = new();
     private readonly Label _note = new();
     private readonly Dictionary<Hk, Label> _keyLabels = new();
 
     /// <summary>Hien badge ON 5 giay de thu, khong can chay job.</summary>
     public event Action TestOverlayRequested;
+
+    /// <summary>
+    /// User vua doi cai dat overlay. HomeForm an/hien ngay, khong bat user tat job roi bat lai.
+    /// </summary>
+    public event Action OverlaySettingsChanged;
 
     /// <summary>Nha hotkey toan cuc de hop thoai bat duoc chinh phim do.</summary>
     public event Action HotkeysSuspend;
@@ -112,6 +119,41 @@ internal sealed class UtilsPanel : UserControl
         });
         y += 40;
 
+        var ovBox = new DarkGroup { Title = "Overlay trong game", Location = new Point(12, y), Size = new Size(w, 128) };
+        Controls.Add(ovBox);
+
+        _overlayOn.Text = "Hiện overlay khi job chạy";
+        _overlayOn.BackColor = Theme.Surface;
+        _overlayOn.SetBounds(16, 26, 760, 22);
+        // Set gia tri TRUOC roi moi gan handler, khong thi ban event ngay luc dung UI.
+        _overlayOn.SetCheckedQuiet(AppSettings.Current.OverlayEnabled);
+        _overlayOn.CheckedChanged += OnOverlayEnabledChanged;
+        ovBox.Controls.Add(_overlayOn);
+
+        ovBox.Controls.Add(new Label
+        {
+            Text = "Màn hình:",
+            ForeColor = Theme.Dim,
+            AutoSize = false,
+            Bounds = new Rectangle(16, 58, 74, 24),
+            TextAlign = ContentAlignment.MiddleLeft
+        });
+
+        _overlayScreen.SetBounds(96, 56, 420, 24);
+        FillOverlayScreens();
+        _overlayScreen.SelectedIndexChanged += OnOverlayScreenChanged;
+        _overlayScreen.Enabled = _overlayOn.Checked;
+        ovBox.Controls.Add(_overlayScreen);
+
+        ovBox.Controls.Add(new Label
+        {
+            Text = "Tự động thì thẻ ● ON bám theo cửa sổ game, đổi màn chơi không phải chỉnh lại.",
+            ForeColor = Theme.Dim,
+            AutoSize = false,
+            Bounds = new Rectangle(16, 88, 760, 18)
+        });
+        y += 144;
+
         var logBox = new DarkGroup { Title = "Log debug", Location = new Point(12, y), Size = new Size(w, 72) };
         Controls.Add(logBox);
 
@@ -132,6 +174,47 @@ internal sealed class UtilsPanel : UserControl
         y += 84;
 
         BuildHotkeyBox(y, w);
+    }
+
+    // ---------------- overlay ----------------
+
+    /// <summary>
+    /// Muc dau la "tu dong" (Screen null), sau do tung man that.
+    ///
+    /// DarkPick.Items.Clear() KHONG reset SelectedIndex — phai gan tay, nhu ElectricPanel.
+    /// </summary>
+    private void FillOverlayScreens()
+    {
+        _overlayScreen.Items.Clear();
+
+        string want = AppSettings.Current.OverlayScreen;
+        int select = 0;
+
+        _overlayScreen.Items.Add(new ScreenItem(null));
+        foreach (var s in Screen.AllScreens)
+        {
+            _overlayScreen.Items.Add(new ScreenItem(s));
+            if (s.DeviceName == want) select = _overlayScreen.Items.Count - 1;
+        }
+
+        _overlayScreen.SelectedIndex = select;
+    }
+
+    private void OnOverlayEnabledChanged()
+    {
+        AppSettings.Current.OverlayEnabled = _overlayOn.Checked;
+        AppSettings.Current.Save();
+        _overlayScreen.Enabled = _overlayOn.Checked;
+        OverlaySettingsChanged?.Invoke();
+    }
+
+    private void OnOverlayScreenChanged()
+    {
+        if (_overlayScreen.SelectedItem is not ScreenItem item) return;
+
+        AppSettings.Current.OverlayScreen = item.DeviceName;
+        AppSettings.Current.Save();
+        OverlaySettingsChanged?.Invoke();
     }
 
     private void BuildHotkeyBox(int y, int w)

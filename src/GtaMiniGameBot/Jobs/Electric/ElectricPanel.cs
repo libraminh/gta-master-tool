@@ -355,25 +355,6 @@ internal sealed class ElectricPanel : UserControl
         });
     }
 
-    /// <summary>Gắn nhãn cả 2K lẫn FHD — job này hỗ trợ cả hai, nên nói rõ cái nào là cái nào.</summary>
-    private sealed class ScreenItem
-    {
-        public Screen Screen { get; }
-        public ScreenItem(Screen s) => Screen = s;
-
-        public override string ToString()
-        {
-            var b = Screen.Bounds;
-            string tag = (b.Width, b.Height) switch
-            {
-                (2560, 1440) => "  (2K)",
-                (1920, 1080) => "  (FHD)",
-                _ => ""
-            };
-            return $"{Screen.DeviceName}  {b.Width}×{b.Height}{tag}";
-        }
-    }
-
     private sealed class ModeItem
     {
         public ElectricMode Mode { get; }

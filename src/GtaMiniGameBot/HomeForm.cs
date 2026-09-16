@@ -48,6 +48,7 @@ internal sealed class HomeForm : Form
         _wood.RunningChanged += OnJobRunning;
         _elec.RunningChanged += OnJobRunning;
         _utils.TestOverlayRequested += OnTestOverlay;
+        _utils.OverlaySettingsChanged += OnOverlaySettingsChanged;
         _utils.HotkeysSuspend += UnregisterHotkeys;
         _utils.HotkeysApplied += OnHotkeysApplied;
 
@@ -82,10 +83,21 @@ internal sealed class HomeForm : Form
     private void StopOverlayTest()
     {
         _overlayTest.Stop();
-        if (!_oil.IsRunning && !_fish.IsRunning && !_mine.IsRunning && !_wood.IsRunning
-            && !_elec.IsRunning)
-            _overlay.Hide();
+        if (!AnyJobRunning) _overlay.Hide();
     }
+
+    /// <summary>
+    /// Doi cai dat giua chung: ap ngay thay vi bat user tat job roi bat lai.
+    /// Tat -> an luon. Bat lai -> chi hien neu dang co job chay; ShowOn tu kiem tra co bat/tat.
+    /// </summary>
+    private void OnOverlaySettingsChanged()
+    {
+        if (AnyJobRunning || _overlayTest.Enabled) _overlay.ShowOn("PlayXGTA");
+        else _overlay.Hide();
+    }
+
+    private bool AnyJobRunning =>
+        _oil.IsRunning || _fish.IsRunning || _mine.IsRunning || _wood.IsRunning || _elec.IsRunning;
 
     private void BuildRail()
     {
@@ -320,6 +332,7 @@ internal sealed class HomeForm : Form
         _elec.RunningChanged -= OnJobRunning;
         _fish.StateChanged -= _overlay.Update;
         _utils.TestOverlayRequested -= OnTestOverlay;
+        _utils.OverlaySettingsChanged -= OnOverlaySettingsChanged;
         _utils.HotkeysSuspend -= UnregisterHotkeys;
         _utils.HotkeysApplied -= OnHotkeysApplied;
         _overlayTest.Stop();
