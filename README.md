@@ -38,6 +38,26 @@ bản ghi, bộ dựng bản đồ). Thêm `--learn` để học lại mẫu bli
 bản đồ từ các `rec-*.csv` đã ghi được. Mẫu blip, bản ghi và `yard-map-v1.json` nằm trong
 `%AppData%\GtaMiniGameBot\electric\<WxH>\map\`; ảnh soi bằng mắt ở `…\debug\map\`.
 
+`--verify-map` còn mô phỏng **bám waypoint** (bộ bám đi qua sân tổng hợp có vật cản chữ U, mất pose,
+teleport) và lập đường trên **bản đồ thật** nếu máy đã có `yard-map-v1.json` — in độ dài đường từ ⚡
+tới tư thế tiếp cận của từng máy. Chỉ muốn kiểm thì **đừng** thêm `--build`: nó dựng lại và ghi đè bản
+đồ đang dùng.
+
+## Bám waypoint theo bản đồ sân (nghề Điện)
+
+Có `yard-map-v1.json` thì bot đi tới máy theo **đường người đã đi**, chỉ giao lại ~3 m cuối cho luồng
+cột vàng 3D → `[E] TƯƠNG TÁC`. Không có file (hoặc `Nav.UseYardMap = false` trong `electric.json`) thì
+bộ bám nằm im vĩnh viễn và hành vi y hệt như trước — đây là đường lùi khi có nghi ngờ.
+
+Đọc dòng trạng thái trong khung **Diễn biến** / `bot-log.txt`:
+
+- `map=FIX2 c=0.93 mk=3 rem=41mu` — định vị bằng 2 mốc, đang đi tới máy 3, còn 41 mu (≈20 m) đường.
+  `rem` phải tụt đều; `mk=–` mãi nghĩa là điểm vàng không rơi vào máy nào đã dạy (bot vẫn lái như cũ).
+- `[MAP_BÁM|…]` ở đầu dòng = bộ bám đang cầm lái. `MAP_CHỜ_FIX2`, `MAP_MẤT_POSE`, `MAP_CHƯA_RÕ_MÁY`,
+  `MAP_KHÔNG_CÓ_ĐƯỜNG`, `MAP_THOÁT_KẸT` là các lý do nó đứng ngoài.
+- `[BẢN ĐỒ] khoá máy k` / `lập đường tới máy k` / `giao lại 3 m cuối cho luồng cũ` — các mốc bàn giao;
+  sau dòng "giao lại" là `WORLD_DIRECT_*` rồi `[E ARM]` như mọi khi.
+
 Water & Power ưu tiên DXGI Desktop Duplication (`Vortice.Direct3D11`) và tự lùi về GDI nếu GPU,
 output xoay hoặc desktop mode không hỗ trợ. Capture chỉ sống khi job Điện chạy, chỉ xử lý frame mới.
 Tuyến cache nằm trong `%AppData%\GtaMiniGameBot\electric\`; cache luôn được kiểm chứng lại trên

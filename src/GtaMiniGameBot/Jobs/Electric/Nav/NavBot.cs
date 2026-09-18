@@ -690,7 +690,7 @@ internal sealed class NavBot
             string wx = world.X is null ? "---" : $"{world.X.Value:0}";
             Emit($"[{state}] Q={target.Quality} C={target.Confidence:F2} rel={re} dist={ds} " +
                  $"WQ={world.Quality} WC={world.Confidence:F2} Wx={wx} A={world.Area:0} keys={KeysText(keys)} " +
-                 $"tick={_tickMsEma:0.0}ms quét={snap.Hz:0}Hz");
+                 $"tick={_tickMsEma:0.0}ms quét={snap.Hz:0}Hz{MapText()}");
         }
         return false;
     }
@@ -699,7 +699,24 @@ internal sealed class NavBot
     {
         if (now - _lastStatusLog < 0.5) return;
         _lastStatusLog = now;
-        Emit($"{head} quét={snap.Hz:0}Hz");
+        Emit($"{head} quét={snap.Hz:0}Hz{MapText()}");
+    }
+
+    /// <summary>
+    /// Đuôi <c>map=…</c> của dòng trạng thái: chất lượng pose, độ tin, máy đang khoá và cung đường còn
+    /// lại. Không có bản đồ (chưa dạy, hoặc <c>UseYardMap=false</c>) thì KHÔNG in gì — dòng log của
+    /// người chưa dùng bản đồ phải y hệt như trước, để so A/B đọc được bằng mắt.
+    ///
+    /// Đọc thế nào khi thử trong game: <c>map=FIX2</c> hoặc <c>FIX2_LM</c> là đang định vị bằng 2 mốc
+    /// (tốt); <c>mk=</c> có số là đã biết mình đi tới máy nào; <c>rem=</c> tụt dần là đang bám đường.
+    /// <c>mk=–</c> mãi nghĩa là điểm vàng rơi ngoài mọi máy đã dạy — bot vẫn lái như PR2.
+    /// </summary>
+    private string MapText()
+    {
+        if (!_mapOn || _yardPose is null) return "";
+        string mk = _follower.MarkerId < 0 ? "–" : _follower.MarkerId.ToString();
+        string rem = _follower.RemainingMu >= 0 ? $"{_follower.RemainingMu:0}mu" : "–";
+        return $" map={_yardPose.Quality} c={_yardPose.Conf:F2} mk={mk} rem={rem}";
     }
 
     /// <summary>
