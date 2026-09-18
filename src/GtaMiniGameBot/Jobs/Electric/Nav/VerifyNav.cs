@@ -441,6 +441,22 @@ internal static class VerifyNav
             try { input.Apply(NavKey.NoAutoW); } catch { threw = true; }
             Check(ref fail, !threw && input.Held == NavKey.None,
                   "NavInput.Apply lọc bit giả NoAutoW (không ném, không giữ phím)", $"{input.Held}");
+
+            // Cong tac: bat -> Compute vao thang; tat -> dung duong KET1 cu, khong doi gi.
+            var tgt = new TargetOutput
+            {
+                State = "LOCK", Visible = true, X = 120.0, Y = 900.0,
+                Confidence = 0.9, CandidateCount = 1, Quality = "FULL_LOCK", RawGeometry = 0.9
+            };
+            var on = new NavController(S1, input, escapeLadder: true);
+            var rOn = on.Compute(10.0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            var off = new NavController(S1, input, escapeLadder: false);
+            var rOff = off.Compute(10.0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            Check(ref fail, rOn.state == NavEscape.Strafe && rOn.keys == (NavKey.D | NavKey.NoAutoW) && on.EscapeActive,
+                  "Compute kẹt + công tắc BẬT → bậc 0 của thang", $"{rOn.state} {KeysOf(rOn.keys)}");
+            Check(ref fail, rOff.state == "KET1_TURN_AROUND" && off.EscapeActive && off.EscapeSource == "MINIMAP",
+                  "Compute kẹt + công tắc TẮT → KET1 cũ y nguyên", rOff.state);
+            input.StopMouseStream(immediate: true);
         }
         return fail;
     }

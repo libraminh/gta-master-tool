@@ -40,6 +40,8 @@ internal sealed class NavController
     private readonly bool _escapeLadderEnabled;
     private long _escTurnMark;
     private int _escTurnSerial;
+    private bool _ket1Standalone;
+    private double _ket1StartT;
 
     public event Action<string> Log;
 
@@ -863,6 +865,8 @@ internal sealed class NavController
         if (!_ladder.Begin(now, dist, rel, _pendingObstacleSide ?? 0, source)) return false;
         _pendingObstacleSide = null;
         ResetSmoothMouse();
+        NavEscapeStats.NoteEpisode(_ladder.LastBeginJoined);
+        NavEscapeStats.NoteRung(_ladder.Rung);
         Emit($"[THOÁT KẸT] đợt #{_ladder.Serial} nguồn={source} bên={SideName(_ladder.Side)} bậc {_ladder.Rung} " +
              $"(lần {_ladder.Attempts}) dist={dist:F1} rel={rel:+0.0;-0.0}");
         return true;
@@ -872,6 +876,7 @@ internal sealed class NavController
     private void CancelEscape(double now)
     {
         _input.StopMouseStream(immediate: true);
+        if (_ladder.Active) NavEscapeStats.NoteCancelled(_ladder.ElapsedS(now));
         _ladder.Cancel(now);
         Active = null;
         _recoveryBlockUntil = now;
@@ -947,6 +952,7 @@ internal sealed class NavController
         if (st is null) { OnEscapeClosed(now, rung); return null; }
 
         var a = st.Value;
+        if (a.Rung != rung) NavEscapeStats.NoteRung(a.Rung);
         if (a.Legacy && Active is null)
         {
             if (a.State != before) LogEscapePhase(before, a);
@@ -972,8 +978,9 @@ internal sealed class NavController
         Active = null;
         _recoveryBlockUntil = now;
         var ep = _ladder.ClosedEpisode;
-        double ms = ep is null ? 0.0 : (now - ep.StartT) * 1000.0;
-        Emit($"[THOÁT XONG] bậc {rung}, {ms:F0} ms (đợt #{ep?.Serial ?? 0}, {ep?.Attempts ?? 0} lần)");
+        double s = ep is null ? 0.0 : Math.Max(0.0, now - ep.StartT);
+        NavEscapeStats.NoteEscaped(rung, s);
+        Emit($"[THOÁT XONG] bậc {rung}, {s * 1000.0:F0} ms (đợt #{ep?.Serial ?? 0}, {ep?.Attempts ?? 0} lần)");
     }
 
     // ================================================================ KET1
@@ -1006,6 +1013,11 @@ internal sealed class NavController
         _humanLastRecoverySide = side;
         _humanLastRecoveryT = now;
         _humanRecoverySerial++;
+
+        // KET1 chay NGOAI thang (tat thang, hoac nguon LIGHTNING_*) tu do lay thoi gian de con so A/B
+        // duoc; KET1 lam bac 4 cua thang thi da nam trong dong ho cua dot roi.
+        _ket1Standalone = !_ladder.Active;
+        _ket1StartT = now;
 
         bool relOk = double.IsFinite(relAngle);
         Active = new Escape
@@ -1105,6 +1117,11 @@ internal sealed class NavController
             Active = null;
             _recoveryBlockUntil = now + NavTuning.Ket1RearmS;
             ResetSmoothMouse();
+            if (_ket1Standalone)
+            {
+                _ket1Standalone = false;
+                NavEscapeStats.NoteKet1(now - _ket1StartT);
+            }
             Emit("[KET1-CLEAR] xong đoạn thẳng → lái theo điểm vàng");
             return null;
         }

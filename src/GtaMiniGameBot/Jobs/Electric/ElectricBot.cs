@@ -108,6 +108,9 @@ internal sealed class ElectricBot
 
         try
         {
+            // Mot PHIEN = mot lan bam Chay. Bo dem thoat ket la static (NavBot bi tao moi moi luot),
+            // nen phai xoa o day thi hai buoi do A/B moi khong cong don vao nhau.
+            NavEscapeStats.ResetSession();
             _boardCache = BoardRouteCache.Load();
 
             if (wantWire)
@@ -234,6 +237,11 @@ internal sealed class ElectricBot
         }
         finally
         {
+            // So lieu de so A/B cong tac "thang thoat ket" (electric.json → nav.escapeLadderEnabled).
+            if (NavEscapeStats.SessionHasData)
+                Emit($"[TỔNG KẸT PHIÊN] thang {(_cfg.Nav.EscapeLadderEnabled ? "BẬT" : "TẮT")} — " +
+                     NavEscapeStats.SessionSummary());
+
             if (_recorder is not null)
             {
                 Emit($"[GHI BẢN ĐỒ] kết thúc — {_recorder.TickCount} tick, {_recorder.EventCount} sự kiện, " +

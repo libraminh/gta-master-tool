@@ -157,6 +157,9 @@ internal sealed class NavEscapeLadder
     /// <summary>Đổi số mỗi lần vào pha quay — người gọi neo lại mốc đếm count khi thấy số này đổi.</summary>
     public int TurnSerial { get; private set; }
 
+    /// <summary>Lần <see cref="Begin"/> gần nhất có NHẬP vào đợt cũ không (kẹt lại cùng chỗ).</summary>
+    public bool LastBeginJoined { get; private set; }
+
     public long TurnCountsTarget => _turnCountsTarget;
 
     /// <summary>Kết quả pha quay vừa xong (để log): count đã gửi và lý do dừng.</summary>
@@ -239,6 +242,7 @@ internal sealed class NavEscapeLadder
                         && now - _lastEp.LastEndT < NavTuning.EscapeEpisodeJoinS
                         && double.IsFinite(dist) && double.IsFinite(_lastEp.StartDist)
                         && Math.Abs(dist - _lastEp.StartDist) < NavTuning.EscapeSameSpotPx * _px;
+        LastBeginJoined = sameSpot;
 
         if (sameSpot)
         {

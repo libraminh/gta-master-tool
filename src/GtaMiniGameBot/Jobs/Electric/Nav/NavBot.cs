@@ -234,6 +234,8 @@ internal sealed class NavBot
                  $"prompt {_locator.BandRegion.Width}×{_locator.BandRegion.Height} @ {_locator.BandRegion.X},{_locator.BandRegion.Y}" +
                  (timer ? "" : ", timeBeginPeriod THẤT BẠI"));
 
+            NavEscapeStats.ResetTrip();
+
             double now0 = NavClock.Now;
             _focusLastGood = 0;
             _wdLastProgressT = now0;
@@ -278,6 +280,9 @@ internal sealed class NavBot
         }
         finally
         {
+            // Tong ket ket cua LUOT nay (bot bi tao moi moi luot nen so lieu nam o static).
+            try { Emit("[TỔNG KẸT LƯỢT] " + NavEscapeStats.TripSummary()); } catch { }
+
             // Thu tu dung: chuot -> nha phim so huu -> nha toan bo -> luong quet -> reader -> timer.
             try { _input?.Dispose(); } catch { }
             try { _input?.ReleaseOwnedOnce(); } catch { }
@@ -514,7 +519,11 @@ internal sealed class NavBot
         {
             int side = _capture.AnalyzeObstacleSide(now, out string note);
             _ctl.SetObstacleSide(side);
-            Emit($"[KẸT XÁC NHẬN] bên={(side > 0 ? "PHẢI" : side < 0 ? "TRÁI" : "TỰ")} {note} dist={dist:F1} rel={rel:+0.0;-0.0}");
+            // Dang thoat ket ma watchdog bao lai thi khong phai cu ket MOI — dem no se thoi phong so
+            // lieu A/B (bac 1 giu W nen van du dieu kien bao ket).
+            if (!_ctl.EscapeActive)
+                Emit($"[KẸT] #{NavEscapeStats.NoteStuck()} bên={(side > 0 ? "PHẢI" : side < 0 ? "TRÁI" : "TỰ")} " +
+                     $"{note} dist={dist:F1} rel={rel:+0.0;-0.0}");
         }
 
         // ---------------- cong world ----------------
