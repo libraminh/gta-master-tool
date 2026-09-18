@@ -135,16 +135,38 @@ internal static class YellowDotDetector
         return m;
     }
 
+    /// <summary>
+    /// Ô cục bộ của <c>target_roi_ref</c> trong khung — một chỗ duy nhất tính nó, để bộ dò chấm vàng
+    /// và bộ dò blip (<see cref="BlipMasks"/>) chắc chắn nhìn cùng một vùng.
+    /// </summary>
+    public static Rectangle TargetRoiLocal(NavFrame f, NavScale s)
+    {
+        var t = NavTuning.TargetRoiRef;
+        return f.ToLocal(s.RoiRef(t[0], t[1], t[2], t[3]));
+    }
+
     /// <summary><c>detect(frame)</c>: chấm vàng đầy trong <c>target_roi_ref</c>, đã sắp theo điểm giảm dần.</summary>
     public static List<NavCandidate> Detect(NavFrame f, NavScale s, double originX, double originY)
     {
-        var outp = new List<NavCandidate>();
-        var roiScreen = s.RoiRef(NavTuning.TargetRoiRef[0], NavTuning.TargetRoiRef[1], NavTuning.TargetRoiRef[2], NavTuning.TargetRoiRef[3]);
-        var local = f.ToLocal(roiScreen);
-        if (local.IsEmpty) return outp;
+        var local = TargetRoiLocal(f, s);
+        if (local.IsEmpty) return new List<NavCandidate>();
+        return Detect(f, s, originX, originY, YellowMask(f, local), local);
+    }
 
-        var mask = YellowDotDetector.YellowMask(f, local);
-        mask = ImageOps.Close(mask, 2);                       // morphologyEx(CLOSE, ones(2,2))
+    /// <summary>
+    /// Như trên nhưng nhận sẵn mặt nạ vàng THÔ (chưa <c>Close</c>) của đúng ô <paramref name="local"/>.
+    ///
+    /// Vì sao có bản này: buổi ghi bản đồ cần mặt nạ vàng cho CẢ chấm vàng lẫn blip ⚡ trong cùng một
+    /// tick, mà quét HSV cả ROI 402×341 hai lần là tốn đôi. Mặt nạ truyền vào phải là bản THÔ —
+    /// <c>Close(2)</c> làm chấm vàng dính vào ⚡ khi hai thứ ở gần nhau, và bộ dò blip cần chúng rời.
+    /// </summary>
+    public static List<NavCandidate> Detect(NavFrame f, NavScale s, double originX, double originY,
+                                            Mask yellowRaw, Rectangle local)
+    {
+        var outp = new List<NavCandidate>();
+        if (local.IsEmpty || yellowRaw is null) return outp;
+
+        var mask = ImageOps.Close(yellowRaw, 2);              // morphologyEx(CLOSE, ones(2,2))
 
         double sx = s.Sx, sy = s.Sy;
         double pox = originX, poy = originY;

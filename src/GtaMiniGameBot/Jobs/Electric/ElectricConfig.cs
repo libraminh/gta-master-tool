@@ -626,6 +626,31 @@ internal sealed class ElectricConfig
     /// <summary>Nơi <c>--verify-wire</c> / <c>--verify-board</c> đổ ảnh trung gian.</summary>
     public static string DebugDir(string key) => Path.Combine(ProfileDir(key), "debug");
 
+    /// <summary>
+    /// Bản đồ sân trạm biến áp của một độ phân giải: mẫu blip, bản ghi buổi dạy, và file bản đồ đã dựng.
+    /// Không nằm trong <see cref="DebugDir"/> vì đây là DỮ LIỆU người dùng tạo ra bằng 20–30 chuyến
+    /// đi tay, không phải ảnh trung gian xoá lúc nào cũng được.
+    /// </summary>
+    public static string MapDir(string key) => Path.Combine(ProfileDir(key), "map");
+
+    /// <summary>Khung minimap chụp lại quanh các mốc đáng ngờ của buổi dạy (mở bảng, mất ⚡).</summary>
+    public static string MapFramesDir(string key) => Path.Combine(MapDir(key), "frames");
+
+    public static string YardMapPath(string key) => Path.Combine(MapDir(key), "yard-map-v1.json");
+
+    /// <summary>Mẫu blip đã học: <c>tpl-lightning.png</c>, <c>tpl-cross.png</c>, <c>tpl-pizza.png</c>.</summary>
+    public static string BlipTemplatePath(string key, string name) =>
+        Path.Combine(MapDir(key), "tpl-" + name + ".png");
+
+    public static string BlipTemplateMetaPath(string key) => Path.Combine(MapDir(key), "tpl.json");
+
+    /// <summary>Một buổi dạy = một CSV, đặt tên theo lúc bắt đầu.</summary>
+    public static string RecPath(string key, string stamp) =>
+        Path.Combine(MapDir(key), "rec-" + stamp + ".csv");
+
+    /// <summary>Nơi <c>--verify-map</c> và nút “Dựng bản đồ” đổ ảnh soi bằng mắt.</summary>
+    public static string DebugMapDir(string key) => Path.Combine(DebugDir(key), "map");
+
     /// <summary>Crop LOW/HIGH và mặt nạ đồng hồ bánh/nước của một độ phân giải.</summary>
     public static string SurvivalDir(string key) => Path.Combine(ProfileDir(key), "survival");
 

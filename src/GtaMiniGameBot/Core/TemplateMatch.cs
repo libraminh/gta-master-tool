@@ -75,6 +75,54 @@ internal sealed class GrayTemplate
         return new GrayTemplate(width, height, gray);
     }
 
+    /// <summary>
+    /// Mau tu MAT NA 0/1 — bat thanh 255, tat thanh 0.
+    ///
+    /// Vi sao so khop tren mat na chu khong tren anh goc: blip minimap nam tren nen ban do doi mau
+    /// lien tuc (co, duong, nuoc), va o anh nav-marker nen ban do BIEN MAT han ma blip van con. Mat
+    /// na mau da tra loi xong cau "pixel nay co phai mau blip khong", nen cai con lai can so khop
+    /// chinh la HINH DANG.
+    /// </summary>
+    public static GrayTemplate FromMask(Mask m)
+    {
+        var gray = new byte[m.Width * m.Height];
+        for (int i = 0; i < gray.Length; i++) gray[i] = m.Data[i] != 0 ? (byte)255 : (byte)0;
+        return new GrayTemplate(m.Width, m.Height, gray);
+    }
+
+    /// <summary>
+    /// NCC tai mot O CU THE tren mot dem phang lon hon, KHONG copy cua so ra mang rieng.
+    ///
+    /// Vi sao can: bo do blip quet ±2 px quanh tam bbox cho ba mau, tuc 75 lan so khop moi tick 25 ms.
+    /// Cat 75 mang nho moi tick la 75 lan cap phat cho mot phep tinh vai tram pixel.
+    /// Ngoai bien hoac mau phang tra 0 — cung quy uoc voi <see cref="Score"/>.
+    /// </summary>
+    public double ScoreAt(byte[] plane, int planeW, int planeH, int stride, int x0, int y0)
+    {
+        if (IsFlat || plane is null) return 0;
+        if (x0 < 0 || y0 < 0 || x0 + Width > planeW || y0 + Height > planeH) return 0;
+
+        long sSum = 0, sSqSum = 0, cross = 0;
+        for (int y = 0; y < Height; y++)
+        {
+            int src = (y0 + y) * stride + x0;
+            int tpl = y * Width;
+            for (int x = 0; x < Width; x++)
+            {
+                int s = plane[src + x];
+                sSum += s;
+                sSqSum += (long)s * s;
+                cross += (long)s * Data[tpl + x];
+            }
+        }
+
+        int n = Data.Length;
+        double num = cross - _mean * sSum;
+        double sVar = sSqSum - (double)sSum * sSum / n;
+        double den = Math.Sqrt(Math.Max(0, sVar) * _varSum);
+        return den < 1e-6 ? 0 : num / den;
+    }
+
     public static GrayTemplate FromFile(string path)
     {
         using var bmp = new Bitmap(path);

@@ -38,6 +38,15 @@ internal sealed class NavSettings
     /// <summary><c>job_recovery_enabled</c> — mất điểm vàng lâu thì đi tới NPC tia sét reset nghề.</summary>
     public bool JobRecoveryEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Buổi DẠY bản đồ sân: người dùng đi tay, bot chỉ chụp minimap và ghi lại — KHÔNG gửi phím nào.
+    ///
+    /// Vì sao là cờ trong file chứ không phải hằng: đây là một chế độ chạy khác hẳn (một buổi 20–30
+    /// chuyến rồi thôi), và người dùng phải bật/tắt được giữa chừng mà không build lại. Minigame mở
+    /// ra thì bộ giải bảng/dây vẫn giải như thường — người chỉ cần đi.
+    /// </summary>
+    public bool TeachMap { get; set; }
+
     /// <summary>Nhịp ghi dòng trạng thái vào log — <c>console_interval_s</c> 0.16 của Python.</summary>
     public int LogEveryMs { get; set; } = 160;
 
@@ -51,6 +60,8 @@ internal sealed class NavSettings
         if (double.IsNaN(PlayerOriginXRef) || PlayerOriginXRef < 0 || PlayerOriginXRef > 1920) PlayerOriginXRef = 0;
         if (double.IsNaN(PlayerOriginYRef) || PlayerOriginYRef < 0 || PlayerOriginYRef > 1080) PlayerOriginYRef = 0;
         LogEveryMs = Math.Clamp(LogEveryMs <= 0 ? 160 : LogEveryMs, 50, 5000);
+        // TeachMap la bool nen khong co gi de kep — nhung khoa SO nao them vao day sau nay thi phai
+        // kep o day, dung tin file json.
     }
 }
 
@@ -460,6 +471,127 @@ internal static class NavTuning
     public const double JobPostRehireMinGuardS = 1.2;
     public const int JobPostRehirePromptClearFrames = 8;
     public const double JobPostRehireNoPromptTimeoutS = 3.5;
+
+    // ================================================================ ghi ban do san (Yard*)
+    //
+    // Doc "vi sao" o dau moi cum. Don vi: *Ref = moc 1080p (dien tich chia sx·sy, be rong chia sx,
+    // be cao chia sy — dung thang ma YellowDotDetector.Detect dang dung); *Mu = don vi ban do
+    // (1 mu = 1/138 khoang cach ⚡–✕, xap xi 0,5 m); *Px = pixel tho cua ban Python (nhan NavScale.Px).
+
+    /// <summary>
+    /// Khoảng cách ⚡–✕ quy ước = 138 mu. Đây là ĐỊNH NGHĨA đơn vị bản đồ, không phải số đo: zoom
+    /// minimap đổi theo ngày (đo 138 px ngày 23/08 nhưng 175 px ngày 05/09, tỉ lệ 1,27×) nên mọi
+    /// khoảng cách phải quy về hai mốc cố định này thì bản đồ mới dùng lại được giữa các buổi.
+    /// </summary>
+    public const double YardDRef = 138.0;
+
+    /// <summary>
+    /// Vị trí 🍕 trong hệ sân (mu) — mốc PHỤ, chỉ hiện khi tới gần. Số này đo trên ba ảnh thật
+    /// (63.0,−152.9) / (64.3,−155.9) / (63.7,−156.7); bộ dựng bản đồ ước lượng lại và ghi vào
+    /// <c>yard-map-v1.json</c>, giá trị ở đây là mặc định khi chưa có file map.
+    /// </summary>
+    public const double YardPizzaXMu = 63.5, YardPizzaYMu = -154.5;
+
+    /// <summary>Trọng số 🍕 khi giải pose: thấp hơn ⚡/✕ vì toạ độ của nó là ƯỚC LƯỢNG, không phải định nghĩa.</summary>
+    public const double YardPizzaWeight = 0.7;
+
+    /// <summary>
+    /// Mặt nạ đỏ cho ✕ (H vòng qua 0). LỎNG có chủ ý: màu ✕ không cố định — thường rgb(213,43,39)
+    /// nhưng <c>nav-pair-b</c> pha nền sáng thành (140,51,54) và (239,152,152). Phân biệt thật nằm ở
+    /// hình dạng + NCC, không ở màu.
+    /// </summary>
+    public const int YardRedHLo = 170, YardRedHHi = 10, YardRedSMin = 90, YardRedVMin = 110;
+
+    // ⚡: 12–13×17 px @2K, 102–106 pixel, fill 0.47 — glyph dung thang, khong tron.
+    public const double YardLightningAreaRefMin = 35.0, YardLightningAreaRefMax = 90.0;
+    public const double YardLightningWRefMin = 7.0, YardLightningWRefMax = 12.0;
+    public const double YardLightningHRefMin = 10.0, YardLightningHRefMax = 15.0;
+    public const double YardLightningFillMin = 0.35, YardLightningFillMax = 0.62;
+
+    // ✕: 12×15 px @2K, 150–166 pixel, fill 0.87 — vuong do dac.
+    public const double YardCrossAreaRefMin = 60.0, YardCrossAreaRefMax = 120.0;
+    public const double YardCrossWRefMin = 8.0, YardCrossWRefMax = 11.0;
+    public const double YardCrossHRefMin = 10.0, YardCrossHRefMax = 13.0;
+    public const double YardCrossFillMin = 0.75;
+
+    // 🍕: 22×21 px @2K, 160–165 pixel, fill 0.35 — vong do/trang, rong ruot nen fill thap.
+    public const double YardPizzaAreaRefMin = 70.0, YardPizzaAreaRefMax = 130.0;
+    public const double YardPizzaWRefMin = 14.0, YardPizzaWRefMax = 19.0;
+    public const double YardPizzaHRefMin = 14.0, YardPizzaHRefMax = 18.0;
+    public const double YardPizzaFillMin = 0.25, YardPizzaFillMax = 0.50;
+
+    /// <summary>Lề cắt quanh bbox khi học mẫu — NCC cần thấy cả viền nền, không chỉ ruột glyph.</summary>
+    public const int YardTemplateMarginPx = 2;
+
+    /// <summary>
+    /// Ngưỡng NCC nhận một blip. 0.55 chứ không cao hơn: glyph xoay theo bản đồ vài độ và nền dưới
+    /// blip đổi liên tục, mà mẫu lại chỉ 17×21 nên vài pixel lệch đã kéo NCC xuống.
+    /// </summary>
+    public const double YardNccAccept = 0.55;
+
+    /// <summary>Quét ±2 px quanh tâm bbox rồi lấy điểm cao nhất — tâm màu lệch 2–4 px với glyph ⚡.</summary>
+    public const int YardNccSearchPx = 2;
+
+    /// <summary>
+    /// Mốc phải cách mép ROI ít nhất ngần này (×sx) mới dùng được. Mép vẽ của radar gần trùng mép
+    /// ROI nên blip sắp khuất bị CẮT: bbox co lại, tâm trôi vào trong, và pose lệch một cách âm thầm.
+    /// </summary>
+    public const double YardEdgeInsetRef = 6.0;
+
+    // Cong ti le: zoom doi thi s doi ~27 %, con blip la thi lech vai phan tram — loc bang EMA chat.
+    public const double YardScaleGate = 0.08;
+    public const double YardScaleEmaAlpha = 0.15;
+    public const int YardScaleReinitAfter = 6;
+
+    // Cong vi tri: sigma no theo thoi gian mat fix (nguoi chay ~14 mu/s).
+    public const double YardPosGateMu = 4.0;
+    public const double YardSigmaBaseMu = 1.5, YardSigmaRateMuS = 14.0;
+    public const double YardPosAlpha = 0.5, YardPosBeta = 0.05;
+
+    /// <summary>
+    /// Hướng: trộn nhẹ đo vào dead-reckoning, nhưng lệch quá 20° ba lần liên tiếp thì SNAP và neo lại
+    /// count — game nuốt delta chuột sau NUI, lúc đó DR sai hẳn chứ không trôi từ từ.
+    /// </summary>
+    public const double YardHeadingBlend = 0.35;
+    public const double YardHeadingSnapDeg = 20.0;
+    public const int YardHeadingSnapAfter = 3;
+
+    /// <summary>Dấu của dead-reckoning hướng theo count chuột. Suy luận; residual trong game xác nhận.</summary>
+    public const double YardHeadingSign = 1.0;
+
+    public const double YardFix1MaxHeadingAgeS = 4.0;
+
+    /// <summary>Buổi dạy không có count chuột nên θ chỉ còn đúng ngay sau một FIX2 — cửa sổ rất hẹp.</summary>
+    public const double YardTeachFix1MaxS = 0.75;
+
+    /// <summary>Blip lạ (người chơi khác, xe) bị loại bằng cổng quanh vị trí dự đoán của tracker.</summary>
+    public const double YardPredGatePx = 25.0;
+
+    public const double YardLostAfterS = 2.0;
+
+    // Luoi ban do: 1 mu ≈ 0,5 m nen o vuong 1 mu du min cho A* ma van du tho de 20–30 chuyen phu kin.
+    public const double YardCellMu = 1.0;
+    public const double YardGridMarginMu = 20.0;
+    public const int YardFreeDilateCells = 1;
+
+    /// <summary>DBSCAN gom vị trí máy: 3 mu ≈ 1,5 m — nhỏ hơn khoảng cách giữa hai máy biến áp.</summary>
+    public const double YardClusterEpsMu = 3.0;
+
+    /// <summary>Cửa sổ lấy "tư thế tiếp cận" trước lúc bảng mở: [t−0.8 s, t−0.3 s].</summary>
+    public const double YardApproachWindowStartS = 0.8, YardApproachWindowEndS = 0.3;
+
+    public const double YardRecFlushS = 1.0;
+    public const int YardFrameRingN = 40;
+    public const double YardStatusS = 0.5;
+
+    /// <summary>
+    /// Giá rủi ro men sát vật cản của A* sân — cùng dạng <c>ClearanceCost/(c+0.6)²</c> mà
+    /// <see cref="BoardPlanner"/> dùng. PR1 chỉ dùng để kiểm "mọi máy tới được".
+    /// </summary>
+    public const double YardEdgeCost = 18.0;
+
+    /// <summary>Đứng ngoài ô đã đi thì tìm ô free gần nhất trong bán kính này rồi mới lập đường.</summary>
+    public const double YardOffGridSearchMu = 15.0;
 
     // ================================================================ vong lap
     /// <summary>
