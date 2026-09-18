@@ -116,6 +116,17 @@ internal sealed class NavController
 
     public bool HasPendingObstacle => _pendingObstacleSide is not null;
 
+    /// <summary>
+    /// Quên phiên lái hiện tại (latch cam kết đường thẳng, EMA lỗi góc, pass-through).
+    ///
+    /// Bộ bám bản đồ gọi nó ở HAI mốc chuyển quyền: lúc nó cầm lái và lúc nó giao lại. Lý do: latch
+    /// <c>RamLineHardLocked</c> khoá nhánh cột 3D trong <see cref="NavTuning.RamLineWorldOverrideHoldS"/>
+    /// 1,8 s, mà bộ bám có thể lái suốt 20 s KHÔNG hề thấy chấm vàng thật — giao lại xong latch cũ vẫn
+    /// còn hiệu lực và bot sẽ bỏ qua cột vàng ngay trước mặt. EMA lỗi góc cũng phải bỏ: góc tới waypoint
+    /// và góc tới chấm là hai đại lượng khác nhau, trộn chúng vào nhau chỉ làm servo giật.
+    /// </summary>
+    public void ClearLineCommit() => ClearLineLatches();
+
     /// <summary>Đang thoát kẹt — thang mới hay KET1 cũ đều tính.</summary>
     public bool EscapeActive => Active is not null || _ladder.Active;
 

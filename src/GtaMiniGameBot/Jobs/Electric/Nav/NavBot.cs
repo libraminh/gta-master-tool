@@ -103,6 +103,16 @@ internal sealed class NavBot
     private ElectricLocator _locator;
     private double _originX, _originY;
 
+    // ban do san: pose moi tick + bo bam waypoint (khong co file map thi ca cum nay nam im)
+    private YardPoseTracker _poseTracker;
+    private BlipTemplates _blipTpl;
+    private YardFollower _follower;
+    private YardPose _yardPose;
+    private bool _mapOn;
+    private bool _followerNoSprint, _followerDrove;
+    private TargetOutput _lastDot = TargetOutput.Lost;
+    private List<NavCandidate> _tickCandidates;
+
     // focus
     private double _focusLastGood;
     private bool _focusedLast = true;
@@ -227,6 +237,20 @@ internal sealed class NavBot
             _locator = ElectricLocator.Create(_screen, _profile, out string locProblem);
             if (_locator is null)
                 throw new InvalidOperationException("chưa khoanh [E] TƯƠNG TÁC: " + locProblem);
+
+            // Ban do san. Thieu file (hoac tat cong tac) = bo bam nam im va KHONG mot mili-giay nao bi
+            // tieu ton: ca khoi pose moi tick cung bi bo qua.
+            var yardMap = _cfg.Nav.UseYardMap ? YardMap.Load(_profile.Key) : null;
+            _poseTracker = new YardPoseTracker(_s, _originX, _originY);
+            _blipTpl = BlipTemplates.Load(_profile.Key);
+            _follower = new YardFollower(yardMap, _s, _originX, _originY);
+            _follower.Log += Emit;
+            _mapOn = _follower.HasMap;
+            Emit(_mapOn
+                ? $"bản đồ sân: {yardMap.Markers.Count} máy, lưới {yardMap.Grid.W}×{yardMap.Grid.H} ô, " +
+                  $"mẫu blip {(_blipTpl is null ? "CHƯA HỌC" : _blipTpl.Describe())} — bám waypoint BẬT"
+                : $"bản đồ sân: {(_cfg.Nav.UseYardMap ? "chưa có yard-map-v1.json" : "tắt trong electric.json")} " +
+                  "— lái theo chấm vàng / cột 3D như trước");
 
             Emit($"điều hướng: màn {_s.ScreenW}×{_s.ScreenH}, sx={_s.Sx:F3}, px×{_s.Px:F3}, chuột ×{_cfg.Nav.MouseSpeedMultiplier:F1}, " +
                  $"gốc mũi tên ({_originX:F0},{_originY:F0}), minimap {_capture.MinimapRegion.Width}×{_capture.MinimapRegion.Height}, " +
@@ -383,6 +407,10 @@ internal sealed class NavBot
             return true;
         }
 
+        // Pose sân cập nhật MỖI tick, trước mọi máy trạng thái: dead-reckoning hướng cộng dồn theo count
+        // chuột nên nó không được có lỗ, kể cả lúc survival / reset camera / chu kỳ nặng đang cầm input.
+        UpdateYardPose(now, mini);
+
         // Bảng nghề thì KHÔNG giao cho bộ giải — chạy luôn luồng reset nghề rồi đi tiếp.
         if (jobBoardOpen
             && EnterJobBoardIfOpen(now, snap.Board ?? _boardProbe, "BẢNG NGHỀ MỞ NGOÀI Ý MUỐN"))
@@ -471,17 +499,21 @@ internal sealed class NavBot
         }
 
         // ---------------- nhan dang ----------------
-        var candidates = YellowDotDetector.Detect(mini, _s, _originX, _originY);
+        // Mat na vang cua tick nay co the da duoc tinh trong UpdateYardPose (mot luot HSV cho ca cham
+        // vang lan blip); dung lai chu khong quet ROI 403×341 lan hai.
+        var candidates = _tickCandidates ?? YellowDotDetector.Detect(mini, _s, _originX, _originY);
         var fragments = YellowDotDetector.DetectNearFragments(mini, _s, _originX, _originY);
         var target = _tracker.Update(candidates, _originX, _originY, now, fragments);
+        _lastDot = target;
         var world = snap.Marker;
 
         NoteCalibratedPrompt(snap.PromptVisible, now);
 
         // Đang thấy [E] TƯƠNG TÁC thì không đi reset nghề — thử bấm E trước.
+        // Đang bám bản đồ cũng không: mất chấm vàng lúc đó không có nghĩa là mất đường.
         if (snap.PromptVisible)
             _job.ResetBlind();
-        else if (_job.ShouldStart(now, target, world, candidates.Count, SevereTurnActive))
+        else if (!_follower.Active && _job.ShouldStart(now, target, world, candidates.Count, SevereTurnActive))
         {
             _job.Start(now, "MẤT HẲN ĐIỂM VÀNG SAU SEARCH360");
             if (_job.Step(mini, snap, now, focused)) return false;
@@ -494,8 +526,52 @@ internal sealed class NavBot
             dy = target.Y.Value - _originY;
             dist = Math.Sqrt(dx * dx + dy * dy);
             rel = NavController.Wrap(Math.Atan2(dx, -dy) * 180.0 / Math.PI);
-            _watchdog.Add(now, dx, dy);
         }
+
+        // ---------------- cong world ----------------
+        // Tinh THUAN (khong tac dung phu) va tinh SOM: bo bam can biet "da thay cot 3D chua" de giao
+        // lai. Loi goi ClearPendingObstacle van nam nguyen cho cu, sau khoi ket.
+        bool strongWorld = world.Present && world.Confidence >= NavTuning.WorldInstantTakeoverConf
+                                         && world.Area >= NavTuning.WorldInstantTakeoverMinArea;
+        bool worldAllowed = false;
+        if (strongWorld) worldAllowed = true;
+        else if (world.Locked)
+        {
+            if (world.Confidence >= NavTuning.WorldStrongOverrideConf) worldAllowed = true;
+            else if (!double.IsNaN(dist) && dist <= NavTuning.WorldLockMinimapMaxDistPx * _s.Px
+                     && target.Confidence >= NavTuning.WorldRequireTargetConf) worldAllowed = true;
+            else if (_ctl.WorldLatched) worldAllowed = true;
+        }
+
+        // ---------------- bam waypoint theo ban do ----------------
+        bool follow = _follower.Step(now, _yardPose, target, world, worldAllowed, dist, rel,
+                                     escapeActive: _ctl.EscapeActive || SevereTurnActive, out var fo);
+        _followerNoSprint = follow && fo.NoSprint;
+
+        // Mỗi lần đổi quyền lái (vào bám / giao lại) thì quên phiên lái cũ — xem ClearLineCommit.
+        //
+        // Hai bộ dò "không tiến" cũng phải quên: cả hai đo một BÁN KÍNH, mà ngay tại mốc đổi quyền cái
+        // bán kính ấy đổi nghĩa (cung đường còn lại ↔ khoảng cách tới chấm vàng). Giữ lịch sử cũ thì
+        // watchdog bán kính thấy một bậc nhảy (báo kẹt oan, hoặc tệ hơn: che mất cú kẹt thật vì span
+        // rộng), còn watchdog 30 s giữ nguyên `_wdBestDist` của thang cũ nên có thể không bao giờ thấy
+        // "tiến" nữa và tự khởi động lại giữa đường.
+        if (follow != _followerDrove)
+        {
+            _followerDrove = follow;
+            _ctl.ClearLineCommit();
+            _watchdog.Reset();
+            AutorunResetTimer(now);
+        }
+
+        // Bo do tien do (radial watchdog, autorun watchdog, phat hien ket) doc theo ĐƯỜNG khi dang bam:
+        // di vong qua vat can thi ban kinh toi cham that dung phang du chan van chay — bao ket oan.
+        var navTarget = follow ? fo.Synth : target;
+        double navDist = follow ? fo.DistPx : dist;
+        double navRel = follow ? fo.RelDeg : rel;
+        double navDx = follow ? fo.Dx : dx;
+        double navDy = follow ? fo.Dy : dy;
+        if (!double.IsNaN(navDx) && !double.IsNaN(navDy)) _watchdog.Add(now, navDx, navDy);
+
         bool forwardRequested = _input.IsHeld(NavKey.W) && !_input.IsHeld(NavKey.S);
 
         if (TryArmWorldE(now, focused, snap))
@@ -510,34 +586,30 @@ internal sealed class NavBot
                                     && world.Confidence >= NavTuning.WorldSkipMinimapStuckConf
                                     && world.Area >= NavTuning.WorldSkipMinimapStuckArea;
         if (worldDirectCandidate) _watchdog.ClearCandidate();
-        else if (!double.IsNaN(dx))
+        else if (!double.IsNaN(navDx))
         {
-            bool targetAvailable = target.HasPos && target.Confidence >= NavTuning.ImpactMinTargetConf;
-            isStuck = _watchdog.ImpactStuck(now, forwardRequested, targetAvailable, dist, rel);
+            bool targetAvailable = navTarget.HasPos && navTarget.Confidence >= NavTuning.ImpactMinTargetConf;
+            isStuck = _watchdog.ImpactStuck(now, forwardRequested, targetAvailable, navDist, navRel);
         }
         if (isStuck)
         {
             int side = _capture.AnalyzeObstacleSide(now, out string note);
+            // Co pose thi ben thoat chon theo O DA DI quanh minh — Canny chi thay mot khung truoc mat,
+            // con ban do biet ben nao that su co loi (nguoi da di ben do hang chuc lan).
+            int mapSide = _follower.FreeSideOf(_yardPose);
+            if (mapSide != 0)
+            {
+                note += $" | bản đồ→{(mapSide > 0 ? "PHẢI" : "TRÁI")}";
+                side = mapSide;
+            }
             _ctl.SetObstacleSide(side);
             // Dang thoat ket ma watchdog bao lai thi khong phai cu ket MOI — dem no se thoi phong so
             // lieu A/B (bac 1 giu W nen van du dieu kien bao ket).
             if (!_ctl.EscapeActive)
                 Emit($"[KẸT] #{NavEscapeStats.NoteStuck()} bên={(side > 0 ? "PHẢI" : side < 0 ? "TRÁI" : "TỰ")} " +
-                     $"{note} dist={dist:F1} rel={rel:+0.0;-0.0}");
+                     $"{note} dist={navDist:F1} rel={navRel:+0.0;-0.0}");
         }
 
-        // ---------------- cong world ----------------
-        bool strongWorld = world.Present && world.Confidence >= NavTuning.WorldInstantTakeoverConf
-                                         && world.Area >= NavTuning.WorldInstantTakeoverMinArea;
-        bool worldAllowed = false;
-        if (strongWorld) worldAllowed = true;
-        else if (world.Locked)
-        {
-            if (world.Confidence >= NavTuning.WorldStrongOverrideConf) worldAllowed = true;
-            else if (!double.IsNaN(dist) && dist <= NavTuning.WorldLockMinimapMaxDistPx * _s.Px
-                     && target.Confidence >= NavTuning.WorldRequireTargetConf) worldAllowed = true;
-            else if (_ctl.WorldLatched) worldAllowed = true;
-        }
         if (world.Present && worldAllowed) _ctl.ClearPendingObstacle();
 
         bool worldEscapeTakeover = world.Present && worldAllowed && _ctl.EscapeActive && _ctl.EscapeSource != "WORLD";
@@ -545,7 +617,7 @@ internal sealed class NavBot
                                   && target.Confidence >= NavTuning.CenterNavMinConf;
         bool lineCommitActive = _ctl.RamLineHardLocked && now - _ctl.RamLineLastSeenT <= NavTuning.RamLineWorldOverrideHoldS;
 
-        if (!worldEscapeTakeover && AutorunWatchdogStep(now, focused, dist, target, world)) return false;
+        if (!worldEscapeTakeover && AutorunWatchdogStep(now, focused, navDist, navTarget, world)) return false;
 
         // ---------------- dieu phoi ----------------
         NavKey keys;
@@ -575,6 +647,15 @@ internal sealed class NavBot
                     ?? (double.IsNaN(rel) ? _ctl.LostStep(now) : _ctl.Compute(now, target, dist, rel, dx, dy, isStuck));
             keys = ApplyWorldNavInput(r.keys, now, r.state);
             state = r.state;
+            if (isStuck) _watchdog.Cooldown(now);
+        }
+        else if (follow)
+        {
+            // Bám bản đồ: vẫn là bộ lái cũ, chỉ khác cái chấm đưa cho nó là chấm TỔNG HỢP đặt đúng
+            // hướng waypoint. Thứ tự ưu tiên của các nhánh world phía trên KHÔNG đổi.
+            var r = _ctl.Compute(now, fo.Synth, fo.DistPx, fo.RelDeg, fo.Dx, fo.Dy, isStuck);
+            keys = ApplyWorldNavInput(r.keys, now, r.state);
+            state = "MAP_" + fo.State + "|" + r.state;
             if (isStuck) _watchdog.Cooldown(now);
         }
         else if (double.IsNaN(rel))
@@ -612,6 +693,40 @@ internal sealed class NavBot
         if (now - _lastStatusLog < 0.5) return;
         _lastStatusLog = now;
         Emit($"{head} quét={snap.Hz:0}Hz");
+    }
+
+    /// <summary>
+    /// Pose sân của một tick. MỘT lượt mặt nạ HSV cho cả chấm vàng lẫn blip (<see cref="BlipMasks"/>
+    /// tính cả mặt nạ vàng và đỏ), rồi để lại danh sách ứng viên vàng cho khối nhận dạng phía dưới —
+    /// quét ROI 403×341 hai lần một tick là tự cắn mất ngân sách 25 ms.
+    ///
+    /// Chấm truyền vào tracker pose là chấm của tick TRƯỚC: bộ bám chấm (<see cref="DotTracker"/>) chỉ
+    /// chạy ở khối nhận dạng, mà chuyển nó lên đây thì nó sẽ chạy cả trong lúc ăn uống / reset camera —
+    /// đổi hành vi của những máy trạng thái không liên quan. Trễ 25 ms trên một EMA α=0.3 của vị trí
+    /// máy ĐỨNG YÊN là không đáng kể.
+    /// </summary>
+    private void UpdateYardPose(double now, NavFrame mini)
+    {
+        _tickCandidates = null;
+        if (!_mapOn) return;
+
+        try
+        {
+            var masks = BlipMasks.Build(mini, _s);
+            _tickCandidates = masks is null
+                ? YellowDotDetector.Detect(mini, _s, _originX, _originY)
+                : YellowDotDetector.Detect(mini, _s, _originX, _originY, masks.Yellow, masks.Local);
+
+            var predicted = _poseTracker.Predict(now);
+            var hits = BlipDetector.Detect(mini, _s, masks, _blipTpl, predicted);
+            _yardPose = _poseTracker.Update(hits, _lastDot, now, _input.XSentCounts);
+        }
+        catch (Exception ex)
+        {
+            // Pose chi la THONG TIN THEM: hong mot tick thi lai theo cham nhu cu, khong duoc dung bot.
+            _yardPose = null;
+            if (_tickCandidates is null) Emit("pose sân lỗi một tick: " + ex.Message);
+        }
     }
 
     private static string KeysText(NavKey k)
@@ -682,6 +797,14 @@ internal sealed class NavBot
     private NavKey ApplyWorldNavInput(NavKey keys, double now, string state)
     {
         (keys, bool normalSprint) = ComposeNavKeys(keys, state);
+
+        // Bo bam bao "dung chay nuoc rut" (sap toi noi / sap cua / pose yeu): bo SHIFT sau khi tinh tap
+        // phim, de ComposeNavKeys van la ham thuan mot dau vao — no la thu --verify-nav lua.
+        if (normalSprint && _followerNoSprint)
+        {
+            keys &= ~NavKey.Shift;
+            normalSprint = false;
+        }
 
         if (normalSprint && !_input.IsHeld(NavKey.Shift))
         {
