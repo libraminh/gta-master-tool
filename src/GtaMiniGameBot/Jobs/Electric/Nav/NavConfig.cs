@@ -229,8 +229,10 @@ internal static class NavTuning
     /// không cần kỳ nghỉ dài; 0,40 s chỉ còn để pha thăm dò 0,45 s không tự bắn thành cú kẹt mới.
     /// </summary>
     public const double StuckPostCooldownS = 0.400;
-    public const double WorldSkipMinimapStuckConf = 0.55;                // world_direct_skip_minimap_stuck_conf
-    public const double WorldSkipMinimapStuckArea = 1200.0;
+
+    // Bo: world_direct_skip_minimap_stuck_conf/area (0.55 / 1200). Luat "thay world marker du tin thi
+    // xoa ung vien ket" bit mieng watchdog ban kinh o dung doan cuoi — cot vang la DICH nen no luon
+    // trong khung. Thay bang "chi khi DANG TIEN THAT", xem NavController.JudgeWorldProgress.
 
     // ================================================================ obstacle (chi lay side)
     public const int ObstacleCannyLow = 50, ObstacleCannyHigh = 135;
@@ -298,17 +300,44 @@ internal static class NavTuning
     public const double WorldArcMemoryS = 0.500;                         // world_arc_memory_ms
     public const double WorldBreakoutTimeoutS = 5.0;                     // chi de log
     public const double WorldImpactWindowS = 1.200;
-    public const int WorldImpactMinSamples = 18;
     public const double WorldImpactConfirmS = 0.220;
     public const double WorldImpactMaxErrorPx = 180.0;
-    public const double WorldProgressAreaGrowthPct = 0.035;
-    public const double WorldProgressHeightGrowthPx = 5.0;
-    public const double WorldProgressAreaSpanPct = 0.065;
-    public const double WorldProgressHeightSpanPx = 9.0;
-    public const double WorldImpactMaxAreaGrowthAbsPct = 0.014;
-    public const double WorldImpactMaxHeightGrowthAbsPx = 2.0;
-    public const double WorldImpactMaxAreaSpanPct = 0.038;
-    public const double WorldImpactMaxHeightSpanPx = 5.2;
+
+    // ---------------- tien do cot 3D do bang MEDIAN TRUOT (thay bo "span" cu) ----------------
+    //
+    // Do tu buoi thu that 20:53–21:18: cot vang bi che mot phan thi dien tich nhay 2074→4173 va
+    // 2929→6707 trong duoi mot giay trong khi nguoi choi DUNG YEN. Ban cu lay p90−p10 tho lam bang
+    // chung "dang tien", nen no vua cho phep huy thoat ket (76/128 dot bi cat trong 25–70 ms, bac
+    // truot ngang chua chay lan nao) vua khong bao gio ket luan duoc "dung im" — [WORLD-IMPACT-
+    // CONFIRMED] ban 0 lan ca phien, ke ca luc bot dung chet 25 s o dist=20.5.
+
+    /// <summary>
+    /// Cửa sổ median "mới". 0,4 s nuốt trọn một cú che khuất (che rồi lộ hết ~0,2 s) nhưng vẫn đủ
+    /// ngắn để một người đang chạy tới cột làm median nhích lên thấy rõ.
+    /// </summary>
+    public const double WorldMedianWindowS = 0.40;
+
+    /// <summary>Cửa sổ median "cũ" = <c>[now−1.0, now−0.6]</c> — chừa 0,2 s đệm để hai cửa sổ không dính nhau.</summary>
+    public const double WorldMedianPriorLoS = 0.60, WorldMedianPriorHiS = 1.00;
+
+    /// <summary>Mỗi cửa sổ phải có ngần này mẫu mới được phán. 0,4 s ở nhịp 25 ms cho ~16 mẫu.</summary>
+    public const int WorldMedianMinSamples = 6;
+
+    /// <summary>
+    /// Đang tiến: median mới ≥ 1.08 × median cũ. Người chạy 7 m/s tới cột cách 20 m làm tỉ lệ này
+    /// ~1,6 sau 0,6 s (diện tích ∝ 1/d²), nên 1.08 KHÔNG phải cái chặn thật — nó chỉ đủ cao để rung
+    /// do che khuất (median lệch dưới 1 %) không bao giờ đội lốt "đang tiến".
+    /// </summary>
+    public const double WorldProgressMedianRatio = 1.08;
+
+    /// <summary>
+    /// Điều kiện VÀ khi có chấm vàng: bán kính minimap phải giảm ngần này px trong cùng khoảng. Cột
+    /// lớn lên mà khoảng cách không giảm = đang xoay người / đang bị che rồi lộ, không phải đang tới.
+    /// </summary>
+    public const double WorldProgressMinDistDropPx = 0.5;
+
+    /// <summary>Đứng im: cả diện tích lẫn chiều cao lệch ≤ 3 % giữa hai median. Rung che khuất đã bị median nuốt nên 3 % là rộng rãi.</summary>
+    public const double WorldFrozenMedianPct = 0.03;
 
     // ================================================================ mat cham (lost_step)
     public const double RamLineLostStraightS = 1.800;

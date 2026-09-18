@@ -1,5 +1,30 @@
 namespace GtaMiniGameBot;
 
+/// <summary>Một mẫu tiến độ của đầu nối vàng 3D: diện tích, chiều cao, lệch ngang và bán kính minimap tại thời điểm <c>T</c>.</summary>
+internal readonly record struct WorldProgressSample(double T, double Area, double Height, double ErrPx, double DistPx);
+
+/// <summary>
+/// Kết quả phán tiến độ. <see cref="Ready"/> = false nghĩa là CHƯA ĐỦ lịch sử để nói gì — khác hẳn
+/// "không tiến", và cũng khác hẳn "đang tiến" (bản cũ trả đang tiến trong lúc chưa đủ mẫu).
+/// </summary>
+internal readonly record struct WorldProgressJudgement
+{
+    public bool Ready { get; init; }
+    public bool Progressing { get; init; }
+    public bool Frozen { get; init; }
+
+    /// <summary>median diện tích 0,4 s cuối ÷ median cửa sổ 0,6–1,0 s trước đó.</summary>
+    public double AreaRatio { get; init; }
+
+    public double HeightRatio { get; init; }
+
+    /// <summary>Bán kính minimap đã giảm bao nhiêu px giữa hai cửa sổ; NaN = không có chấm vàng.</summary>
+    public double DistDropPx { get; init; }
+
+    /// <summary>median |lệch ngang| của 0,4 s cuối — cột phải ở trước mặt thì "đứng im" mới là đâm vào nó.</summary>
+    public double ErrMedPx { get; init; }
+}
+
 /// <summary>
 /// Bộ lái của bộ điều hướng — port <c>Controller.compute</c> (servo minimap) và các phần SỐNG của
 /// <c>HumanLearnedController</c> (world_step, lost_step, search360, KET1) trong main.py của bản
@@ -64,8 +89,13 @@ internal sealed class NavController
     private double _humanLastRecoveryT = -999.0;
     private int _humanRecoverySerial;
     private bool _worldCenteredOnce, _worldCenterHold;
-    private readonly LinkedList<(double t, double area, double h, double w, double err)> _worldProgress = new();
+    private readonly LinkedList<WorldProgressSample> _worldProgress = new();
     private double? _worldImpactCandidateSince;
+
+    // Ket qua ObserveWorld cua tick nay — WorldStep dung lai chu KHONG do lai, khong thi mot tick co
+    // hai mau trong lich su va median 0,4 s bi keo lech.
+    private (bool progressing, bool stuck) _worldObserved;
+    private double _worldObservedT = double.NegativeInfinity;
     private double? _worldChaseStarted;
     private bool _worldDirectTimeoutLogged;
     private double? _arcPrevErr, _arcPrevT;
@@ -486,65 +516,109 @@ internal sealed class NavController
         _worldImpactCandidateSince = null;
     }
 
-    /// <summary><c>_world_direct_progress</c>: (đang tiến, kẹt đã xác nhận) dựa trên diện tích/chiều cao marker.</summary>
-    private (bool progressing, bool stuck) WorldDirectProgress(double now, WorldMarker marker, double errPx)
+    /// <summary>
+    /// Quan sát tiến độ của đầu nối 3D — gọi MỖI tick còn thấy marker, kể cả lúc bộ lái minimap hay bộ
+    /// bám bản đồ đang cầm lái.
+    ///
+    /// Vì sao phải gọi ở ngoài chứ không để <see cref="WorldStep"/> tự gọi: <c>WorldStep</c> chỉ chạy khi
+    /// world drive được quyền, nên lúc một đợt thoát kẹt nguồn MINIMAP đang chạy mà marker vừa hiện thì
+    /// lịch sử RỖNG — bản cũ coi "chưa đủ mẫu" là đang tiến và huỷ đợt ngay tick thứ nhất. Đó đúng là
+    /// 76/128 đợt bị cắt trong 25–70 ms của buổi thử.
+    /// </summary>
+    public (bool progressing, bool stuck) ObserveWorld(double now, WorldMarker marker, int screenW, double distPx)
+    {
+        double err = marker.X is not null ? marker.X.Value - screenW / 2.0 : _worldLastErr;
+        if (marker.X is not null) _worldLastErr = err;
+        _worldObservedT = now;
+        _worldObserved = WorldDirectProgress(now, marker, err, distPx);
+        return _worldObserved;
+    }
+
+    /// <summary><c>_world_direct_progress</c>: (đang tiến, kẹt đã xác nhận) theo median trượt của diện tích/chiều cao marker.</summary>
+    private (bool progressing, bool stuck) WorldDirectProgress(double now, WorldMarker marker, double errPx, double distPx)
     {
         if (!marker.Present)
         {
             ResetWorldImpactProof();
             return (false, false);
         }
-        double area = Math.Max(1.0, marker.Area), height = Math.Max(1.0, marker.Height), width = Math.Max(1.0, marker.Width);
-        _worldProgress.AddLast((now, area, height, width, Math.Abs(errPx)));
-        double win = NavTuning.WorldImpactWindowS;
-        while (_worldProgress.Count > 0 && now - _worldProgress.First.Value.t > win) _worldProgress.RemoveFirst();
+        _worldProgress.AddLast(new WorldProgressSample(now, Math.Max(1.0, marker.Area), Math.Max(1.0, marker.Height),
+                                                       Math.Abs(errPx), distPx));
+        while (_worldProgress.Count > 0 && now - _worldProgress.First.Value.T > NavTuning.WorldImpactWindowS)
+            _worldProgress.RemoveFirst();
 
-        var arr = _worldProgress.ToArray();
-        if (arr.Length < NavTuning.WorldImpactMinSamples || arr[^1].t - arr[0].t < win * 0.78)
+        var j = JudgeWorldProgress(_worldProgress, now, _s.Px);
+        if (!j.Ready || j.Progressing || !j.Frozen
+            || j.ErrMedPx > NavTuning.WorldImpactMaxErrorPx * _s.Px)
         {
             _worldImpactCandidateSince = null;
-            return (true, false);            // dang "warming": coi la tien
+            return (j.Progressing, false);
         }
-
-        var a = arr.Select(x => x.area).ToArray();
-        var h = arr.Select(x => x.h).ToArray();
-        var e = arr.Select(x => x.err).ToArray();
-        int n = arr.Length, k = Math.Max(4, n / 3);
-        double a0 = NavGeometry.Median(a.Take(k)), a1 = NavGeometry.Median(a.Skip(n - k));
-        double h0 = NavGeometry.Median(h.Take(k)), h1 = NavGeometry.Median(h.Skip(n - k));
-        double areaGrowth = (a1 - a0) / Math.Max(1.0, a0);
-        double heightGrowth = h1 - h0;
-        var aS = (double[])a.Clone(); Array.Sort(aS);
-        var hS = (double[])h.Clone(); Array.Sort(hS);
-        double areaSpan = (NavGeometry.Percentile(aS, 90) - NavGeometry.Percentile(aS, 10)) / Math.Max(1.0, NavGeometry.Percentile(aS, 50));
-        double heightSpan = NavGeometry.Percentile(hS, 90) - NavGeometry.Percentile(hS, 10);
-
-        bool progressing = areaGrowth >= NavTuning.WorldProgressAreaGrowthPct
-                           || heightGrowth >= NavTuning.WorldProgressHeightGrowthPx
-                           || areaSpan >= NavTuning.WorldProgressAreaSpanPct
-                           || heightSpan >= NavTuning.WorldProgressHeightSpanPx;
-        if (progressing)
-        {
-            _worldImpactCandidateSince = null;
-            return (true, false);
-        }
-
-        bool aligned = NavGeometry.Median(e.Skip(n - k)) <= NavTuning.WorldImpactMaxErrorPx * _s.Px;
-        bool frozen = Math.Abs(areaGrowth) <= NavTuning.WorldImpactMaxAreaGrowthAbsPct
-                      && Math.Abs(heightGrowth) <= NavTuning.WorldImpactMaxHeightGrowthAbsPx
-                      && areaSpan <= NavTuning.WorldImpactMaxAreaSpanPct
-                      && heightSpan <= NavTuning.WorldImpactMaxHeightSpanPx;
-        if (!(aligned && frozen))
-        {
-            _worldImpactCandidateSince = null;
-            return (false, false);
-        }
-        if (_worldImpactCandidateSince is null)
-        {
-            _worldImpactCandidateSince = now;
-            return (false, false);
-        }
+        _worldImpactCandidateSince ??= now;
         return (false, now - _worldImpactCandidateSince.Value >= NavTuning.WorldImpactConfirmS);
+    }
+
+    /// <summary>
+    /// Phán "đang tiến / đang đứng im" của cột 3D trên MEDIAN TRƯỢT — hàm THUẦN nên <c>--verify-nav</c>
+    /// lùa được bằng chuỗi số bịa, không cần ảnh.
+    ///
+    /// Bản cũ đọc thẳng mẫu thô và coi ĐỘ RUNG (p90−p10) là bằng chứng "đang tiến". Nhưng rung chính là
+    /// triệu chứng của che khuất: cột bị nửa cái tủ điện che thì diện tích nhảy 2074→4173 rồi về, trong
+    /// khi người chơi đứng chết một chỗ. Hậu quả đo được trong buổi thử: takeover huỷ thoát kẹt 76 lần
+    /// và [WORLD-IMPACT-CONFIRMED] không bắn lần nào suốt 25 phút.
+    ///
+    /// Median 0,4 s nuốt cú nhảy đó; lớn lên thật thì đều nên median cũng lên. So median 0,4 s cuối với
+    /// median cửa sổ 0,6–1,0 s trước đó:
+    ///   • <b>đang tiến</b> = tỉ lệ ≥ <see cref="NavTuning.WorldProgressMedianRatio"/> ở diện tích HOẶC
+    ///     chiều cao, VÀ (khi có chấm vàng ở cả hai cửa sổ) bán kính minimap giảm ≥ 0,5·Px;
+    ///   • <b>đứng im</b> = |Δ| ≤ 3 % ở CẢ hai đại lượng.
+    /// Thiếu mẫu ở một trong hai cửa sổ (mới thấy cột, chưa tới 0,7 s) thì
+    /// <see cref="WorldProgressJudgement.Ready"/> = false và KHÔNG phán gì — "chưa biết" không được
+    /// phép đội lốt "đang tiến" như bản cũ.
+    /// </summary>
+    public static WorldProgressJudgement JudgeWorldProgress(IEnumerable<WorldProgressSample> hist, double now, double px)
+    {
+        List<double> na = new(), nh = new(), nd = new(), ne = new();
+        List<double> oa = new(), oh = new(), od = new();
+        foreach (var s in hist)
+        {
+            double age = now - s.T;
+            if (age < 0) continue;
+            if (age <= NavTuning.WorldMedianWindowS)
+            {
+                na.Add(s.Area); nh.Add(s.Height); ne.Add(s.ErrPx);
+                if (double.IsFinite(s.DistPx)) nd.Add(s.DistPx);
+            }
+            else if (age >= NavTuning.WorldMedianPriorLoS && age <= NavTuning.WorldMedianPriorHiS)
+            {
+                oa.Add(s.Area); oh.Add(s.Height);
+                if (double.IsFinite(s.DistPx)) od.Add(s.DistPx);
+            }
+        }
+        int min = NavTuning.WorldMedianMinSamples;
+        if (na.Count < min || oa.Count < min) return default;
+
+        double areaRatio = NavGeometry.Median(na) / Math.Max(1.0, NavGeometry.Median(oa));
+        double hRatio = NavGeometry.Median(nh) / Math.Max(1.0, NavGeometry.Median(oh));
+        double drop = nd.Count >= min && od.Count >= min
+            ? NavGeometry.Median(od) - NavGeometry.Median(nd)
+            : double.NaN;
+
+        bool grew = areaRatio >= NavTuning.WorldProgressMedianRatio || hRatio >= NavTuning.WorldProgressMedianRatio;
+        bool closing = double.IsNaN(drop) || drop >= NavTuning.WorldProgressMinDistDropPx * px;
+        bool frozen = Math.Abs(areaRatio - 1.0) <= NavTuning.WorldFrozenMedianPct
+                      && Math.Abs(hRatio - 1.0) <= NavTuning.WorldFrozenMedianPct;
+
+        return new WorldProgressJudgement
+        {
+            Ready = true,
+            Progressing = grew && closing,
+            Frozen = frozen,
+            AreaRatio = areaRatio,
+            HeightRatio = hRatio,
+            DistDropPx = drop,
+            ErrMedPx = NavGeometry.Median(ne)
+        };
     }
 
     /// <summary><c>_human_world_mouse</c>: yaw theo lệch ngang của marker với latch tâm 72/125 px.</summary>
@@ -591,7 +665,11 @@ internal sealed class NavController
         }
         else err = _worldLastErr;
 
-        var (worldProgressing, worldImpactStuck) = WorldDirectProgress(now, marker, err);
+        // NavBot quan sat MOI tick roi moi goi vao day; do lai o day se them mau thu hai cung mot moc
+        // thoi gian. Chi tu do khi khong ai quan sat truoc (duong goi khac).
+        var (worldProgressing, worldImpactStuck) = _worldObservedT == now
+            ? _worldObserved
+            : WorldDirectProgress(now, marker, err, double.NaN);
 
         // Goc GIA cho thang thoat ket o nguon WORLD: chi mang DAU cua lech ngang marker, cung thang do
         // ma KET1 world van dung. Servo cua pha tham do lai theo no khi khong co cham vang.
@@ -601,7 +679,12 @@ internal sealed class NavController
         // WORLD-OVER-KET: marker that hien lai thi huy thoat ket tu minimap — NHUNG chi khi dang TIEN
         // that. Ban cu huy ca khi van dang ket: thoat ket bi cat ngang, 1 s sau ket lai, thanh vong
         // ket–huy–ket (doc duoc trong log). Marker van hien khi dang dam vao chan cot ngay truoc no.
-        if (marker.Present && worldProgressing && EscapeActive && EscapeSource != "WORLD")
+        //
+        // Va khi THANG thoat ket bat thi bo han cu huy nay: chinh pha tham do cua thang doc
+        // worldProgressing (NavEscapeLadder.ProbeUnstuck) va tu dong dot ngay khi co tien do that, nen
+        // takeover khong them duoc gi — no chi cat ngang. Buoi thu PR2: 76/128 dot bi cat trong 25–70 ms,
+        // bac truot ngang chua chay lan nao. Tat thang (A/B) thi giu nguyen duong cu, khong doi mot dau.
+        if (!_escapeLadderEnabled && marker.Present && worldProgressing && EscapeActive && EscapeSource != "WORLD")
         {
             Emit($"[WORLD>KET TAKEOVER] huỷ thoát kẹt nguồn {EscapeSource} → lái thẳng vào đầu nối");
             CancelEscape(now);

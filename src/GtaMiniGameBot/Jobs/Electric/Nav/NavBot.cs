@@ -543,6 +543,10 @@ internal sealed class NavBot
             else if (_ctl.WorldLatched) worldAllowed = true;
         }
 
+        // Tien do cot 3D do MOI tick, ke ca khi world drive khong cam lai: cho toi luc can phan (mo
+        // thoat ket, dong dot) moi bat dau gom mau thi lich su rong va bo phan buoc phai doan.
+        bool worldProgressing = _ctl.ObserveWorld(now, world, _s.ScreenW, dist).progressing;
+
         // ---------------- bam waypoint theo ban do ----------------
         bool follow = _follower.Step(now, _yardPose, target, world, worldAllowed, dist, rel,
                                      escapeActive: _ctl.EscapeActive || SevereTurnActive, out var fo);
@@ -581,12 +585,15 @@ internal sealed class NavBot
         }
 
         // ---------------- ket ----------------
+        //
+        // Ban cu xoa ung vien ket ngay khi CO MAT mot world marker du tin ("world drive dang lo, ban
+        // kinh minimap khong dang tin"). Nhung cai cot vang la DICH, no gan nhu luon trong khung hinh
+        // o doan cuoi — nen watchdog ban kinh bi bit mieng dung luc no can noi nhat: ca buoi thu
+        // 20:53–21:18 khong co [WORLD-KET BAN KINH] nao, ke ca luc bot dung chet 25 s o dist=20.5.
+        // Bay gio chi "DANG TIEN THAT" (median cot lon len + ban kinh giam) moi duoc bit mieng no.
         bool isStuck = false;
-        bool worldDirectCandidate = world.Present
-                                    && world.Confidence >= NavTuning.WorldSkipMinimapStuckConf
-                                    && world.Area >= NavTuning.WorldSkipMinimapStuckArea;
-        if (worldDirectCandidate) _watchdog.ClearCandidate();
-        else if (!double.IsNaN(navDx))
+        if (worldProgressing) _watchdog.ClearCandidate();
+        if (!double.IsNaN(navDx))
         {
             bool targetAvailable = navTarget.HasPos && navTarget.Confidence >= NavTuning.ImpactMinTargetConf;
             isStuck = _watchdog.ImpactStuck(now, forwardRequested, targetAvailable, navDist, navRel);

@@ -83,6 +83,7 @@ internal static class VerifyNav
         fail += CameraResetCases();
         fail += RestartTurnCases();
         fail += WatchdogCases();
+        fail += WorldProgressCases();
         fail += PromptCases();
         fail += InteractionCases();
         fail += PanelInterruptCases();
@@ -686,6 +687,132 @@ internal static class VerifyNav
                         && second - first <= NavTuning.StuckPostCooldownS + NavTuning.ImpactConfirmS + 0.06,
               "sau nghỉ 0.40 s lịch sử còn nguyên → kẹt lại chỉ tốn thêm 0.18 s xác nhận",
               $"lần đầu {first:F3}s, lại sau {second - first:F3}s");
+        return fail;
+    }
+
+    /// <summary>Một cột vàng 3D tổng hợp — chỉ cần các trường mà bộ phán tiến độ đọc.</summary>
+    private static WorldMarker Pillar(double area, double height, double x) => new()
+    {
+        Locked = true, Present = true, X = x, Y = 700.0, Area = area, Width = 60.0, Height = height,
+        Confidence = 0.80, Quality = "WORLD_LOCK", LastSeenAge = 0.0
+    };
+
+    /// <summary>
+    /// Tiến độ cột 3D đo bằng MEDIAN TRƯỢT. Hai ca đầu dựng đúng hai triệu chứng đo được trong buổi
+    /// thử PR2 (bot-log 20:53–21:18): rung do che khuất bị bản cũ đọc thành "đang tiến" (76/128 đợt
+    /// thoát kẹt bị huỷ trong 25–70 ms), và không lần nào kết luận được "đứng im" (0 lần
+    /// [WORLD-IMPACT-CONFIRMED] dù có lúc bot đứng chết 25 s).
+    /// </summary>
+    private static int WorldProgressCases()
+    {
+        int fail = 0;
+        double px = S1.Px;
+        const double dt = 0.025;
+        double[] mul = { 1.4, 1.0, 0.6, 1.0 };      // che mot phan roi lo lai: ±40 % quanh trung binh phang
+
+        // 1) Rung ±40 % quanh trung binh PHANG → khong tien, va la "dung im".
+        var flick = new List<WorldProgressSample>();
+        for (int i = 0; i <= 56; i++)
+            flick.Add(new WorldProgressSample(i * dt, 3000.0 * mul[i % 4], 100.0, 10.0, 60.0));
+        var jf = NavController.JudgeWorldProgress(flick, 56 * dt, px);
+        Check(ref fail, jf.Ready && !jf.Progressing && jf.Frozen,
+              "diện tích rung ±40 % quanh trung bình phẳng → KHÔNG tiến, và là đứng im",
+              $"tỉ lệ diện tích {jf.AreaRatio:F3} cao {jf.HeightRatio:F3} rơi {jf.DistDropPx:F1}px");
+
+        // 2) Cung chuoi do chay qua NavController → phai xac nhan KET sau ~1.0 s (du lich su) + 0.22 s.
+        using (var input = new NavInput(4.0))
+        {
+            var ctl = new NavController(S1, input, escapeLadder: true);
+            double tStuck = -1, tProg = -1;
+            for (int i = 0; i <= 80 && tStuck < 0; i++)
+            {
+                var (prog, stuck) = ctl.ObserveWorld(i * dt, Pillar(3000.0 * mul[i % 4], 100.0, W / 2.0 + 10.0), W, 60.0);
+                if (prog && tProg < 0) tProg = i * dt;
+                if (stuck) tStuck = i * dt;
+            }
+            Check(ref fail, tProg < 0, "rung che khuất không lần nào bị đọc thành “đang tiến”",
+                  tProg < 0 ? "0 lần" : $"lần đầu ở {tProg:F3}s");
+            Check(ref fail, tStuck >= 0.85 && tStuck <= 1.30,
+                  "đứng im hết một cửa sổ đầy → [WORLD-IMPACT] xác nhận kẹt (0,6 s + 6 mẫu cửa sổ cũ + 0,22 s)",
+                  $"{tStuck:F3}s");
+
+            // 3) Chua du 1 s lich su thi KHONG duoc phan "dang tien" — day dung la cho cu takeover
+            //    chui ra: dot thoat ket vua mo, marker vua hien, lich su rong.
+            var fresh = new NavController(S1, input, escapeLadder: true);
+            bool warmProg = false;
+            for (int i = 0; i <= 3; i++)
+                warmProg |= fresh.ObserveWorld(i * dt, Pillar(3000.0 + i * 900.0, 100.0 + i * 8, W / 2.0), W, 60.0 - i).progressing;
+            Check(ref fail, !warmProg, "mới thấy cột 75 ms (chưa đủ lịch sử) → chưa phán “đang tiến”", "");
+            input.StopMouseStream(immediate: true);
+        }
+
+        // 4) Cot lon deu VA ban kinh minimap giam → dang tien.
+        var grow = new List<WorldProgressSample>();
+        for (int i = 0; i <= 56; i++)
+        {
+            double t = i * dt;
+            grow.Add(new WorldProgressSample(t, 3000.0 * Math.Pow(1.30, t), 100.0 * Math.Pow(1.14, t), 10.0, 60.0 - 4.0 * t));
+        }
+        var jg = NavController.JudgeWorldProgress(grow, 56 * dt, px);
+        Check(ref fail, jg.Ready && jg.Progressing && !jg.Frozen,
+              "cột lớn đều 30 %/s + bán kính minimap giảm → đang tiến",
+              $"tỉ lệ diện tích {jg.AreaRatio:F3} cao {jg.HeightRatio:F3} rơi {jg.DistDropPx:F1}px");
+
+        // 5) Cot lon len ma ban kinh KHONG giam = dang xoay nguoi / cot vua bi che vua lo, khong phai
+        //    dang toi. Day la dieu kien VA da chan cu takeover luc bot dung chet o dist=20.5.
+        var spin = grow.Select(s => s with { DistPx = 60.0 }).ToList();
+        var js = NavController.JudgeWorldProgress(spin, 56 * dt, px);
+        Check(ref fail, js.Ready && !js.Progressing,
+              "cột lớn lên nhưng bán kính minimap đứng yên → KHÔNG tính là tiến",
+              $"tỉ lệ diện tích {js.AreaRatio:F3} rơi {js.DistDropPx:F1}px");
+
+        // 6) Nguong 1.08 la giua HAI MEDIAN (cach nhau ~0,6 s) → tuong duong ~13,8 %/s. Ghi lai day de
+        //    ai doi hang so con thay ngay no nghia la gi.
+        var slow = new List<WorldProgressSample>();
+        for (int i = 0; i <= 56; i++)
+        {
+            double t = i * dt;
+            slow.Add(new WorldProgressSample(t, 3000.0 * Math.Pow(1.08, t), 100.0, 10.0, 60.0 - 4.0 * t));
+        }
+        var jl = NavController.JudgeWorldProgress(slow, 56 * dt, px);
+        Check(ref fail, jl.Ready && !jl.Progressing && !jl.Frozen,
+              "cột lớn 8 %/giây → dưới ngưỡng (1.08 tính giữa hai median cách 0,6 s ≈ 13,8 %/s)",
+              $"tỉ lệ diện tích {jl.AreaRatio:F3}");
+
+        // 7) Chinh sach takeover: thang BAT thi marker hien lai KHONG duoc cat ngang dot dang chay
+        //    (pha tham do cua thang tu dong dot khi co tien do that); thang TAT thi duong cu y nguyen.
+        using (var input = new NavInput(4.0))
+        {
+            var tgt = new TargetOutput
+            {
+                State = "LOCK", Visible = true, X = 120.0, Y = 900.0,
+                Confidence = 0.9, CandidateCount = 1, Quality = "FULL_LOCK", RawGeometry = 0.9
+            };
+            var on = new NavController(S1, input, escapeLadder: true);
+            var off = new NavController(S1, input, escapeLadder: false);
+            for (int i = 0; i <= 48; i++)
+            {
+                double t = i * dt;
+                var pillar = Pillar(3000.0 * Math.Pow(1.30, t), 100.0 * Math.Pow(1.14, t), W / 2.0 + 10.0);
+                on.ObserveWorld(t, pillar, W, 60.0 - 4.0 * t);
+                off.ObserveWorld(t, pillar, W, 60.0 - 4.0 * t);
+            }
+            double t0 = 48 * dt;
+            on.Compute(t0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            off.Compute(t0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            var late = Pillar(3000.0 * Math.Pow(1.30, t0 + dt), 100.0 * Math.Pow(1.14, t0 + dt), W / 2.0 + 10.0);
+            on.ObserveWorld(t0 + dt, late, W, 60.0 - 4.0 * (t0 + dt));
+            off.ObserveWorld(t0 + dt, late, W, 60.0 - 4.0 * (t0 + dt));
+            var rOn = on.WorldStep(t0 + dt, late, W, false, 60.0);
+            var rOff = off.WorldStep(t0 + dt, late, W, false, 60.0);
+            Check(ref fail, on.EscapeActive && rOn is not null && rOn.Value.state.StartsWith("ESC_", StringComparison.Ordinal),
+                  "thang BẬT: cột hiện lại giữa đợt thoát kẹt KHÔNG huỷ đợt",
+                  rOn?.state ?? "null");
+            Check(ref fail, !off.EscapeActive,
+                  "thang TẮT: KET1 vẫn bị cột hiện lại huỷ như cũ (đường A/B không đổi)",
+                  rOff?.state ?? "null");
+            input.StopMouseStream(immediate: true);
+        }
         return fail;
     }
 
