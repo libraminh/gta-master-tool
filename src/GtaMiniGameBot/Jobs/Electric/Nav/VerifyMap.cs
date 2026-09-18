@@ -51,6 +51,7 @@ internal static class VerifyMap
             Console.WriteLine($"  minimap {mini.Width}×{mini.Height} @ {mini.X},{mini.Y}; gốc mũi tên ({ox:F1},{oy:F1}); " +
                               $"1 mu = {NavTuning.YardDRef:F0}ᵗʰ khoảng ⚡✕");
             fail += RealShots(profile, s, ox, oy, learn);
+            fail += RealMapPlan(profile);
             if (build) fail += BuildReal(profile, s);
         }
 
@@ -79,6 +80,8 @@ internal static class VerifyMap
         fail += RecorderCases();
         fail += BuilderCases();
         fail += BuilderFallbackCases();
+        fail += PathCases();
+        fail += FollowerCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
         return fail;
     }
@@ -967,6 +970,419 @@ internal static class VerifyMap
                                 $"stand={(mk.Stand is null ? "null" : "có")}, pathLen={mk.PathLenFromNpcMu}");
         }
 
+        return fail;
+    }
+
+    // ================================================================ duong di (YardPath)
+
+    /// <summary>Lưới thử: ô free trong <paramref name="w"/>×<paramref name="h"/> trừ các hộp bị chặn.</summary>
+    private static YardGrid TestGrid(double ox, double oy, int w, int h, params (int x0, int y0, int x1, int y1)[] walls)
+    {
+        var g = YardGrid.Create(ox, oy, w, h, 1.0);
+        for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++)
+            g.SetFree(x, y, true);
+        foreach (var (x0, y0, x1, y1) in walls)
+            for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+                g.SetFree(x, y, false);
+        return g;
+    }
+
+    private static int PathCases()
+    {
+        int fail = 0;
+
+        // Hanh lang thang: keo day phai rut ve DUNG hai diem (dau va cuoi).
+        {
+            var g = TestGrid(0, 0, 40, 20);
+            var route = YardPath.PlanRoute(g, new Vec2(2.5, 10.5), new Vec2(36.5, 10.5), 15.0, out string why);
+            double len = route is null ? -1 : YardPath.Remaining(route, 0, 0);
+            Check(ref fail, route is { Count: 2 } && Math.Abs(len - 34.0) < 0.5,
+                  "sân trống: kéo dây rút đường A* về một đoạn thẳng",
+                  route is null ? why : $"{route.Count} điểm, dài {F(len, 1)} mu");
+        }
+
+        // Tuong chan giua: duong phai vong qua khe, va MOI doan phai nam trong o free.
+        {
+            var g = TestGrid(0, 0, 40, 20, (20, 0, 21, 14));
+            var route = YardPath.PlanRoute(g, new Vec2(2.5, 5.5), new Vec2(36.5, 5.5), 15.0, out string why);
+            bool inside = route is not null;
+            if (route is not null)
+                for (int i = 0; i + 1 < route.Count; i++)
+                    if (!YardPath.LineOfSight(g, route[i], route[i + 1])) inside = false;
+            Check(ref fail, route is { Count: > 2 } && inside,
+                  "tường chắn: đường vòng qua khe và không đoạn nào cắt qua ô bị chặn",
+                  route is null ? why : $"{route.Count} điểm, dài {F(YardPath.Remaining(route, 0, 0), 1)} mu");
+        }
+
+        // Chieu / cung con lai / diem chay truoc tren mot duong gap khuc biet truoc.
+        {
+            var poly = new List<Vec2> { new(0, 0), new(10, 0), new(10, 10) };
+            var (seg, t, off) = YardPath.Project(poly, new Vec2(4, 3));
+            double rem = YardPath.Remaining(poly, seg, t);
+            var ahead = YardPath.PointAhead(poly, seg, t, 8.0);
+            double turn = YardPath.TurnAheadDeg(poly, seg, t, 8.0);
+            bool ok = seg == 0 && Math.Abs(t - 0.4) < 1e-9 && Math.Abs(off - 3.0) < 1e-9
+                      && Math.Abs(rem - 16.0) < 1e-9
+                      && Math.Abs(ahead.X - 10.0) < 1e-9 && Math.Abs(ahead.Y - 2.0) < 1e-9
+                      && Math.Abs(turn - 90.0) < 1e-9;
+            Check(ref fail, ok, "chiếu điểm / cung còn lại / điểm chạy trước / góc rẽ tới",
+                  $"đoạn {seg} t={F(t)} lệch {F(off)} còn {F(rem, 1)} mu, trước mũi ({F(ahead.X, 1)},{F(ahead.Y, 1)}), rẽ {F(turn, 0)}°");
+        }
+
+        // Goc re NGOAI cua so 8 mu khong duoc tinh — neu khong thi bo bam tat nuoc rut ca doan thang dai.
+        {
+            var poly = new List<Vec2> { new(0, 0), new(30, 0), new(30, 10) };
+            double turn = YardPath.TurnAheadDeg(poly, 0, 0, 8.0);
+            Check(ref fail, turn < 1e-9, "góc rẽ ngoài cửa sổ 8 mu không tính", $"rẽ {F(turn, 0)}°");
+        }
+
+        return fail;
+    }
+
+    // ================================================================ mo phong bo bam waypoint
+
+    /// <summary>Sân thử hình chữ U: cốc mở sang phải, máy nằm trong lòng cốc.</summary>
+    private static YardMap USharpYard(bool holeAtStart)
+    {
+        var g = TestGrid(-10, -10, 80, 60,
+                         (38, 18, 41, 52),      // canh trai cua chu U
+                         (38, 18, 62, 21),      // canh tren
+                         (38, 49, 62, 52));     // canh duoi
+        if (holeAtStart)
+            for (int y = 31; y <= 39; y++)
+            for (int x = 11; x <= 19; x++)
+                g.SetFree(x, y, false);          // dao "chua ai di" ngay duoi chan nguoi choi
+
+        var map = new YardMap
+        {
+            ScreenKey = "2560x1440",
+            DRef = NavTuning.YardDRef,
+            Grid = g,
+            Landmarks = new Dictionary<string, double[]>
+            {
+                ["lightning"] = new[] { 0.0, 0.0 },
+                ["cross"] = new[] { NavTuning.YardDRef, 0.0 },
+                ["pizza"] = new[] { NavTuning.YardPizzaXMu, NavTuning.YardPizzaYMu }
+            }
+        };
+        map.Markers.Add(new YardMarker
+        {
+            Id = 0, X = 42, Y = 25, Samples = 3, Rms = 0.5,
+            Approach = new YardApproach { X = 40, Y = 25, HeadingDeg = 0, Events = 3, Rms = 0.5 },
+            Stand = new[] { 41.0, 25.0 },
+            PathLenFromNpcMu = 80
+        });
+        return map;
+    }
+
+    private sealed class SimResult
+    {
+        public bool Handover;
+        public double GapMu = 999;
+        public int Ticks;
+        public int NoSprintTurnTicks;
+
+        /// <summary>Bán kính đưa cho watchdog tăng nhiều nhất bao nhiêu sau MỘT cửa sổ 0,9 s.</summary>
+        public double WorstRadiusJumpPx;
+
+        /// <summary>Số tick mà <see cref="NavWatchdog"/> thật sẽ báo KẸT trên bán kính do bộ bám cấp.</summary>
+        public int WatchdogStuckTicks;
+
+        public int Plans;
+        public int MarkerId = -1;
+        public double MaxOffPathMu;
+
+        /// <summary>Số tick chạm mặt vật cản (đứng im tick đó) — cọ vào tường vài tick khi cua là bình thường.</summary>
+        public int WallTicks;
+
+        public string Why = "";
+    }
+
+    /// <summary>
+    /// Người chơi ĐỘNG HỌC: 14 mu/s, yaw ≤ 200°/s, nhiễu pose 1 mu / 2°, và ĐỨNG IM khi đâm tường —
+    /// nếu bộ bám lái vào vật cản thì mô phỏng kẹt cứng và ca kiểm hỏng, đúng như trong game.
+    /// </summary>
+    /// <param name="walls">
+    /// Lưới VẬT CẢN THẬT của mô phỏng. Khác lưới trong <paramref name="map"/>: ô "chưa ai đi" không
+    /// phải là tường — người chơi đi qua được, chỉ là bản đồ chưa biết. Trộn hai khái niệm này lại thì
+    /// ca "đứng ngoài ô đã đi" tự nhốt nhân vật trong một cái hố không có thật.
+    /// </param>
+    private static SimResult RunFollowSim(YardMap map, YardGrid walls, Vec2 start, double theta0, int seed,
+                                          double teleportAtS = -1, Vec2 teleportTo = default,
+                                          double maxS = 60.0)
+    {
+        var rng = new Random(seed);
+        var res = new SimResult();
+        var follower = new YardFollower(map, S2K, Ox, Oy);
+        var watchdog = new NavWatchdog(S2K);
+        var radii = new List<double>();
+
+        var goal = YardFollower.GoalOf(map.Markers[0]);
+        var machine = new Vec2(map.Markers[0].X, map.Markers[0].Y);
+        var p = start;
+        double theta = theta0, t = 0, dt = NavTuning.TickMs / 1000.0;
+        bool teleported = false;
+
+        while (t < maxS)
+        {
+            t += dt;
+            bool reinit = false;
+            if (teleportAtS > 0 && !teleported && t >= teleportAtS)
+            {
+                teleported = true;
+                p = teleportTo;
+                reinit = true;
+                radii.Clear();
+                watchdog.Reset();
+            }
+
+            double N(double amp) => (rng.NextDouble() * 2 - 1) * amp;
+            double thetaMeas = YardPoseSolver.Wrap(theta + N(2.0));
+            var pose = new YardPose
+            {
+                Quality = YardQuality.Fix2,
+                Conf = 0.9,
+                S = 1.0,
+                Phi = YardPoseSolver.PhiOf(thetaMeas),
+                ThetaDeg = thetaMeas,
+                P = new Vec2(p.X + N(1.0), p.Y + N(1.0)),
+                T = new Vec2(machine.X + N(0.4), machine.Y + N(0.4)),
+                Reinit = reinit,
+                HitsUsed = 2
+            };
+
+            bool on = follower.Step(t, pose, TargetOutput.Lost, WorldMarker.None, false,
+                                    double.NaN, double.NaN, false, out var fo);
+            res.Ticks++;
+            res.MarkerId = follower.MarkerId;
+            res.Plans = follower.PlanCount;
+
+            if (follower.State == YardFollow.Handover)
+            {
+                res.Handover = true;
+                res.GapMu = (p - goal).Len;
+                res.Why = follower.State;
+                return res;
+            }
+            if (!on) continue;
+
+            res.MaxOffPathMu = Math.Max(res.MaxOffPathMu, fo.OffPathMu);
+            if (fo.NoSprint && fo.RemainingMu > 15.0) res.NoSprintTurnTicks++;
+
+            // Ban kinh do bo bam cap, qua CHINH bo do ket cua ban chinh — cua so 0,9 s, trung vi ba
+            // dau so voi ba cuoi. Dang tien ma no bao ket thi bo bam da lam hong luoi an toan cua PR2.
+            double radius = Math.Sqrt(fo.Dx * fo.Dx + fo.Dy * fo.Dy);
+            watchdog.Add(t, fo.Dx, fo.Dy);
+            if (watchdog.ImpactStuck(t, true, true, fo.DistPx, fo.RelDeg)) res.WatchdogStuckTicks++;
+
+            radii.Add(radius);
+            int lag = (int)Math.Round(NavTuning.ImpactWindowS / dt);
+            if (radii.Count > lag)
+                res.WorstRadiusJumpPx = Math.Max(res.WorstRadiusJumpPx, radius - radii[^(lag + 1)]);
+
+            // ---- dong hoc ----
+            double yawMax = 200.0 * dt;
+            theta = YardPoseSolver.Wrap(theta + Math.Clamp(fo.RelDeg, -yawMax, yawMax));
+            double speed = 14.0 * (fo.NoSprint ? 0.5 : 1.0);
+            if (Math.Abs(fo.RelDeg) > 60.0) speed *= 0.35;
+            var step = (speed * dt) * new Vec2(Math.Cos(theta * YardPoseSolver.Deg2Rad),
+                                               Math.Sin(theta * YardPoseSolver.Deg2Rad));
+            var next = p + step;
+            var (cx, cy) = walls.CellOf(next);
+            if (walls.IsFree(cx, cy)) p = next;
+            else res.WallTicks++;
+        }
+
+        res.GapMu = (p - goal).Len;
+        res.Why = follower.State;
+        return res;
+    }
+
+    /// <summary>
+    /// "Tới nơi": vào GIAO_LẠI, đứng trong <paramref name="gapMax"/> mu của đích, và KHÔNG mắc kẹt vào
+    /// vật cản. Cọ vào mặt tường vài tick lúc cua là chuyện bình thường (đường kéo dây đi sát góc);
+    /// mắc kẹt là khi nó tốn một phần đáng kể chuyến đi để đứng im ăn tường.
+    /// </summary>
+    private static bool Reached(SimResult r, double gapMax) =>
+        r.Handover && r.GapMu <= gapMax && r.WallTicks <= Math.Max(4, r.Ticks / 20);
+
+    private static int FollowerCases()
+    {
+        int fail = 0;
+
+        // Nguong toi dich: ban giao chot o cung con lai <= YardHandoverMu do tren pose NHIEU (±1 mu),
+        // nen khoang cach THAT luc do co the vuot ngan ay chut it — do la ly do co so hang 1,5 mu.
+        double gapMax = NavTuning.YardHandoverMu + 1.5;
+
+        // ---- (1) san chu U: phai vong qua cup roi vao trong, khong dam tuong ----
+        var map = USharpYard(holeAtStart: false);
+        var walls = USharpYard(holeAtStart: false).Grid;
+        var r1 = RunFollowSim(map, walls, new Vec2(0, 25), 0.0, 77001);
+        Check(ref fail, Reached(r1, gapMax),
+              $"vật cản chữ U: tới trong {F(gapMax, 1)} mu của tư thế tiếp cận rồi vào GIAO_LẠI",
+              $"{(r1.Handover ? "giao lại" : "KHÔNG giao lại (" + r1.Why + ")")} sau {r1.Ticks} tick " +
+              $"({F(r1.Ticks * NavTuning.TickMs / 1000.0, 1)}s), cách đích {F(r1.GapMu)} mu, " +
+              $"{r1.Plans} lần A*, lệch đường tối đa {F(r1.MaxOffPathMu)} mu, cọ tường {r1.WallTicks} tick");
+
+        Check(ref fail, r1.MarkerId == 0, "khoá đúng máy đích từ điểm vàng quy về hệ sân", $"máy {r1.MarkerId}");
+
+        Check(ref fail, r1.NoSprintTurnTicks > 0, "tắt nước rút ở khúc cua (không phải chỉ lúc sắp tới nơi)",
+              $"{r1.NoSprintTurnTicks} tick NoSprint khi còn > 15 mu");
+
+        // Ban kinh dua cho radial watchdog: do bang chinh cua so 0,9 s ma bo do ket dung.
+        Check(ref fail, r1.WatchdogStuckTicks == 0 && r1.WorstRadiusJumpPx <= 2.0,
+              "bán kính đưa cho watchdog không tăng khi đang tiến (bộ dò kẹt thật không hề báo)",
+              $"{r1.WatchdogStuckTicks} tick báo kẹt, sau 0,9 s bán kính tăng nhiều nhất " +
+              $"{F(r1.WorstRadiusJumpPx)} px");
+
+        // A* khong duoc chay qua mot lan moi giay (ngan sach tick).
+        double simS = r1.Ticks * NavTuning.TickMs / 1000.0;
+        Check(ref fail, r1.Plans <= Math.Ceiling(simS) + 2,
+              "A* chạy nhiều nhất một lần mỗi giây", $"{r1.Plans} lần trong {F(simS, 1)}s");
+
+        // ---- (2) dung NGOAI o da di ----
+        {
+            var mapHole = USharpYard(holeAtStart: true);
+            var r = RunFollowSim(mapHole, walls, new Vec2(5, 25), 0.0, 77002);
+            Check(ref fail, Reached(r, gapMax),
+                  "đứng ngoài ô đã đi: chèn đoạn thẳng vào ô free gần nhất rồi vẫn tới nơi",
+                  $"{(r.Handover ? "giao lại" : "KHÔNG giao lại (" + r.Why + ")")} sau {r.Ticks} tick, " +
+                  $"cách đích {F(r.GapMu)} mu, cọ tường {r.WallTicks} tick");
+        }
+
+        // ---- (3) teleport giua duong -> lap lai duong ----
+        {
+            var r = RunFollowSim(map, walls, new Vec2(0, 25), 0.0, 77003,
+                                 teleportAtS: 2.0, teleportTo: new Vec2(20, 45));
+            Check(ref fail, Reached(r, gapMax),
+                  "teleport giữa đường: lập lại đường từ chỗ mới và vẫn tới nơi",
+                  $"{(r.Handover ? "giao lại" : "KHÔNG giao lại (" + r.Why + ")")} sau {r.Ticks} tick, " +
+                  $"cách đích {F(r.GapMu)} mu, {r.Plans} lần A*, cọ tường {r.WallTicks} tick");
+        }
+
+        // ---- (4) khong co ban do -> nam im hoan toan ----
+        {
+            var f = new YardFollower(null, S2K, Ox, Oy);
+            var pose = new YardPose
+            {
+                Quality = YardQuality.Fix2, Conf = 0.9, S = 1.0, Phi = 0, ThetaDeg = 0,
+                P = new Vec2(0, 0), T = new Vec2(42, 25)
+            };
+            bool on = f.Step(1.0, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN,
+                             false, out var fo);
+            Check(ref fail, !on && !f.HasMap && !fo.Active && f.MarkerId < 0 && f.State == YardFollow.Off,
+                  "không có file bản đồ: bộ bám nằm im vĩnh viễn (hành vi y như trước PR3)",
+                  $"trạng thái {f.State}");
+        }
+
+        // ---- (5) thang thoat ket dang chay -> nhuong quyen nhung van giu khoa may ----
+        {
+            var f = new YardFollower(map, S2K, Ox, Oy);
+            YardPose Pose(double t) => new()
+            {
+                Quality = YardQuality.Fix2, Conf = 0.9, S = 1.0,
+                Phi = YardPoseSolver.PhiOf(0), ThetaDeg = 0,
+                P = new Vec2(0, 25), T = new Vec2(42, 25)
+            };
+            for (int i = 0; i < 12; i++) f.Step(i * 0.025, Pose(i * 0.025), TargetOutput.Lost, WorldMarker.None,
+                                                false, double.NaN, double.NaN, false, out _);
+            int locked = f.MarkerId;
+            bool on = f.Step(1.0, Pose(1.0), TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN,
+                             escapeActive: true, out var fo);
+            Check(ref fail, locked == 0 && !on && !fo.Active && f.State == YardFollow.Escape,
+                  "thang thoát kẹt cầm lái: bộ bám nhường quyền nhưng giữ khoá máy",
+                  $"máy {f.MarkerId}, trạng thái {f.State}");
+        }
+
+        // ---- (6) cham that da khoa va du gan -> giao lai ngay ----
+        {
+            var f = new YardFollower(map, S2K, Ox, Oy);
+            var pose = new YardPose
+            {
+                Quality = YardQuality.Fix2, Conf = 0.9, S = 1.0,
+                Phi = YardPoseSolver.PhiOf(0), ThetaDeg = 0,
+                P = new Vec2(0, 25), T = new Vec2(42, 25)
+            };
+            for (int i = 0; i < 12; i++)
+                f.Step(i * 0.025, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
+            var dot = new TargetOutput { State = "LOCK", Visible = true, X = Ox + 4, Y = Oy - 12, Confidence = 0.9, Quality = "FULL_LOCK" };
+            bool on = f.Step(1.0, pose, dot, WorldMarker.None, false, 20.0 * S2K.Px, 10.0, false, out _);
+            bool stays = !f.Step(1.1, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
+            Check(ref fail, !on && stays && f.State == YardFollow.Handover,
+                  "chấm vàng thật khoá ở 20 px / 10°: giao lại ngay và tắt tới hết chuyến",
+                  $"trạng thái {f.State}");
+        }
+
+        return fail;
+    }
+
+    // ================================================================ lap duong tren ban do THAT
+
+    /// <summary>
+    /// Bản đồ đã dựng được từ 51 chuyến đi tay: từ ô gần ⚡ (chỗ NPC) phải lập được đường tới đích của
+    /// MỌI máy. Đây là ca kiểm gần thực tế nhất mà không cần vào game — nó chạy đúng bộ lập đường mà
+    /// <see cref="YardFollower"/> gọi mỗi giây.
+    ///
+    /// Chưa dạy bản đồ thì KHÔNG phải lỗi — chỉ in một dòng nhắc.
+    /// </summary>
+    private static int RealMapPlan(ElectricProfile p)
+    {
+        var map = YardMap.LoadFrom(ElectricConfig.YardMapPath(p.Key));
+        Console.WriteLine();
+        if (map is null)
+        {
+            Console.WriteLine($"  [bám waypoint] chưa có yard-map-v1.json trong {ElectricConfig.MapDir(p.Key)} — bỏ qua");
+            return 0;
+        }
+
+        int fail = 0;
+        var npc = YardPoseSolver.MapPos(BlipId.Lightning);
+        int ok = 0, weak = 0;
+        double worstVsAstar = 0;
+        var lines = new List<string>();
+
+        foreach (var m in map.Markers.OrderBy(x => x.Id))
+        {
+            var goal = YardFollower.GoalOf(m);
+            var route = YardPath.PlanRoute(map.Grid, npc, goal, NavTuning.YardOffGridSearchMu, out string why);
+            if (route is null || route.Count < 2)
+            {
+                lines.Add($"máy {m.Id}: KHÔNG lập được đường ({why})");
+                continue;
+            }
+
+            ok++;
+            if (m.FromStand || m.Approach is null || m.Approach.LowConfidence) weak++;
+            double len = YardPath.Remaining(route, 0, 0);
+
+            // Keo day chi duoc lam duong NGAN hon duong theo tam o cua A* (cung hai dau mut) — dai hon
+            // la loi hinh hoc. So voi m.PathLenFromNpcMu thi khong so sanh duoc: so do bo dung ghi chi
+            // tinh phan A* trong luoi, khong tinh doan tu ⚡ vao o free dau tien.
+            int c0 = YardPath.NearestFree(map.Grid, npc, NavTuning.YardOffGridSearchMu);
+            int c1 = YardPath.NearestFree(map.Grid, goal, NavTuning.YardOffGridSearchMu);
+            var cells = YardPath.Plan(map.Grid, c0, c1);
+            double cellLen = YardPath.Length(map.Grid, cells)
+                             + (map.Grid.CenterOf(c0) - npc).Len + (goal - map.Grid.CenterOf(c1)).Len;
+            worstVsAstar = Math.Max(worstVsAstar, len - cellLen);
+
+            lines.Add($"máy {m.Id,2}: {F(len, 1),6} mu, {route.Count,2} khúc " +
+                      $"(A* theo ô {F(cellLen, 1)}; bộ dựng ghi {F(Math.Max(0.0, m.PathLenFromNpcMu), 1)}), đích " +
+                      $"{(m.Approach is null ? "vị trí đứng" : m.Approach.LowConfidence ? "tiếp cận (1 lần)" : "tiếp cận")} " +
+                      $"({F(goal.X, 1)},{F(goal.Y, 1)})");
+        }
+
+        Console.WriteLine($"  [bám waypoint] bản đồ thật {p.Key}: {map.Markers.Count} máy, " +
+                          $"lưới {map.Grid.W}×{map.Grid.H} ô ({map.Grid.FreeCount()} free), " +
+                          $"{map.Stats.TripCount} chuyến, dựng {map.BuiltUtc:yyyy-MM-dd HH:mm} UTC");
+        foreach (var line in lines) Console.WriteLine("    " + line);
+
+        Check(ref fail, ok == map.Markers.Count, "bản đồ thật: lập được đường tới tư thế tiếp cận của MỌI máy",
+              $"{ok}/{map.Markers.Count} máy ({weak} máy tư thế yếu → giao lại ở " +
+              $"{NavTuning.YardHandoverLowConfMu:F0} mu thay vì {NavTuning.YardHandoverMu:F0})");
+        Check(ref fail, worstVsAstar <= 1.5, "bản đồ thật: kéo dây không làm đường dài ra",
+              $"dài hơn A* theo ô nhiều nhất {F(worstVsAstar, 2)} mu");
         return fail;
     }
 

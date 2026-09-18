@@ -57,6 +57,17 @@ internal sealed class NavSettings
     /// </summary>
     public bool EscapeLadderEnabled { get; set; } = true;
 
+    /// <summary>
+    /// BÁM WAYPOINT theo bản đồ sân đã dạy: biết mình đứng đâu (pose từ ⚡+✕) thì đi theo ô người đã
+    /// đi tới đúng tư thế tiếp cận của máy đích, chỉ giao lại luồng cột 3D → prompt → E ở ~3 m cuối.
+    ///
+    /// Vì sao là cờ trong file: giống <see cref="EscapeLadderEnabled"/>, đây là thay đổi HÀNH VI LÁI
+    /// phải so A/B được trong game mà không build lại. <c>false</c> = đúng đường PR2 (lái theo chấm
+    /// vàng / cột 3D như trước), và <b>không có file <c>yard-map-v1.json</c> thì cũng y hệt như vậy</b>
+    /// — bộ bám tự nằm im, không tốn một mili-giây nào.
+    /// </summary>
+    public bool UseYardMap { get; set; } = true;
+
     /// <summary>Nhịp ghi dòng trạng thái vào log — <c>console_interval_s</c> 0.16 của Python.</summary>
     public int LogEveryMs { get; set; } = 160;
 
@@ -70,8 +81,8 @@ internal sealed class NavSettings
         if (double.IsNaN(PlayerOriginXRef) || PlayerOriginXRef < 0 || PlayerOriginXRef > 1920) PlayerOriginXRef = 0;
         if (double.IsNaN(PlayerOriginYRef) || PlayerOriginYRef < 0 || PlayerOriginYRef > 1080) PlayerOriginYRef = 0;
         LogEveryMs = Math.Clamp(LogEveryMs <= 0 ? 160 : LogEveryMs, 50, 5000);
-        // TeachMap/EscapeLadderEnabled la bool nen khong co gi de kep — nhung khoa SO nao them vao day
-        // sau nay thi phai kep o day, dung tin file json.
+        // TeachMap/EscapeLadderEnabled/UseYardMap la bool nen khong co gi de kep — nhung khoa SO nao
+        // them vao day sau nay thi phai kep o day, dung tin file json.
     }
 }
 
@@ -698,6 +709,94 @@ internal static class NavTuning
 
     /// <summary>Đứng ngoài ô đã đi thì tìm ô free gần nhất trong bán kính này rồi mới lập đường.</summary>
     public const double YardOffGridSearchMu = 15.0;
+
+    // ================================================================ bam waypoint (Yard*, PR3)
+    //
+    // Bo bam chi doi mot thu tu ban do: "may nao dang la dich" va "duong nao toi tu the tiep can cua
+    // no". Moi nguong duoi day tra loi mot cau hoi cu the trong chuoi do.
+
+    /// <summary>
+    /// Bán kính nhận máy đích: <c>T</c> (điểm vàng quy về hệ sân) cách tâm một máy trong ngần này thì
+    /// coi là máy đó. 6 mu ≈ 3 m — rộng hơn rms tâm cụm (≤ 1,5 mu) và hẹp hơn khoảng cách giữa hai
+    /// trạm biến áp trong sân.
+    /// </summary>
+    public const double YardMarkerIdRadiusMu = 6.0;
+
+    /// <summary>Số tick liên tiếp cùng một máy mới khoá — 8 tick = 0,2 s, đủ để bỏ một cú nhiễu T.</summary>
+    public const int YardMarkerLockTicks = 8;
+
+    /// <summary>Khoá chỉ mở khi T rời hẳn máy cũ (chuyến mới), không phải khi T rung.</summary>
+    public const double YardMarkerUnlockMu = 12.0;
+
+    public const int YardMarkerUnlockTicks = 40;
+
+    /// <summary>Điểm ngắm chạy trước mũi <see cref="YardLookaheadMu"/> mu (≈3 m) dọc đường đã kéo dây.</summary>
+    public const double YardLookaheadMu = 6.0;
+
+    /// <summary>
+    /// Còn ngần này cung đường thì GIAO LẠI cho luồng cũ (chấm thật → cột 3D → prompt → E). Bản đồ
+    /// chỉ hứa "đi tới gần đúng tư thế người đã đứng", 3 m cuối là việc của bộ dò đã chỉnh kỹ.
+    /// </summary>
+    public const double YardHandoverMu = 6.0;
+
+    /// <summary>
+    /// Tư thế tiếp cận chỉ quan sát MỘT lần (<c>lowConfidence</c>) hoặc máy suy từ vị trí đứng
+    /// (<c>fromStand</c>) thì giao lại SỚM hơn — số đo đó có thể lệch vài mu, bám sát nó vô nghĩa.
+    /// </summary>
+    public const double YardHandoverLowConfMu = 10.0;
+
+    /// <summary>Chấm vàng THẬT đã khoá và đủ gần/đủ thẳng thì giao lại ngay, không đợi hết cung.</summary>
+    public const double YardHandoverDotPx = 25.0;
+
+    public const double YardHandoverDotDeg = 30.0;
+
+    /// <summary>
+    /// Khoảng cách trong <c>TargetOutput</c> tổng hợp. SÀN 40·Px là bắt buộc: waypoint 3 m chỉ ~6–8 px
+    /// trên minimap, mà <see cref="RamLinePassTriggerDistPx"/> 14·Px, <see cref="ArrivalShieldEntryDistPx"/>
+    /// 18.5·Px và deadzone gần 23·Px đều đo bằng px — để số thật vào thì servo ngừng lái ngay từ
+    /// waypoint đầu tiên. Chỉ <c>rel</c> mang thông tin; dist giữ ở vùng "xa".
+    /// </summary>
+    public const double YardSynthDistMinPx = 40.0, YardSynthDistMaxPx = 400.0;
+
+    /// <summary>Độ tin cậy của chấm tổng hợp — trên <see cref="RamLineMinConf"/> để servo bám bình thường.</summary>
+    public const double YardSynthConf = 0.85;
+
+    public const double YardReplanS = 1.0;
+
+    /// <summary>
+    /// Sàn giữa hai lần A*. Lập lại còn bị ép bởi <c>Reinit</c>, lệch đường và lúc thang thoát kẹt trả
+    /// quyền; không có sàn này thì một sự kiện lặp lại có thể gọi A* mỗi tick.
+    /// </summary>
+    public const double YardReplanMinS = 0.25;
+
+    public const double YardOffPathReplanMu = 4.0;
+
+    /// <summary>Hết chạy nước rút khi sắp tới nơi hoặc sắp cua — người chơi cũng làm đúng thế.</summary>
+    public const double YardSprintMinRemainingMu = 12.0;
+
+    public const double YardSprintMaxTurnDeg = 35.0;
+
+    public const double YardTurnWindowMu = 8.0;
+
+    /// <summary>
+    /// Ngưỡng tin pose cho hai quyết định KHÔNG phải lái: tắt nước rút, và chọn bên thoát kẹt theo ô
+    /// trống quanh mình thay vì theo mật độ biên Canny.
+    /// </summary>
+    public const double YardFollowMinConf = 0.6;
+
+    /// <summary>Bán kính đếm ô trống mỗi bên khi chọn bên thoát kẹt bằng bản đồ.</summary>
+    public const double YardEscapeSideRadiusMu = 10.0;
+
+    /// <summary>
+    /// Khoảng thoát tối thiểu (ô) để một đoạn thẳng được coi là "nhìn thấy" khi kéo dây.
+    ///
+    /// Kế hoạch ghi 1 ô, nhưng 1 ô nghĩa là "chỉ cần không nằm TRONG ô bị chặn" — đường kéo dây khi đó
+    /// đi sát mặt vật cản, mà mép vùng free lại chính là <c>Dilate(đã đi, 1 ô)</c>, tức đã lấn ra ngoài
+    /// chỗ người thật sự đi 1 ô. Mô phỏng đo được: với 1 ô, hai chuyến có vật cản cọ tường 15–20 tick;
+    /// với 2 ô thì 0 tick và đường chỉ dài thêm ~2 mu. Đi giữa hành lang là cả lý do A* có giá rủi ro
+    /// <see cref="YardEdgeCost"/> ngay từ đầu — kéo dây không được phép vứt nó đi.
+    /// </summary>
+    public const double YardLosMinClear = 2.0;
 
     // ================================================================ vong lap
     /// <summary>

@@ -350,4 +350,166 @@ internal static class YardPath
         for (int i = 1; i < path.Count; i++) d += (g.CenterOf(path[i]) - g.CenterOf(path[i - 1])).Len;
         return d;
     }
+
+    // ================================================================ tu duong O sang duong DI DUOC
+
+    /// <summary>
+    /// Đoạn thẳng <paramref name="a"/>→<paramref name="b"/> có nằm trọn trong ô đã đi không (khoảng
+    /// thoát ≥ <paramref name="minClear"/>). Lấy mẫu mỗi nửa ô: đường chéo qua góc hai ô bị chặn là
+    /// thứ duy nhất lọt được qua bước mẫu thưa hơn.
+    /// </summary>
+    public static bool LineOfSight(YardGrid g, Vec2 a, Vec2 b, double minClear = NavTuning.YardLosMinClear)
+    {
+        if (g is null) return false;
+        var d = b - a;
+        double step = Math.Max(0.05, g.CellMu * 0.5);
+        int n = Math.Max(1, (int)Math.Ceiling(d.Len / step));
+        var clear = g.Clearance();
+        for (int i = 0; i <= n; i++)
+        {
+            var p = a + (i / (double)n) * d;
+            var (x, y) = g.CellOf(p);
+            if (!g.IsFree(x, y)) return false;
+            if (clear[y * g.W + x] < minClear - 1e-6) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Kéo dây (string-pulling): bỏ mọi điểm giữa mà điểm neo còn "nhìn thấy" điểm sau. Quét TIẾN một
+    /// lượt (mỗi điểm bị thử tối đa hai lần) chứ không tìm nhị phân từ cuối — đường A* trong sân có thể
+    /// dài 200 ô, mà bộ này chạy mỗi giây trong vòng lặp 25 ms.
+    /// </summary>
+    public static List<Vec2> StringPull(YardGrid g, IReadOnlyList<Vec2> pts, double minClear = NavTuning.YardLosMinClear)
+    {
+        var outp = new List<Vec2>();
+        if (pts is null || pts.Count == 0) return outp;
+        outp.Add(pts[0]);
+        int i = 0;
+        while (i < pts.Count - 1)
+        {
+            int j = i + 1;
+            for (int k = i + 2; k < pts.Count; k++)
+            {
+                if (!LineOfSight(g, pts[i], pts[k], minClear)) break;
+                j = k;
+            }
+            outp.Add(pts[j]);
+            i = j;
+        }
+        return outp;
+    }
+
+    /// <summary>
+    /// Đường ĐI ĐƯỢC từ vị trí thật tới đích thật: A* trên ô free rồi kéo dây, có chèn đoạn thẳng từ
+    /// vị trí thật vào ô free gần nhất (đứng lấn ra mép hành lang là chuyện thường).
+    /// </summary>
+    public static List<Vec2> PlanRoute(YardGrid g, Vec2 from, Vec2 to, double offGridSearchMu, out string why)
+    {
+        why = "";
+        if (g is null) { why = "không có lưới"; return null; }
+
+        int start = NearestFree(g, from, offGridSearchMu);
+        if (start < 0) { why = $"đứng ngoài ô đã đi quá {offGridSearchMu:F0} mu"; return null; }
+        int goal = NearestFree(g, to, offGridSearchMu);
+        if (goal < 0) { why = "đích không nằm trong ô đã đi"; return null; }
+
+        var cells = Plan(g, start, goal);
+        if (cells is null) { why = "A* không tới được"; return null; }
+
+        var pts = new List<Vec2>(cells.Count + 2) { from };
+        foreach (var c in cells) Push(pts, g.CenterOf(c));
+        Push(pts, to);
+        return StringPull(g, pts);
+    }
+
+    private static void Push(List<Vec2> pts, Vec2 p)
+    {
+        if (pts.Count > 0 && (pts[^1] - p).Len < 1e-6) return;
+        pts.Add(p);
+    }
+
+    /// <summary>Điểm trên đường tại đoạn <paramref name="seg"/>, tỉ lệ <paramref name="t"/>.</summary>
+    public static Vec2 PointAt(IReadOnlyList<Vec2> poly, int seg, double t)
+    {
+        if (poly is null || poly.Count == 0) return new Vec2(0, 0);
+        if (seg < 0) return poly[0];
+        if (seg + 1 >= poly.Count) return poly[^1];
+        return poly[seg] + t * (poly[seg + 1] - poly[seg]);
+    }
+
+    /// <summary>Chiếu một điểm lên đường: đoạn gần nhất, tỉ lệ trong đoạn, và khoảng lệch (mu).</summary>
+    public static (int seg, double t, double offMu) Project(IReadOnlyList<Vec2> poly, Vec2 p)
+    {
+        if (poly is null || poly.Count == 0) return (0, 0, double.PositiveInfinity);
+        if (poly.Count == 1) return (0, 0, (p - poly[0]).Len);
+
+        int bestSeg = 0;
+        double bestT = 0, bestD = double.PositiveInfinity;
+        for (int i = 0; i + 1 < poly.Count; i++)
+        {
+            var a = poly[i];
+            var ab = poly[i + 1] - a;
+            double l2 = Vec2.Dot(ab, ab);
+            double t = l2 < 1e-12 ? 0.0 : Math.Clamp(Vec2.Dot(p - a, ab) / l2, 0.0, 1.0);
+            double d = (p - (a + t * ab)).Len;
+            if (d < bestD) { bestD = d; bestSeg = i; bestT = t; }
+        }
+        return (bestSeg, bestT, bestD);
+    }
+
+    /// <summary>Cung đường còn lại (mu) tính từ một điểm chiếu.</summary>
+    public static double Remaining(IReadOnlyList<Vec2> poly, int seg, double t)
+    {
+        if (poly is null || poly.Count < 2) return 0;
+        double d = 0;
+        var cur = PointAt(poly, seg, t);
+        for (int i = seg; i + 1 < poly.Count; i++)
+        {
+            var a = i == seg ? cur : poly[i];
+            d += (poly[i + 1] - a).Len;
+        }
+        return d;
+    }
+
+    /// <summary>Điểm cách điểm chiếu <paramref name="aheadMu"/> mu về phía trước dọc cung.</summary>
+    public static Vec2 PointAhead(IReadOnlyList<Vec2> poly, int seg, double t, double aheadMu)
+    {
+        if (poly is null || poly.Count == 0) return new Vec2(0, 0);
+        var cur = PointAt(poly, seg, t);
+        double left = Math.Max(0.0, aheadMu);
+        for (int i = seg; i + 1 < poly.Count; i++)
+        {
+            var a = i == seg ? cur : poly[i];
+            var b = poly[i + 1];
+            double len = (b - a).Len;
+            if (len >= left) return len < 1e-9 ? b : a + (left / len) * (b - a);
+            left -= len;
+        }
+        return poly[^1];
+    }
+
+    /// <summary>
+    /// Góc rẽ lớn nhất của đường trong <paramref name="windowMu"/> mu tới. Dùng để tắt nước rút TRƯỚC
+    /// khúc cua — chạy shift vào cua thì trượt ra khỏi hành lang rồi mới bẻ được.
+    /// </summary>
+    public static double TurnAheadDeg(IReadOnlyList<Vec2> poly, int seg, double t, double windowMu)
+    {
+        if (poly is null || poly.Count < 3) return 0;
+        var cur = PointAt(poly, seg, t);
+        double acc = 0, worst = 0;
+        for (int i = seg; i + 2 < poly.Count; i++)
+        {
+            var a = i == seg ? cur : poly[i];
+            acc += (poly[i + 1] - a).Len;
+            if (acc > windowMu) break;
+            var d1 = poly[i + 1] - poly[i];
+            var d2 = poly[i + 2] - poly[i + 1];
+            if (d1.Len < 1e-9 || d2.Len < 1e-9) continue;
+            double ang = Math.Abs(YardPoseSolver.Wrap(
+                (Math.Atan2(d2.Y, d2.X) - Math.Atan2(d1.Y, d1.X)) * YardPoseSolver.Rad2Deg));
+            worst = Math.Max(worst, ang);
+        }
+        return worst;
+    }
 }
