@@ -78,6 +78,7 @@ internal static class VerifyMap
         fail += TrackerCases();
         fail += RecorderCases();
         fail += BuilderCases();
+        fail += BuilderFallbackCases();
         Console.WriteLine(fail == 0 ? "  tự kiểm tra: ĐẠT" : $"  tự kiểm tra: HỎNG {fail} ca");
         return fail;
     }
@@ -816,6 +817,154 @@ internal static class VerifyMap
             try { YardMapBuilder.RenderPng(map, png); } catch (Exception ex) { Check(ref fail, false, "vẽ yard-map.png", ex.Message); }
             Check(ref fail, File.Exists(png) && new FileInfo(png).Length > 1024, "vẽ được yard-map.png",
                   File.Exists(png) ? $"{new FileInfo(png).Length / 1024} KB" : "không có file");
+        }
+
+        return fail;
+    }
+
+    // ================================================================ builder: gan chuyen khong chấm / tiep can du phong
+
+    /// <summary>
+    /// Một chuyến ĐI-VỀ đơn: từ <paramref name="startP"/> tới <paramref name="nearP"/>, cách máy đúng
+    /// <c>|nearP − machine|</c> — dùng cho các sân tổng hợp cần khống chế chính xác khoảng cách chấm
+    /// đích còn lại lúc dừng, thay vì mặc định 5 mu như <see cref="FakeYard"/>.
+    /// </summary>
+    private static YardRecording OneTripYard(Vec2 machine, Vec2 startP, Vec2 nearP, double s,
+                                              int standTicks, int blackoutTicks, out double openT)
+    {
+        var rng = new Random(20260918 ^ (int)(machine.X * 1000));
+        var rec = new YardRecording { Path = "rec-fake-onetrip.csv" };
+        double t = 0;
+        var dir = nearP - startP;
+        var unit = (1.0 / Math.Max(1e-6, dir.Len)) * dir;
+        double theta = Math.Atan2(unit.Y, unit.X) * YardPoseSolver.Rad2Deg;
+
+        int steps = Math.Max(30, (int)(dir.Len / 0.35));
+        for (int i = 0; i <= steps; i++)
+        {
+            var p = startP + (i / (double)steps) * dir;
+            Emit(rec, rng, t, s, p, theta, machine);
+            t += 0.025;
+        }
+        for (int i = 0; i < standTicks; i++)
+        {
+            Emit(rec, rng, t, s, nearP, theta, machine);
+            t += 0.025;
+        }
+        for (int i = 0; i < blackoutTicks; i++)
+        {
+            EmitBlank(rec, t);
+            t += 0.025;
+        }
+        rec.Events.Add(new YardEventRow { T = t, Name = "PANEL_OPEN", Detail = "chuyến" });
+        openT = t;
+        t += 3.0;
+        rec.Events.Add(new YardEventRow { T = t, Name = "PANEL_CLOSED" });
+        return rec;
+    }
+
+    /// <summary>Chuyến KHÔNG hề có chấm đích (dính mũi tên/⚡ suốt): mọi cột dot để trống.</summary>
+    private static void EmitNoDot(YardRecording rec, Random rng, double t, double s, Vec2 p, double thetaDeg)
+    {
+        double phi = YardPoseSolver.PhiOf(thetaDeg);
+        double N() => (rng.NextDouble() * 2 - 1) * 0.8;
+        var a = YardPoseSolver.ToScreen(YardPoseSolver.MapPos(BlipId.Lightning), s, phi, p);
+        var b = YardPoseSolver.ToScreen(YardPoseSolver.MapPos(BlipId.Cross), s, phi, p);
+        rec.Ticks.Add(new YardTickRow
+        {
+            T = t, Q = YardQuality.Fix2, Conf = 0.9, S = s, Phi = phi, Theta = thetaDeg,
+            Ax = a.X + N(), Ay = a.Y + N(), Ancc = 0.9, Ainset = 40,
+            Bx = b.X + N(), By = b.Y + N(), Bncc = 0.9, Binset = 40,
+            Dotx = null, Doty = null, Dotq = "NONE", Dotconf = 0, Dotstate = "LOST", Dotdist = 0
+        });
+    }
+
+    /// <summary>Tick trắng: không mốc, không chấm — mô phỏng mất dấu hoàn toàn (HUD panel che minimap).</summary>
+    private static void EmitBlank(YardRecording rec, double t) =>
+        rec.Ticks.Add(new YardTickRow { T = t, Q = YardQuality.None, Dotq = "NONE", Dotstate = "LOST" });
+
+    /// <summary>
+    /// Ba ca PR4 không dựng được bằng <see cref="BuilderCases"/> (nó khoá chặt 3 máy + tiếp cận đúng
+    /// khuôn): (1) chuyến ngắn chấm chỉ ra 12–18 px vẫn phải gán được bằng chấm khoá; (2) chuyến không
+    /// hề có chấm FULL_LOCK vẫn phải gán đúng máy bằng vị trí đứng; (3) máy mất dấu ngay trước lúc mở
+    /// bảng vẫn phải "tới được" qua vị trí đứng dù không có tư thế tiếp cận.
+    /// </summary>
+    private static int BuilderFallbackCases()
+    {
+        int fail = 0;
+
+        // ---- (1) chuyen ngan: chấm khong bao gio qua 18 px (< 26.7 px nguong cu) van gan duoc ----
+        {
+            var machine = new Vec2(0, -30);
+            var farP = new Vec2(machine.X, machine.Y + 18.0);   // cach may 18 mu
+            var nearP = new Vec2(machine.X, machine.Y + 12.0);  // dung yen cach may 12 mu — khong bao gio < 12
+            var rec = OneTripYard(machine, farP, nearP, 1.0, standTicks: 48, blackoutTicks: 0, out _);
+
+            var map = YardMapBuilder.Build(new[] { rec }, S2K, "2560x1440", out var r1);
+            bool ok = map is not null && map.Markers.Count == 1 && !map.Markers[0].FromStand
+                      && map.Markers[0].Samples > 0
+                      && (new Vec2(map.Markers[0].X, map.Markers[0].Y) - machine).Len <= 1.5;
+            Check(ref fail, ok, "chuyến ngắn (chấm chỉ ra 12–18 px, dưới ngưỡng 26,7 px cũ) vẫn gán máy bằng chấm khoá",
+                  map is null ? string.Join("; ", r1.Blockers)
+                              : $"{map.Markers.Count} máy, fromStand={map.Markers.FirstOrDefault()?.FromStand}, " +
+                                $"samples={map.Markers.FirstOrDefault()?.Samples}");
+        }
+
+        // ---- (2) chuyen khong FULL_LOCK nao: gan dung may bang vi tri dung ----
+        {
+            var machines = new[] { new Vec2(40, -80), new Vec2(-20, -120) };
+            var rec = FakeYard(3000, machines, 1.0, out _);
+
+            // Chuyen rieng: di tu ⚡ toi gan may A (chi 4 mu, KHONG bao gio thay chấm) roi mo bang.
+            var start = new Vec2(4, -4);
+            var mA = machines[0];
+            var unitA = (1.0 / Math.Max(1e-6, (mA - start).Len)) * (mA - start);
+            var approachA = mA - 4.0 * unitA;
+            var recNoDot = new YardRecording { Path = "rec-fake-nodot.csv" };
+            var rngNoDot = new Random(4242);
+            double t = 0;
+            var dirA = approachA - start;
+            int steps = Math.Max(30, (int)(dirA.Len / 0.35));
+            double thetaA = Math.Atan2(unitA.Y, unitA.X) * YardPoseSolver.Rad2Deg;
+            for (int i = 0; i <= steps; i++)
+            {
+                var p = start + (i / (double)steps) * dirA;
+                EmitNoDot(recNoDot, rngNoDot, t, 1.0, p, thetaA);
+                t += 0.025;
+            }
+            for (int i = 0; i < 48; i++) { EmitNoDot(recNoDot, rngNoDot, t, 1.0, approachA, thetaA); t += 0.025; }
+            recNoDot.Events.Add(new YardEventRow { T = t, Name = "PANEL_OPEN", Detail = "chuyến" });
+            t += 3.0;
+            recNoDot.Events.Add(new YardEventRow { T = t, Name = "PANEL_CLOSED" });
+
+            var map = YardMapBuilder.Build(new[] { rec, recNoDot }, S2K, "2560x1440", out var r2);
+            var mkA = map?.Markers.OrderBy(m => (new Vec2(m.X, m.Y) - mA).Len).FirstOrDefault();
+            var mkB = map?.Markers.OrderBy(m => (new Vec2(m.X, m.Y) - machines[1]).Len).FirstOrDefault();
+            bool ok = map is not null && map.Markers.Count == machines.Length
+                      && mkA is not null && mkA.Approach is not null && mkA.Approach.Events == 2
+                      && mkB is not null && mkB.Approach is not null && mkB.Approach.Events == 1;
+            Check(ref fail, ok, "chuyến không có chấm FULL_LOCK nào vẫn gán đúng máy gần nhất bằng vị trí đứng",
+                  map is null ? string.Join("; ", r2.Blockers)
+                              : $"{map.Markers.Count} máy, máy A {mkA?.Approach?.Events} lần, máy B {mkB?.Approach?.Events} lần");
+        }
+
+        // ---- (3) mat dau 3 s truoc khi mo bang: khong co tiep can nhung van toi duoc qua vi tri dung ----
+        {
+            var machine = new Vec2(30, -60);
+            var start = new Vec2(4, -4);
+            var unit = (1.0 / Math.Max(1e-6, (machine - start).Len)) * (machine - start);
+            var approach = machine - 5.0 * unit;
+            // dung yen 0,5 s (con thay) roi mat dau 3 s (qua ca cua so binh thuong lan du phong 2 s).
+            var rec = OneTripYard(machine, start, approach, 1.0, standTicks: 20, blackoutTicks: 120, out _);
+
+            var map = YardMapBuilder.Build(new[] { rec }, S2K, "2560x1440", out var r3);
+            var mk = map?.Markers.FirstOrDefault();
+            bool ok = map is not null && map.Markers.Count == 1
+                      && mk.Approach is null && mk.Stand is not null && mk.PathLenFromNpcMu > 0;
+            Check(ref fail, ok, "máy mất dấu 3 s trước khi mở bảng: không có tư thế tiếp cận nhưng vẫn tới được qua vị trí đứng",
+                  map is null ? string.Join("; ", r3.Blockers)
+                              : $"{map.Markers.Count} máy, approach={(mk.Approach is null ? "null" : "có")}, " +
+                                $"stand={(mk.Stand is null ? "null" : "có")}, pathLen={mk.PathLenFromNpcMu}");
         }
 
         return fail;

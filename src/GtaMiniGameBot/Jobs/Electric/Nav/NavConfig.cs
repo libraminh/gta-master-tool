@@ -577,8 +577,32 @@ internal static class NavTuning
     /// <summary>DBSCAN gom vị trí máy: 3 mu ≈ 1,5 m — nhỏ hơn khoảng cách giữa hai máy biến áp.</summary>
     public const double YardClusterEpsMu = 3.0;
 
+    /// <summary>
+    /// Khoảng cách chấm đích tối thiểu để một tick FULL_LOCK được dùng gán máy cho chuyến — chỉ để
+    /// loại chấm đang nằm NGAY DƯỚI mũi tên (đứng sát máy), không phải để loại chấm ở xa. FULL_LOCK
+    /// đã tự loại mảnh vỡ/bị che rồi, nên ngưỡng này nhỏ (6 px, không phải 20 px cũ): trạm biến áp ở
+    /// sân này cách nhau 5–6 m, chuyến ngắn thì chấm không bao giờ ra khỏi bán kính 27 px cũ.
+    /// </summary>
+    public const double YardLabelMinDotPx = 6.0;
+
+    /// <summary>Số tick FULL_LOCK tối thiểu để tin trung vị chấm đích của một chuyến.</summary>
+    public const int YardLabelMinTicks = 8;
+
     /// <summary>Cửa sổ lấy "tư thế tiếp cận" trước lúc bảng mở: [t−0.8 s, t−0.3 s].</summary>
     public const double YardApproachWindowStartS = 0.8, YardApproachWindowEndS = 0.3;
+
+    /// <summary>
+    /// Cửa sổ dự phòng khi chấm đích/cửa sổ tiếp cận bình thường trống — lùi về tư thế Ok GẦN NHẤT
+    /// trong ngần này trước lúc mở bảng. Dùng cho cả gán chuyến theo "vị trí đứng" (mục B) lẫn tư thế
+    /// tiếp cận dự phòng (mục C): chấm đích mất sớm không có nghĩa là pose người chơi cũng mất.
+    /// </summary>
+    public const double YardApproachFallbackWindowS = 2.0;
+
+    /// <summary>
+    /// Bán kính (mu) để gán một chuyến "chỉ có vị trí đứng" (không chấm đích) vào máy đã gom cụm gần
+    /// nhất. Rộng hơn <see cref="YardClusterEpsMu"/> một chút vì vị trí đứng đo xa máy hơn tâm cụm.
+    /// </summary>
+    public const double YardStandLabelRadiusMu = 6.0;
 
     public const double YardRecFlushS = 1.0;
     public const int YardFrameRingN = 40;

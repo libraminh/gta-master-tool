@@ -133,6 +133,13 @@ internal sealed class YardMarker
     /// <summary>Chỗ người chơi ĐỨNG lúc bảng mở (t−0.1 s).</summary>
     public double[] Stand { get; set; }
 
+    /// <summary>
+    /// true = máy này KHÔNG có chuyến nào khoá được chấm đích — tâm lấy từ vị trí đứng lúc mở bảng
+    /// của chuyến gán nó (mục B của PR4), không phải trung vị chấm vàng. Kém chính xác hơn máy
+    /// thường, ghi cờ để bước sau (bám waypoint) biết mà nới dung sai.
+    /// </summary>
+    public bool FromStand { get; set; }
+
     /// <summary>Độ dài đường A* từ ô gần ⚡ tới tư thế tiếp cận; âm = không tới được.</summary>
     public double PathLenFromNpcMu { get; set; }
 }

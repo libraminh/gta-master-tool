@@ -116,9 +116,9 @@ internal static class YardMapBuilder
         foreach (var x in allSolved) if (!x.Ok && SolveWithPizza(x, pizza)) byPizza++;
         rep.Add($"lượt 1b (một blip + 🍕): thêm {byPizza} tick.");
 
-        // ---------------- lượt 2: máy đích mỗi chuyến ----------------
-        double dotMinPx = 20.0 * scale.Px;
-        int unlabeled = 0;
+        // ---------------- lượt 2: máy đích mỗi chuyến (theo chấm khoá) ----------------
+        double dotMinPx = NavTuning.YardLabelMinDotPx * scale.Px;
+        int noDot = 0;
         foreach (var trip in trips)
         {
             var pts = new List<Vec2>();
@@ -129,10 +129,11 @@ internal static class YardMapBuilder
                 pts.Add(x.Dot.Value);
             }
             trip.LockTicks = pts.Count;
-            if (pts.Count >= 20) trip.T = MedianPoint(pts);
-            else unlabeled++;
+            if (pts.Count >= NavTuning.YardLabelMinTicks) trip.T = MedianPoint(pts);
+            else noDot++;
         }
-        rep.Add($"lượt 2: {trips.Count} chuyến, {trips.Count - unlabeled} chuyến có máy đích, {unlabeled} chuyến chưa gán.");
+        rep.Add($"lượt 2 (chấm khoá ≥ {dotMinPx:F1}px, ≥ {NavTuning.YardLabelMinTicks} tick): " +
+                $"{trips.Count} chuyến, {trips.Count - noDot} chuyến có máy đích, {noDot} chuyến chưa có.");
 
         // ---------------- lượt 3: hồi tố một blip + máy đích ----------------
         int retro = 0;
@@ -160,28 +161,41 @@ internal static class YardMapBuilder
         // ---------------- máy: gom cụm ----------------
         var markers = Cluster(trips, rep);
 
+        // ---------------- gán chuyến chưa có chấm khoá bằng vị trí đứng lúc mở bảng ----------------
+        int byStand = LabelByStand(trips, markers, out int newFromStand, out int stillUnlabeled);
+        rep.Add($"gán chuyến: {trips.Count - noDot} theo chấm khoá + {byStand} theo vị trí đứng " +
+                $"({newFromStand} máy mới) = {trips.Count - stillUnlabeled}/{trips.Count}; " +
+                $"{stillUnlabeled} chuyến vẫn chưa gán (không còn tư thế nào quanh lúc mở bảng).");
+
         // ---------------- tư thế tiếp cận ----------------
         Approaches(trips, markers, rep);
 
         // ---------------- khả đạt ----------------
         int npcCell = YardPath.NearestFree(grid, new Vec2(0, 0), 25.0);
-        int unreachable = 0;
+        int unreachable = 0, noGoal = 0;
         foreach (var m in markers)
         {
             m.PathLenFromNpcMu = -1;
-            if (npcCell < 0 || m.Approach is null) { unreachable++; continue; }
-            int goal = YardPath.NearestFree(grid, new Vec2(m.Approach.X, m.Approach.Y), NavTuning.YardOffGridSearchMu);
+            // Dich = tu the tiep can; khong co thi lui ve vi tri DUNG — thieu ca hai moi la khong co
+            // dich nao de lap duong, ca do KHONG tinh la "khong toi duoc" (khong du du lieu de noi gi).
+            Vec2? goalPos = m.Approach is not null ? new Vec2(m.Approach.X, m.Approach.Y)
+                : m.Stand is { Length: 2 } st ? new Vec2(st[0], st[1])
+                : null;
+            if (goalPos is null) { noGoal++; continue; }
+            if (npcCell < 0) { unreachable++; continue; }
+            int goal = YardPath.NearestFree(grid, goalPos.Value, NavTuning.YardOffGridSearchMu);
             var path = goal < 0 ? null : YardPath.Plan(grid, npcCell, goal);
             if (path is null) { unreachable++; continue; }
             m.PathLenFromNpcMu = Math.Round(YardPath.Length(grid, path) * grid.CellMu, 1);
         }
-        rep.Add($"khả đạt: {markers.Count - unreachable}/{markers.Count} máy đi tới được từ chỗ ⚡" +
-                (npcCell < 0 ? " (chưa đi qua chỗ ⚡ nên không có điểm xuất phát)" : ""));
+        rep.Add($"khả đạt: {markers.Count - unreachable - noGoal}/{markers.Count} máy đi tới được từ chỗ ⚡" +
+                (npcCell < 0 ? " (chưa đi qua chỗ ⚡ nên không có điểm xuất phát)" : "") +
+                (noGoal > 0 ? $"; {noGoal} máy không có tư thế tiếp cận lẫn vị trí đứng — bỏ qua khả đạt" : ""));
 
         // ---------------- thống kê + go/no-go ----------------
         var stats = Statistics(trips, allSolved, scaleModes, rep);
         stats.TripCount = trips.Count;
-        stats.UnlabeledTrips = unlabeled;
+        stats.UnlabeledTrips = stillUnlabeled;
 
         var map = new YardMap
         {
@@ -200,7 +214,7 @@ internal static class YardMapBuilder
             Stats = stats
         };
 
-        GoNoGo(map, rep, unlabeled, trips.Count, unreachable);
+        GoNoGo(map, rep, stillUnlabeled, trips.Count, unreachable);
         return map;
     }
 
@@ -455,8 +469,73 @@ internal static class YardMapBuilder
         return outp;
     }
 
+    /// <summary>
+    /// Gán chuyến KHÔNG có chấm khoá (chấm nằm dưới mũi tên/dính ⚡ suốt chuyến) bằng vị trí đứng lúc
+    /// mở bảng — trạm nào người chơi đứng cạnh lúc bấm E cũng chính là trạm chuyến đó nhắm tới. Gọi
+    /// SAU <see cref="Cluster"/>: cần tâm cụm đã có để biết "gần" là gần máy nào.
+    /// </summary>
+    private static int LabelByStand(List<Trip> trips, List<YardMarker> markers, out int newMarkers, out int stillUnlabeled)
+    {
+        newMarkers = 0;
+        stillUnlabeled = 0;
+        int labelled = 0;
+
+        foreach (var trip in trips)
+        {
+            if (trip.T is not null) continue;              // da gan bang chấm khoá (luot 2)
+
+            var stand = ComputeStand(trip);
+            if (stand is null) { stillUnlabeled++; continue; }
+
+            int nearest = -1;
+            double nearestD = double.MaxValue;
+            foreach (var m in markers)
+            {
+                double d = (stand.Value - new Vec2(m.X, m.Y)).Len;
+                if (d < nearestD) { nearestD = d; nearest = m.Id; }
+            }
+
+            if (nearest >= 0 && nearestD <= NavTuning.YardStandLabelRadiusMu)
+            {
+                trip.MarkerId = nearest;
+            }
+            else
+            {
+                var nm = new YardMarker
+                {
+                    Id = markers.Count,
+                    X = Math.Round(stand.Value.X, 2),
+                    Y = Math.Round(stand.Value.Y, 2),
+                    Samples = 0,
+                    Rms = 0,
+                    FromStand = true
+                };
+                markers.Add(nm);
+                trip.MarkerId = nm.Id;
+                newMarkers++;
+            }
+            labelled++;
+        }
+
+        return labelled;
+    }
+
+    /// <summary>
+    /// Tư thế ĐỨNG của một chuyến: tick lúc <c>OpenT − 0.1 s</c> (đúng lúc bấm E), không có thì lùi về
+    /// tick Ok GẦN NHẤT trong <see cref="NavTuning.YardApproachFallbackWindowS"/> trước đó — chấm đích
+    /// có thể mất từ sớm (dính ⚡/mũi tên) nhưng pose người chơi (⚡/✕ trên minimap) thường vẫn còn.
+    /// </summary>
+    private static Vec2? ComputeStand(Trip trip)
+    {
+        var atOpen = trip.Ticks.Where(x => x.Ok && x.T <= trip.OpenT - 0.1).LastOrDefault();
+        if (atOpen is not null) return atOpen.P;
+        return trip.Ticks.Where(x => x.Ok && x.T >= trip.OpenT - NavTuning.YardApproachFallbackWindowS
+                                    && x.T <= trip.OpenT).LastOrDefault()?.P;
+    }
+
     private static void Approaches(List<Trip> trips, List<YardMarker> markers, YardBuildReport rep)
     {
+        int viaFallback = 0;
         foreach (var m in markers)
         {
             var ps = new List<Vec2>();
@@ -468,16 +547,39 @@ internal static class YardMapBuilder
                 double lo = trip.OpenT - NavTuning.YardApproachWindowStartS;
                 double hi = trip.OpenT - NavTuning.YardApproachWindowEndS;
                 var win = trip.Ticks.Where(x => x.Ok && x.T >= lo && x.T <= hi).ToList();
-                if (win.Count == 0) continue;
 
-                ps.Add(MedianPoint(win.Select(x => x.P).ToList()));
-                ths.Add(CircMean(win.Select(x => x.Theta).ToList()));
+                if (win.Count > 0)
+                {
+                    ps.Add(MedianPoint(win.Select(x => x.P).ToList()));
+                    ths.Add(CircMean(win.Select(x => x.Theta).ToList()));
+                }
+                else
+                {
+                    // Cua so binh thuong [t-0.8,t-0.3] rong (chuyen qua ngan hoac dung sat cua roi mo
+                    // bang ngay) — lui ve tu the Ok CUOI CUNG truoc do trong cua so du phong, huong lay
+                    // luon tu tu the do thay vi bo trang ca chuyen.
+                    var fb = trip.Ticks.Where(x => x.Ok && x.T >= trip.OpenT - NavTuning.YardApproachFallbackWindowS
+                                                  && x.T <= trip.OpenT).LastOrDefault();
+                    if (fb is not null)
+                    {
+                        ps.Add(fb.P);
+                        ths.Add(fb.Theta);
+                        viaFallback++;
+                    }
+                }
 
-                var stand = trip.Ticks.Where(x => x.Ok && x.T <= trip.OpenT - 0.1).LastOrDefault();
-                if (stand is not null) stands.Add(stand.P);
+                var stand = ComputeStand(trip);
+                if (stand is not null) stands.Add(stand.Value);
             }
 
-            if (ps.Count == 0) continue;
+            if (stands.Count > 0)
+            {
+                var st = MedianPoint(stands);
+                m.Stand = new[] { Math.Round(st.X, 2), Math.Round(st.Y, 2) };
+            }
+
+            if (ps.Count == 0) continue;      // khong con tu the nao — giu Stand (neu co) lam dich du phong
+
             var center = MedianPoint(ps);
             double rms = Math.Sqrt(ps.Sum(p => (p - center).Len * (p - center).Len) / ps.Count);
 
@@ -490,15 +592,13 @@ internal static class YardMapBuilder
                 Rms = Math.Round(rms, 2),
                 LowConfidence = ps.Count < 2
             };
-            if (stands.Count > 0)
-            {
-                var st = MedianPoint(stands);
-                m.Stand = new[] { Math.Round(st.X, 2), Math.Round(st.Y, 2) };
-            }
         }
 
-        int low = markers.Count(x => x.Approach is null || x.Approach.LowConfidence);
-        rep.Add($"tư thế tiếp cận: {markers.Count(x => x.Approach is not null)}/{markers.Count} máy có, {low} máy chỉ 1 lần (lowConfidence).");
+        int noApproach = markers.Count(x => x.Approach is null);
+        int low = markers.Count(x => x.Approach is not null && x.Approach.LowConfidence);
+        rep.Add($"tư thế tiếp cận: {markers.Count(x => x.Approach is not null)}/{markers.Count} máy có " +
+                $"({viaFallback} chuyến lấy tư thế dự phòng ≤ {NavTuning.YardApproachFallbackWindowS:F1}s), " +
+                $"{low} máy chỉ 1 lần (lowConfidence), {noApproach} máy không có tư thế tiếp cận (dùng vị trí đứng nếu có).");
         foreach (var m in markers.Where(x => x.Approach is not null))
             rep.Add($"  máy {m.Id} tiếp cận ({m.Approach.X:F1},{m.Approach.Y:F1}) hướng {m.Approach.HeadingDeg:F0}° " +
                     $"rms {m.Approach.Rms:F2} mu, {m.Approach.Events} lần");
@@ -628,11 +728,15 @@ internal static class YardMapBuilder
         Gate(map.Markers.Count > 0 && worstRms <= 2.0,
              ($"mọi máy rms ≤ 2 mu — tệ nhất {worstRms:F2} mu trên {map.Markers.Count} máy"));
 
-        Gate(unreachable == 0, $"mọi máy tới được từ chỗ ⚡ — {unreachable} máy không tới được");
+        Gate(unreachable == 0, $"mọi máy tới được từ chỗ ⚡ (tính cả đi qua vị trí đứng dự phòng) — {unreachable} máy không tới được");
 
         double unlabelledPct = tripCount == 0 ? 1 : unlabeled / (double)tripCount;
         Gate(unlabelledPct <= 0.10,
              ($"≤ 10 % chuyến chưa gán máy — đang {unlabelledPct:P0} ({unlabeled}/{tripCount})"));
+
+        int noApproach = map.Markers.Count(m => m.Approach is null);
+        rep.Add($"  [tin]  {noApproach}/{map.Markers.Count} máy không có tư thế tiếp cận (chỉ có vị trí đứng, " +
+                "nếu có) — không tính vào go/no-go, chỉ để biết bước bám waypoint sẽ phải lái thô hơn ở đó.");
 
         rep.Ok = rep.Blockers.Count == 0;
         rep.Add(rep.Ok
