@@ -47,6 +47,16 @@ internal sealed class NavSettings
     /// </summary>
     public bool TeachMap { get; set; }
 
+    /// <summary>
+    /// THANG THOÁT KẸT thay cú nhảy KET1 ở hai nguồn MINIMAP/WORLD: trượt ngang → trượt chéo → lùi+bẻ
+    /// 45°+W → trượt chéo đảo bên → KET1 cũ, sau mỗi bậc thăm dò 0,45 s xem thoát chưa.
+    ///
+    /// Vì sao là cờ trong file: đây là thay đổi HÀNH VI LÁI, phải so A/B được trong game mà không
+    /// build lại — bật 20 phút, tắt 20 phút, đọc <c>[TỔNG KẸT PHIÊN]</c> hai bên. <c>false</c> = đúng
+    /// đường KET1 như trước.
+    /// </summary>
+    public bool EscapeLadderEnabled { get; set; } = true;
+
     /// <summary>Nhịp ghi dòng trạng thái vào log — <c>console_interval_s</c> 0.16 của Python.</summary>
     public int LogEveryMs { get; set; } = 160;
 
@@ -60,8 +70,8 @@ internal sealed class NavSettings
         if (double.IsNaN(PlayerOriginXRef) || PlayerOriginXRef < 0 || PlayerOriginXRef > 1920) PlayerOriginXRef = 0;
         if (double.IsNaN(PlayerOriginYRef) || PlayerOriginYRef < 0 || PlayerOriginYRef > 1080) PlayerOriginYRef = 0;
         LogEveryMs = Math.Clamp(LogEveryMs <= 0 ? 160 : LogEveryMs, 50, 5000);
-        // TeachMap la bool nen khong co gi de kep — nhung khoa SO nao them vao day sau nay thi phai
-        // kep o day, dung tin file json.
+        // TeachMap/EscapeLadderEnabled la bool nen khong co gi de kep — nhung khoa SO nao them vao day
+        // sau nay thi phai kep o day, dung tin file json.
     }
 }
 
@@ -308,6 +318,70 @@ internal static class NavTuning
     public const double Ket1SideTurnHardMaxS = 0.480;
     public const double Ket1ClearForwardS = 0.650;
     public const double Ket1RearmS = 0.500;
+
+    // ================================================================ thang thoat ket (Escape*)
+    //
+    // Vi sao co thang nay ben canh KET1: KET1 la MOT bai nhay mu duy nhat (quay dau 168° roi be ngang
+    // roi W), lam gi cung mat ~2,1 s va khong bao gio biet no co thoat duoc hay khong. Nguoi choi that
+    // thi thu cai RE nhat truoc — truot ngang mot buoc — roi moi leo dan len cai dat tien hon. Thang
+    // nay xep dung thu tu do, va sau MOI bac co mot pha tham do 0,45 s de phan "thoat chua".
+
+    /// <summary>
+    /// Trượt ngang THUẦN (A/D, không W). Rẻ nhất và đúng nhất cho cái kẹt hay gặp trong sân: đế cột /
+    /// tủ điện ngay trước mũi chân, chỉ cần lệch nửa thân người là đi tiếp được. 0,55 s ≈ 1,5 m.
+    /// </summary>
+    public const double EscapeStrafeS0 = 0.55;
+
+    /// <summary>
+    /// Trượt chéo (W + A/D). Lâu hơn bậc 0 vì vừa phải đi vòng vừa phải men dọc mặt vật cản; game tự
+    /// cho trượt dọc tường khi vector đi ép vào tường, nên đây là bậc "đi vòng" rẻ nhất.
+    /// </summary>
+    public const double EscapeStrafeS1 = 0.90;
+
+    /// <summary>Lùi S trước khi quay: đứng dí vào vật cản mà quay thì quay xong vẫn dí, W không ăn.</summary>
+    public const double EscapeBackoffS = 0.35;
+
+    /// <summary>
+    /// Góc bẻ của bậc 2 — 45° đủ để né một cái tủ điện mà chưa mất hướng tới đích (KET1 quay 168°,
+    /// tức là quay LƯNG lại đích, rồi phải tìm đường về). Đo bằng ĐẾM COUNT, xem <see cref="NavRestartTurn"/>.
+    /// </summary>
+    public const double EscapeTurnDeg = 45.0;
+
+    /// <summary>Không gửi thêm count nào trong ngần này giây = game đang nuốt chuột → bỏ pha quay.</summary>
+    public const double EscapeTurnStallS = 0.40;
+
+    /// <summary>W thẳng sau khi bẻ: đủ để ra khỏi bóng vật cản rồi mới thăm dò.</summary>
+    public const double EscapeClearS = 0.60;
+
+    /// <summary>
+    /// Trần yaw khi đang trượt ngang. Servo bình thường quay tới 1650 cps; trượt ngang mà camera quay
+    /// nhanh thì hướng trượt xoay theo camera và ta đi hình vòng cung quanh đúng cái vật cản vừa đâm.
+    /// </summary>
+    public const double EscapeStrafeYawCapCps = 300.0;
+
+    /// <summary>
+    /// Pha THĂM DÒ sau mỗi bậc: W + servo bình thường. Đủ dài để bán kính tới đích kịp đổi ở tốc độ
+    /// chạy (~14 mu/s), đủ ngắn để hỏng thì leo bậc kế mà tổng vẫn dưới ~1,5 s cho hai bậc đầu.
+    /// </summary>
+    public const double EscapeProbeS = 0.45;
+
+    /// <summary>Bán kính tới đích giảm ngần này (×Px) trong pha thăm dò = đã thoát. Ngưỡng kẹt là 0,16 px.</summary>
+    public const double EscapeProgressPx = 0.8;
+
+    /// <summary>
+    /// Kẹt lại trong ngần này giây kể từ lúc đóng đợt trước thì coi là CÙNG một đợt → leo bậc thay vì
+    /// thử lại bậc 0 (bản KET1 cũ lặp lại cùng một cú nhảy mỗi 3,5–4 s mà không leo thang bao giờ).
+    /// </summary>
+    public const double EscapeEpisodeJoinS = 4.0;
+
+    /// <summary>Cùng chỗ = bán kính tới đích lệch dưới ngần này (×Px) so với lúc mở đợt.</summary>
+    public const double EscapeSameSpotPx = 6.0;
+
+    /// <summary>
+    /// Đợt mới ở chỗ khác vẫn GIỮ BÊN của đợt trước nếu đợt trước vừa kết thúc trong ngần này giây:
+    /// đi vòng một phía thì phải vòng hết một phía, đổi bên giữa chừng là lắc trái/phải tại chỗ.
+    /// </summary>
+    public const double EscapeKeepSideS = 8.0;
 
     // ================================================================ lop san phim (_apply_world_nav_input)
     public const double RamStartWGapMs = 24.0, RamStartWFirstHoldMs = 34.0, RamStartWSoftRearmS = 1.6;

@@ -642,17 +642,37 @@ internal sealed class NavBot
     // ================================================================ lop san phim
 
     /// <summary>
-    /// <c>_apply_world_nav_input</c>: luôn thêm W; ngoài KET1/KET2 luôn thêm W+SHIFT; SHIFT xuống TRƯỚC cú
+    /// Phần TÍNH TẬP PHÍM của <c>_apply_world_nav_input</c>, tách thành hàm thuần để <c>--verify-nav</c>
+    /// lùa được — nó quyết định mọi phím bot bấm khi đang lái.
+    ///
+    /// Luật: có S rõ ràng thì KHÔNG tự thêm W (đang đi lùi); có <see cref="NavKey.NoAutoW"/> thì cũng
+    /// không (trượt ngang thuần / quay tại chỗ của thang thoát kẹt); ngoài ra luôn thêm W. SHIFT (chạy
+    /// nước rút) chỉ khi đang đi thẳng bình thường: không trong KET1/KET2/ESC_*, không khi lùi hay
+    /// NoAutoW. Bit giả <see cref="NavKey.NoAutoW"/> bị lọc ngay tại đây.
+    /// </summary>
+    internal static (NavKey keys, bool sprint) ComposeNavKeys(NavKey keys, string state)
+    {
+        bool isKet = state.StartsWith("KET1", StringComparison.Ordinal)
+                     || state.StartsWith("KET2", StringComparison.Ordinal)
+                     || state.StartsWith("ESC_", StringComparison.Ordinal);
+        bool noAutoW = (keys & NavKey.NoAutoW) != 0;
+        keys &= ~NavKey.NoAutoW;
+
+        bool explicitReverse = (keys & NavKey.S) != 0;
+        if (!explicitReverse && !noAutoW) keys |= NavKey.W;
+
+        bool sprint = !isKet && !explicitReverse && !noAutoW;
+        if (sprint) keys |= NavKey.W | NavKey.Shift;
+        return (keys, sprint);
+    }
+
+    /// <summary>
+    /// <c>_apply_world_nav_input</c>: tập phím theo <see cref="ComposeNavKeys"/>; SHIFT xuống TRƯỚC cú
     /// double-tap W khi vừa lấy lại W; sau đó SHIFT keydown-only mỗi 0.45 s. Trả tập phím THẬT đã gửi.
     /// </summary>
     private NavKey ApplyWorldNavInput(NavKey keys, double now, string state)
     {
-        bool isKet = state.StartsWith("KET1", StringComparison.Ordinal) || state.StartsWith("KET2", StringComparison.Ordinal);
-        bool explicitReverse = (keys & NavKey.S) != 0;
-
-        if (!explicitReverse) keys |= NavKey.W;
-        bool normalSprint = !isKet && !explicitReverse;
-        if (normalSprint) keys |= NavKey.W | NavKey.Shift;
+        (keys, bool normalSprint) = ComposeNavKeys(keys, state);
 
         if (normalSprint && !_input.IsHeld(NavKey.Shift))
         {

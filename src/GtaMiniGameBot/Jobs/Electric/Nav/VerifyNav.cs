@@ -78,6 +78,7 @@ internal static class VerifyNav
         fail += TrackerCases();
         fail += ServoCases();
         fail += Ket1Cases();
+        fail += LadderCases();
         fail += MouseCases();
         fail += CameraResetCases();
         fail += RestartTurnCases();
@@ -307,6 +308,154 @@ internal static class VerifyNav
         // Dung sai hai tick 25 ms: mo phong cong dan 0.025 nen moc 0.950 co the roi sang tick sau.
         Check(ref fail, Math.Abs(u - 0.950) <= 0.051 && Math.Abs(sd - u - 0.480) <= 0.051, "không bearing: cap 950 ms + 480 ms", $"uturn={u:F3} side={sd - u:F3}");
         return fail;
+    }
+
+    /// <summary>
+    /// Chạy khô THANG THOÁT KẸT ở nhịp 25 ms như vòng lặp thật. Không có input, không có đồng hồ —
+    /// đúng lý do máy pha được viết thuần.
+    /// </summary>
+    /// <param name="dist">Bán kính tới đích mỗi tick (px). Trả về danh sách pha theo thứ tự xuất hiện.</param>
+    private static (List<string> states, Dictionary<string, int> sides, Dictionary<string, double> starts, bool closed)
+        RunLadder(NavEscapeLadder l, double t0, Func<double, string, double> dist, double maxS, double multiplier = 4.0)
+    {
+        var states = new List<string>();
+        var sides = new Dictionary<string, int>();
+        var starts = new Dictionary<string, double>();
+        int turnSerial = l.TurnSerial;
+        long counts = 0;
+        double t = t0;
+        bool closed = false;
+
+        while (t - t0 <= maxS)
+        {
+            var a = l.Step(t, dist(t, l.Phase), false, counts);
+            if (a is null) { closed = true; break; }
+            if (states.Count == 0 || states[^1] != a.Value.State)
+            {
+                states.Add(a.Value.State);
+                sides[a.Value.State] = a.Value.Side;
+                starts.TryAdd(a.Value.State, t);
+            }
+            if (l.TurnSerial != turnSerial) { turnSerial = l.TurnSerial; counts = 0; }
+            // Luong chuot 240 Hz nhan he so truoc khi ra OS, nen count cong theo rate × multiplier.
+            if (a.Value.WantTurn) counts += (long)Math.Round(a.Value.TurnRateCps * multiplier * 0.025);
+            if (a.Value.Legacy) break;
+            t += 0.025;
+        }
+        return (states, sides, starts, closed);
+    }
+
+    private static int LadderCases()
+    {
+        int fail = 0;
+
+        // ---- thu tu bac khi MOI lan tham do deu hong: 0 → 1 → 2 (lui/quay/thang) → 3 → 4 ----
+        var l = new NavEscapeLadder(1.0, 4.0);
+        bool began = l.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
+        Check(ref fail, began && l.Active && l.Rung == 0 && l.Side == 1,
+              "mở đợt: rel +30° → bên PHẢI, bậc 0", $"bậc={l.Rung} bên={l.Side}");
+
+        var (states, sides, starts, _) = RunLadder(l, 0.0, (_, _) => 60.0, 12.0);
+        string want = string.Join(">", new[]
+        {
+            NavEscape.Strafe, NavEscape.Probe, NavEscape.StrafeW, NavEscape.Probe,
+            NavEscape.Backoff, NavEscape.Turn, NavEscape.Clear, NavEscape.Probe,
+            NavEscape.StrafeFlip, NavEscape.Probe, NavEscape.Legacy
+        });
+        // Pha tham do lap lai nen so sanh chuoi rut gon khong duoc — so nguyen chuoi.
+        Check(ref fail, string.Join(">", states) == want, "thứ tự bậc 0→1→2→3→4", string.Join(">", states));
+        Check(ref fail, sides.TryGetValue(NavEscape.StrafeW, out int s1) && s1 == 1
+                        && sides.TryGetValue(NavEscape.StrafeFlip, out int s3) && s3 == -1,
+              "bậc 3 đảo bên so với bậc 1", $"bậc1={sides.GetValueOrDefault(NavEscape.StrafeW)} bậc3={sides.GetValueOrDefault(NavEscape.StrafeFlip)}");
+        Check(ref fail, l.LastTurnWhy == "đủ count" && l.LastTurnCounts >= l.TurnCountsTarget,
+              "bậc 2 kết thúc theo COUNT (45° = 761 count), không theo cap thời gian",
+              $"{l.LastTurnCounts}/{l.TurnCountsTarget} {l.LastTurnWhy}");
+        if (starts.TryGetValue(NavEscape.Turn, out double tTurn) && starts.TryGetValue(NavEscape.Clear, out double tClear))
+            Check(ref fail, tClear - tTurn >= 0.40 && tClear - tTurn <= 0.60,
+                  "quay 45° ở 420 cps × 4 ≈ 0.45 s", $"{tClear - tTurn:F3}s");
+
+        // Bac 4 giao KET1 cu; bao xong thi len tham do.
+        l.FinishRung(20.0);
+        Check(ref fail, l.Phase == NavEscape.Probe, "bậc 4 báo xong → thăm dò", l.Phase ?? "null");
+
+        // ---- chuot nuot delta: khong count nao them → TAC sau 0.40 s, khong treo het cap ----
+        var lStall = new NavEscapeLadder(1.0, 4.0);
+        lStall.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
+        double t = 0;
+        string phase = null;
+        double turnStart = -1, turnEnd = -1;
+        for (int i = 0; i < 400 && lStall.Active; i++)
+        {
+            var a = lStall.Step(t, 60.0, false, 0);
+            if (a is null) break;
+            phase = a.Value.State;
+            if (phase == NavEscape.Turn && turnStart < 0) turnStart = t;
+            if (turnStart >= 0 && phase == NavEscape.Clear) { turnEnd = t; break; }
+            t += 0.025;
+        }
+        Check(ref fail, turnEnd > 0 && turnEnd - turnStart >= 0.40 && turnEnd - turnStart <= 0.46 && lStall.LastTurnWhy == "TẮC",
+              "không count nào gửi được → bỏ pha quay sau 0.40 s (TẮC)", $"{turnEnd - turnStart:F3}s {lStall.LastTurnWhy}");
+
+        // ---- tham do THAY tien bo → dong dot ngay o bac 0 ----
+        var lOk = new NavEscapeLadder(1.0, 4.0);
+        lOk.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
+        var (st2, _, _, closed) = RunLadder(lOk, 0.0, (_, p) => p == NavEscape.Probe ? 58.0 : 60.0, 3.0);
+        Check(ref fail, closed && !lOk.Active && st2.Count == 2 && st2[^1] == NavEscape.Probe
+                        && lOk.ClosedEpisode is not null && lOk.ClosedEpisode.Rung == 0,
+              "thăm dò thấy bán kính giảm 2 px ≥ 0.8·Px → đóng đợt ở bậc 0", string.Join(">", st2));
+
+        // ---- ket lai CUNG CHO trong 4 s → leo bac, giu ben du goc doi dau ----
+        bool again = lOk.Begin(2.0, 60.5, -40.0, 0, "MINIMAP");
+        Check(ref fail, again && lOk.Rung == 1 && lOk.Side == 1,
+              "kẹt lại cùng chỗ (60.5 vs 60) sau 2 s → bậc 1, GIỮ bên phải dù rel −40°", $"bậc={lOk.Rung} bên={lOk.Side}");
+
+        // ---- ket o CHO KHAC → ve bac 0 nhung van giu ben (dot truoc vua xong < 8 s) ----
+        var (_, _, _, closed2) = RunLadder(lOk, 2.0, (_, p) => p == NavEscape.Probe ? 58.0 : 60.5, 4.0);
+        bool far = lOk.Begin(6.0, 200.0, -40.0, 0, "MINIMAP");
+        Check(ref fail, closed2 && far && lOk.Rung == 0 && lOk.Side == 1,
+              "kẹt chỗ khác → bậc 0 nhưng giữ bên (đợt trước xong < 8 s)", $"bậc={lOk.Rung} bên={lOk.Side}");
+
+        // ---- chon ben: vat can > goc toi dich > nguoc ben lan truoc ----
+        Check(ref fail, NavEscapeLadder.ChooseSide(-40.0, 1, -1) == 1
+                        && NavEscapeLadder.ChooseSide(3.0, 0, 1) == -1
+                        && NavEscapeLadder.ChooseSide(-25.0, 0, 1) == -1,
+              "chọn bên: vật cản thắng góc, |rel| < 10° thì ngược bên trước", "");
+
+        // ---- lop san phim: NoAutoW va ESC_ ----
+        var (k0, sp0) = NavBot.ComposeNavKeys(NavKey.D | NavKey.NoAutoW, NavEscape.Strafe);
+        var (k1, sp1) = NavBot.ComposeNavKeys(NavKey.W | NavKey.A, NavEscape.StrafeW);
+        var (k2, sp2) = NavBot.ComposeNavKeys(NavKey.S, NavEscape.Backoff);
+        var (k3, sp3) = NavBot.ComposeNavKeys(NavKey.NoAutoW, NavEscape.Turn);
+        var (k4, sp4) = NavBot.ComposeNavKeys(NavKey.None, "KET1_TURN_AROUND");
+        var (k5, sp5) = NavBot.ComposeNavKeys(NavKey.W, "RAM_V63_FAST_TARGET_SNAP");
+        Check(ref fail, k0 == NavKey.D && !sp0, "ComposeNavKeys: D+NoAutoW → D thuần, không SHIFT", KeysOf(k0));
+        Check(ref fail, k1 == (NavKey.W | NavKey.A) && !sp1, "ESC_STRAFE_W: W+A, không SHIFT", KeysOf(k1));
+        Check(ref fail, k2 == NavKey.S && !sp2, "ESC_BACKOFF: S thuần, không tự thêm W", KeysOf(k2));
+        Check(ref fail, k3 == NavKey.None && !sp3, "ESC_TURN: không phím nào (quay tại chỗ)", KeysOf(k3));
+        Check(ref fail, k4 == NavKey.W && !sp4, "KET1 vẫn được tự thêm W, không SHIFT", KeysOf(k4));
+        Check(ref fail, k5 == (NavKey.W | NavKey.Shift) && sp5, "lái bình thường: W+SHIFT", KeysOf(k5));
+
+        using (var input = new NavInput(4.0))
+        {
+            bool threw = false;
+            try { input.Apply(NavKey.NoAutoW); } catch { threw = true; }
+            Check(ref fail, !threw && input.Held == NavKey.None,
+                  "NavInput.Apply lọc bit giả NoAutoW (không ném, không giữ phím)", $"{input.Held}");
+        }
+        return fail;
+    }
+
+    private static string KeysOf(NavKey k)
+    {
+        if (k == NavKey.None) return "-";
+        var parts = new List<string>();
+        if ((k & NavKey.Shift) != 0) parts.Add("SHIFT");
+        if ((k & NavKey.W) != 0) parts.Add("W");
+        if ((k & NavKey.S) != 0) parts.Add("S");
+        if ((k & NavKey.A) != 0) parts.Add("A");
+        if ((k & NavKey.D) != 0) parts.Add("D");
+        if ((k & NavKey.NoAutoW) != 0) parts.Add("NoAutoW");
+        return string.Join("+", parts);
     }
 
     private static int MouseCases()
