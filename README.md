@@ -30,7 +30,13 @@ app\GtaMiniGameBot.exe --verify-capture
 app\GtaMiniGameBot.exe --verify-capture --strict
 app\GtaMiniGameBot.exe --verify-wire
 app\GtaMiniGameBot.exe --verify-nav
+app\GtaMiniGameBot.exe --verify-map
 ```
+
+`--verify-map` kiểm bộ ghi bản đồ sân trạm biến áp (dò blip ⚡ / ✕ / 🍕 trên minimap, bộ giải pose,
+bản ghi, bộ dựng bản đồ). Thêm `--learn` để học lại mẫu blip từ `nav-far.png`, thêm `--build` để dựng
+bản đồ từ các `rec-*.csv` đã ghi được. Mẫu blip, bản ghi và `yard-map-v1.json` nằm trong
+`%AppData%\GtaMiniGameBot\electric\<WxH>\map\`; ảnh soi bằng mắt ở `…\debug\map\`.
 
 Water & Power ưu tiên DXGI Desktop Duplication (`Vortice.Direct3D11`) và tự lùi về GDI nếu GPU,
 output xoay hoặc desktop mode không hỗ trợ. Capture chỉ sống khi job Điện chạy, chỉ xử lý frame mới.

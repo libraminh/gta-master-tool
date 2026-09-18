@@ -856,21 +856,36 @@ internal sealed class YardPoseTracker
         // ---------------- 1. moc dung duoc ----------------
         double inset = NavTuning.YardEdgeInsetRef * _s.Sx;
         double predGate = NavTuning.YardPredGatePx * _s.Sx;
-        var pairs = new List<(Vec2 m, Vec2 q, double w)>();
-        var usedIds = new List<BlipId>();
+        var gated = new List<(Vec2 m, Vec2 q, double w)>();
+        var gatedIds = new List<BlipId>();
+        var loose = new List<(Vec2 m, Vec2 q, double w)>();
+        var looseIds = new List<BlipId>();
 
         foreach (var h in hits ?? Array.Empty<BlipHit>())
         {
+            // Mep ROI la cong CUNG: blip bi cat co bbox co lai va tam troi vao trong, khong cach nao
+            // biet duoc no le bao nhieu.
             if (h.Clipped || h.InsetPx < inset) continue;
+
             var q = new Vec2(h.X - _ox, h.Y - _oy);
-            if (predicted.TryGetValue(h.Id, out var pq))
-            {
-                double d = new Vec2(h.X - pq.X, h.Y - pq.Y).Len;
-                if (d > predGate) continue;
-            }
-            pairs.Add((YardPoseSolver.MapPos(h.Id), q, YardPoseSolver.WeightOf(h.Id)));
-            usedIds.Add(h.Id);
+            var pair = (YardPoseSolver.MapPos(h.Id), q, YardPoseSolver.WeightOf(h.Id));
+            loose.Add(pair);
+            looseIds.Add(h.Id);
+
+            if (predicted.TryGetValue(h.Id, out var pq)
+                && new Vec2(h.X - pq.X, h.Y - pq.Y).Len > predGate) continue;
+
+            gated.Add(pair);
+            gatedIds.Add(h.Id);
         }
+
+        // Cong du doan dung de CHON, khong dung de VUT. Neu vut thi khi zoom minimap doi (mốc xa lệch
+        // 27 %) hay khi game nuot delta chuot (ca hai mốc quay 40° trong một tick), moi moc xa deu roi
+        // ra ngoai cong — dung luc can phat hien chuyen do nhat thi tracker lai ket o FIX1 vinh vien.
+        // Bo cong roi de cong TI LE va cong VI TRI phan: chung bat blip la ma khong khoa duong phuc hoi.
+        bool loosened = gated.Count < 2 && loose.Count >= 2;
+        var pairs = loosened ? loose : gated;
+        var usedIds = loosened ? looseIds : gatedIds;
 
         // ---------------- 2-4. >= 2 moc ----------------
         bool scaleReinit = false;
@@ -913,13 +928,20 @@ internal sealed class YardPoseTracker
         }
 
         // ---------------- 5. FIX1 ----------------
-        if (pairs.Count == 1 && _sEma > 1e-9 && _hasTheta)
+        // Toi day nghia la: hoac chi con MOT moc, hoac cap hai moc vua bi cong ti le loai (mot blip
+        // bi cat lam khoang cach co lai). Ca hai truong hop deu con giai duoc bang MOT moc voi θ va s
+        // nho tu fix truoc — bo luon thi mat pose oan trong dung luc blip kia sap khuat.
+        if (pairs.Count >= 1 && _sEma > 1e-9 && _hasTheta)
         {
             double maxAge = teach ? NavTuning.YardTeachFix1MaxS : NavTuning.YardFix1MaxHeadingAgeS;
             if (_lastFix2T > 0 && now - _lastFix2T <= maxAge)
             {
+                // Moc trong so cao nhat (⚡/✕ truoc 🍕); danh sach da theo thu tu uu tien cua BlipShape.All.
+                int best = 0;
+                for (int i = 1; i < pairs.Count; i++) if (pairs[i].w > pairs[best].w) best = i;
+
                 double thetaDr = HeadingDr(xSentCounts);
-                var fix = YardPoseSolver.Fix1(pairs[0].q, pairs[0].m, thetaDr, _sEma);
+                var fix = YardPoseSolver.Fix1(pairs[best].q, pairs[best].m, thetaDr, _sEma);
                 if (fix.Ok)
                     return Accept(fix, YardQuality.Fix1, 1, now, dt, xSentCounts, dot, scaleReinit, teach);
             }

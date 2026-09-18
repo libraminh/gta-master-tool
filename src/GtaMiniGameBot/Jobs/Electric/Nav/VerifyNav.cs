@@ -99,7 +99,8 @@ internal static class VerifyNav
         return bmp;
     }
 
-    private static NavFrame Frame(Bitmap bmp) => NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
+    /// <summary>Cả <see cref="VerifyMap"/> dùng lại — cùng ảnh, cùng cách dựng khung.</summary>
+    internal static NavFrame Frame(Bitmap bmp) => NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
 
     private static void Disc(Bitmap bmp, double cx, double cy, double r, Color c)
     {
@@ -754,7 +755,7 @@ internal static class VerifyNav
 
     // ================================================================ anh that
 
-    private static Bitmap Load(ElectricProfile p, string name, out string why)
+    internal static Bitmap Load(ElectricProfile p, string name, out string why)
     {
         why = null;
         string path = ElectricConfig.ShotPath(p.Key, name);
@@ -875,7 +876,7 @@ internal static class VerifyNav
     /// Mũi tên trắng trên minimap phải nằm sát gốc cố định (163, 980.4)·sx. Bot không dò mũi tên khi
     /// chạy (vị trí luôn là gốc cố định, đúng bản Python), nên đây là chỗ DUY NHẤT kiểm con số này.
     /// </summary>
-    private static int ArrowCheck(string tag, NavFrame f, NavScale s, double ox, double oy)
+    internal static int ArrowCheck(string tag, NavFrame f, NavScale s, double ox, double oy)
     {
         int fail = 0;
         var t = NavTuning.TargetRoiRef;

@@ -28,6 +28,7 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkButton _btnBoardDefault = new();
     private readonly DarkButton _btnPrompt = new();
     private readonly DarkButton _btnLearnBlips = new();
+    private readonly DarkButton _btnBuildMap = new();
     private readonly DarkButton _btnEatCenters = new();
     private readonly DarkButton _btnTestFood = new();
     private readonly DarkButton _btnTestWater = new();
@@ -215,6 +216,11 @@ internal sealed class ElectricPanel : UserControl
         _btnLearnBlips.SetBounds(Theme.Px(330), Theme.Px(80), Theme.Px(260), Theme.Px(26));
         _btnLearnBlips.Click += (_, _) => LearnBlips();
         navBox.Controls.Add(_btnLearnBlips);
+
+        _btnBuildMap.Text = "Dựng bản đồ";
+        _btnBuildMap.SetBounds(Theme.Px(330), Theme.Px(112), Theme.Px(260), Theme.Px(26));
+        _btnBuildMap.Click += (_, _) => BuildMap();
+        navBox.Controls.Add(_btnBuildMap);
 
         Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log.",
             Theme.Px(12), Theme.Px(102), Theme.Px(300));
@@ -520,6 +526,47 @@ internal sealed class ElectricPanel : UserControl
         }
         catch (Exception ex) { Append("học mốc minimap lỗi: " + ex.Message); }
         finally { bmp.Dispose(); }
+    }
+
+    /// <summary>
+    /// Dựng bản đồ từ mọi <c>rec-*.csv</c> đã ghi. Chạy trên luồng nền: A* và distance transform trên
+    /// lưới vài trăm nghìn ô đủ lâu để đóng băng UI, mà báo cáo thì người dùng muốn đọc dần.
+    /// </summary>
+    private void BuildMap()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi dựng bản đồ"); return; }
+
+        string key = _profile.Key;
+        var scale = new NavScale(_profile.Width, _profile.Height, _cfg.Nav.ScreenPxScale);
+        _btnBuildMap.Enabled = false;
+        Append("đang dựng bản đồ…");
+
+        new Thread(() =>
+        {
+            try
+            {
+                var recs = YardRecorder.LoadAll(key, out int broken);
+                if (broken > 0) Post(() => Append($"bỏ qua {broken} file bản ghi hỏng hoặc khác phiên bản."));
+
+                var map = YardMapBuilder.Build(recs, scale, key, out var rep);
+                foreach (var line in rep.Lines) Post(() => Append(line));
+
+                if (map is null) return;
+
+                map.Save(key);
+                string png = Path.Combine(ElectricConfig.DebugMapDir(key), "yard-map.png");
+                YardMapBuilder.RenderPng(map, png);
+                YardMap.ClearCache();
+                Post(() =>
+                {
+                    Append($"đã ghi {ElectricConfig.YardMapPath(key)}");
+                    Append($"ảnh soi bằng mắt: {png}");
+                });
+            }
+            catch (Exception ex) { Post(() => Append("dựng bản đồ lỗi: " + ex.Message)); }
+            finally { Post(() => _btnBuildMap.Enabled = !IsRunning); }
+        })
+        { IsBackground = true, Name = "YardMapBuilder" }.Start();
     }
 
     private void OnAutoLoopChanged()
@@ -949,6 +996,7 @@ internal sealed class ElectricPanel : UserControl
         _btnBoardDefault.Enabled = !running;
         _btnPrompt.Enabled = !running;
         _btnLearnBlips.Enabled = !running;
+        _btnBuildMap.Enabled = !running;
         // Ghi ban do nam trong bo tu di: tat "Tu tim diem vang..." thi o nay khong con nghia gi.
         _teachMap.Enabled = !running && _cfg.AutoWalk;
         _btnEatCenters.Enabled = !running;
