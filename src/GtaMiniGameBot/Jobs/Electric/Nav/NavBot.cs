@@ -215,7 +215,7 @@ internal sealed class NavBot
 
             _input = new NavInput(_cfg.Nav.MouseSpeedMultiplier);
             _capture = new NavCapture(_screen, _s, _cfg.Survival, _profile.SurvivalHud);
-            _ctl = new NavController(_s, _input);
+            _ctl = new NavController(_s, _input, _cfg.Nav.EscapeLadderEnabled);
             _ctl.Log += Emit;
             _tracker = new DotTracker(_s);
             _watchdog = new NavWatchdog(_s);
@@ -531,7 +531,7 @@ internal sealed class NavBot
         }
         if (world.Present && worldAllowed) _ctl.ClearPendingObstacle();
 
-        bool worldEscapeTakeover = world.Present && worldAllowed && _ctl.Active is not null && _ctl.Active.Source != "WORLD";
+        bool worldEscapeTakeover = world.Present && worldAllowed && _ctl.EscapeActive && _ctl.EscapeSource != "WORLD";
         bool centerMinimapReady = target.HasPos && double.IsFinite(dist) && double.IsFinite(rel)
                                   && target.Confidence >= NavTuning.CenterNavMinConf;
         bool lineCommitActive = _ctl.RamLineHardLocked && now - _ctl.RamLineLastSeenT <= NavTuning.RamLineWorldOverrideHoldS;

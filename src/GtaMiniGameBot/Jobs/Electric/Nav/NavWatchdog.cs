@@ -66,11 +66,19 @@ internal sealed class NavWatchdog
         return now - _candidateSince.Value >= NavTuning.ImpactConfirmS;
     }
 
-    /// <summary><c>cooldown(now)</c> — luôn 950 ms trong chuỗi sống, rồi xoá lịch sử.</summary>
+    /// <summary>
+    /// <c>cooldown(now)</c> — nghỉ <see cref="NavTuning.StuckPostCooldownS"/> nhưng GIỮ lịch sử.
+    ///
+    /// Bản Python gọi <c>Reset()</c> ở đây. Hậu quả: sau mỗi cú thoát kẹt hỏng, bộ dò phải gom lại đủ
+    /// 0,9 s bán kính mới rồi mới được xác nhận, nên vòng "kẹt → thoát → kẹt lại" tốn thêm ~1,1 s mỗi
+    /// vòng dù nhân vật đứng im tại chỗ suốt. Lịch sử là dữ liệu THẬT; vứt nó đi không làm ai an toàn
+    /// hơn — cái chống báo kẹt liên hồi là kỳ nghỉ. Ứng viên vẫn bị xoá trong lúc nghỉ (nhánh đầu
+    /// <see cref="ImpactStuck"/>), nên sau khi nghỉ xong vẫn phải đủ 0,18 s xác nhận mới báo kẹt lại.
+    /// </summary>
     public void Cooldown(double now)
     {
         _cooldownUntil = now + NavTuning.StuckPostCooldownS;
-        Reset();
+        _candidateSince = null;
     }
 }
 

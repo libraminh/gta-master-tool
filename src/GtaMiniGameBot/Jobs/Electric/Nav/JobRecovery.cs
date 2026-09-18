@@ -490,6 +490,11 @@ internal sealed class JobRecovery
         var lightning = Lightning(mini, now);
         if (lightning is null)
         {
+            // TODO(thang thoat ket): hai nguon LIGHTNING_* duoi day CO Y giu KET1. Thang thoat ket do
+            // ban kinh toi CHAM VANG de phan "da thoat chua"; o day dich la icon tia set cua NPC va
+            // vector toi no la _lastDist/_lastRel doc tu mot bo do khac, khong cung thang. Chuyen sang
+            // thang chi lam duoc khi pha tham do biet nhan bang chung tien bo cua tia set (PR sau).
+
             // KET1 dang chay thi tiep tuc theo vector tia set cuoi.
             if (_ctl.Active is not null && _lastDist is not null && _lastRel is not null)
             {

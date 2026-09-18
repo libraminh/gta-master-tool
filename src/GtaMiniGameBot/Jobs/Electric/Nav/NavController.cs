@@ -34,6 +34,13 @@ internal sealed class NavController
     private readonly NavScale _s;
     private readonly NavInput _input;
 
+    /// <summary>Thang thoát kẹt — thay KET1 ở hai nguồn MINIMAP/WORLD khi công tắc bật.</summary>
+    private readonly NavEscapeLadder _ladder;
+
+    private readonly bool _escapeLadderEnabled;
+    private long _escTurnMark;
+    private int _escTurnSerial;
+
     public event Action<string> Log;
 
     // ---------------- Controller (lop goc) ----------------
@@ -77,10 +84,16 @@ internal sealed class NavController
     private int _ramPassCycle;
     private int _ramPassUturnSide = 1;
 
-    public NavController(NavScale s, NavInput input)
+    /// <param name="escapeLadder">
+    /// <see cref="NavSettings.EscapeLadderEnabled"/>. <c>false</c> = đúng đường KET1 cũ ở cả hai nguồn,
+    /// để so A/B trong game mà không build lại.
+    /// </param>
+    public NavController(NavScale s, NavInput input, bool escapeLadder = true)
     {
         _s = s;
         _input = input;
+        _escapeLadderEnabled = escapeLadder;
+        _ladder = new NavEscapeLadder(s.Px, input.MouseSpeedMultiplier);
     }
 
     private void Emit(string line) => Log?.Invoke(line);
@@ -101,9 +114,18 @@ internal sealed class NavController
 
     public bool HasPendingObstacle => _pendingObstacleSide is not null;
 
+    /// <summary>Đang thoát kẹt — thang mới hay KET1 cũ đều tính.</summary>
+    public bool EscapeActive => Active is not null || _ladder.Active;
+
+    /// <summary>Nguồn cú thoát kẹt đang chạy: <c>MINIMAP</c> | <c>WORLD</c> | <c>LIGHTNING_*</c>; null khi không có.</summary>
+    public string EscapeSource => _ladder.Active ? _ladder.Source : Active?.Source;
+
     /// <summary><c>reset_transient</c> của cả hai lớp.</summary>
     public void ResetTransient()
     {
+        // Doi canh / doi chuyen: quen luon tri nho dot ket, khong thi cu ket dau chuyen sau bi nhap
+        // vao dot cuoi chuyen truoc va nhay thang len bac cao.
+        _ladder.Reset();
         Active = null;
         _lostSince = null;
         WorldLatched = false;
@@ -235,7 +257,13 @@ internal sealed class NavController
     /// </summary>
     public (NavKey keys, string state) Compute(double now, TargetOutput target, double dist, double rel, double dx, double dy, bool stuck)
     {
-        if (Active is not null)
+        if (_ladder.Active)
+        {
+            ClearLineLatches();
+            var er = EscapeTick(now, dist, rel, progressing: false);
+            if (er is not null) return er.Value;
+        }
+        else if (Active is not null)
         {
             ClearLineLatches();
             var r = RecoveryStep(now, dist, rel);
@@ -258,11 +286,19 @@ internal sealed class NavController
         RamLineLastSeenT = now;
         double px = _s.Px;
 
-        // Thoat ket van la Impact-First, va di THANG vao KET1.
+        // Thoat ket van la Impact-First. Cong tac bat: THANG thoat ket; tat: dung cu nhay KET1 nhu cu.
         if (stuck && d > NavTuning.HumanNoEscapeInsidePx * px)
         {
             ClearLineLatches();
-            if (StartKet1Recovery(now, rawErr, "MINIMAP"))
+            if (_escapeLadderEnabled)
+            {
+                if (BeginEscape(now, d, rawErr, "MINIMAP"))
+                {
+                    var er = EscapeTick(now, d, rawErr, progressing: false);
+                    if (er is not null) return er.Value;
+                }
+            }
+            else if (StartKet1Recovery(now, rawErr, "MINIMAP"))
             {
                 var r = RecoveryStep(now, d, rawErr);
                 if (r is not null) { State = r.Value.state; return r.Value; }
@@ -544,29 +580,35 @@ internal sealed class NavController
 
         var (worldProgressing, worldImpactStuck) = WorldDirectProgress(now, marker, err);
 
-        // WORLD-OVER-KET: marker that dang hien thi KET1 tu minimap bi huy ngay trong khung nay.
-        if (marker.Present && Active is not null && Active.Source != "WORLD")
+        // Goc GIA cho thang thoat ket o nguon WORLD: chi mang DAU cua lech ngang marker, cung thang do
+        // ma KET1 world van dung. Servo cua pha tham do lai theo no khi khong co cham vang.
+        double worldDead = NavTuning.WorldDirectCenterAcquirePx * _s.Px;
+        double pseudoRel = err > worldDead ? 25.0 : err < -worldDead ? -25.0 : 0.0;
+
+        // WORLD-OVER-KET: marker that hien lai thi huy thoat ket tu minimap — NHUNG chi khi dang TIEN
+        // that. Ban cu huy ca khi van dang ket: thoat ket bi cat ngang, 1 s sau ket lai, thanh vong
+        // ket–huy–ket (doc duoc trong log). Marker van hien khi dang dam vao chan cot ngay truoc no.
+        if (marker.Present && worldProgressing && EscapeActive && EscapeSource != "WORLD")
         {
-            Emit($"[WORLD>KET TAKEOVER] huỷ KET1 nguồn {Active.Source} → lái thẳng vào đầu nối");
-            _input.StopMouseStream(immediate: true);
-            Active = null;
-            _recoveryBlockUntil = now;
-            _pendingObstacleSide = null;
+            Emit($"[WORLD>KET TAKEOVER] huỷ thoát kẹt nguồn {EscapeSource} → lái thẳng vào đầu nối");
+            CancelEscape(now);
             _ramLineActive = false;
             RamLineHardLocked = false;
             _centerShiftLatched = false;
             ResetSmoothMouse();
         }
 
-        if (Active is not null)
+        if (EscapeActive)
         {
-            if (marker.Present && Active.Source == "WORLD" && worldProgressing)
+            if (marker.Present && EscapeSource == "WORLD" && worldProgressing)
             {
-                Emit("[WORLD PROGRESS RESUMED] huỷ KET1 world → W thẳng");
-                _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
-                Active = null;
-                _recoveryBlockUntil = now;
-                _pendingObstacleSide = null;
+                Emit("[WORLD PROGRESS RESUMED] huỷ thoát kẹt world → W thẳng");
+                CancelEscape(now);
+            }
+            else if (_ladder.Active)
+            {
+                var er = EscapeTick(now, dist, pseudoRel, worldProgressing);
+                if (er is not null) return er.Value;
             }
             else
             {
@@ -577,13 +619,25 @@ internal sealed class NavController
 
         double ae = Math.Abs(err);
 
-        // Ket world (marker dung im du W) -> KET1 nguon WORLD.
-        if (worldImpactStuck && Active is null)
+        // Ket world: marker dung im du W (bang chung cua chinh world drive), HOAC watchdog ban kinh bao
+        // ket trong luc lai theo marker. Tham so isStuck truoc day khong ai doc — dung nghia la bot dam
+        // vao vat can BEN CANH duong toi dau noi thi khong ai bao gio thoat, cho toi khi watchdog 30 s.
+        // Chi mo khi cong tac bat: tat thi phai ra dung duong KET1 cu, khong them loi vao nao moi.
+        bool radialStuck = isStuck && _escapeLadderEnabled;
+        if ((worldImpactStuck || radialStuck) && !EscapeActive)
         {
-            double worldDead = NavTuning.WorldDirectCenterAcquirePx * _s.Px;
-            double pseudoRel = err > worldDead ? 25.0 : err < -worldDead ? -25.0 : 0.0;
-            Emit($"[WORLD-IMPACT-CONFIRMED] area={marker.Area:F0} cao={marker.Height:F0} err={err:+0;-0}px → KET1");
-            if (StartKet1Recovery(now, pseudoRel, "WORLD"))
+            Emit(worldImpactStuck
+                ? $"[WORLD-IMPACT-CONFIRMED] area={marker.Area:F0} cao={marker.Height:F0} err={err:+0;-0}px → thoát kẹt"
+                : $"[WORLD-KẸT BÁN KÍNH] đang lái theo đầu nối mà bán kính minimap phẳng, err={err:+0;-0}px → thoát kẹt");
+            if (_escapeLadderEnabled)
+            {
+                if (BeginEscape(now, dist, pseudoRel, "WORLD"))
+                {
+                    var er = EscapeTick(now, dist, pseudoRel, worldProgressing);
+                    if (er is not null) return er.Value;
+                }
+            }
+            else if (StartKet1Recovery(now, pseudoRel, "WORLD"))
             {
                 var r = RecoveryStep(now, dist, pseudoRel);
                 if (r is not null) { State = r.Value.state; return r.Value; }
@@ -691,7 +745,14 @@ internal sealed class NavController
     /// <summary><c>lost_step</c>: không có đích dùng được. Thứ tự nhánh giữ đúng bản Python.</summary>
     public (NavKey keys, string state) LostStep(double now)
     {
-        if (Active is not null)
+        if (_ladder.Active)
+        {
+            // Mat cham giua luc thoat ket: khong co so do nao MOI, nen dua NaN (thang giu moc cu de so
+            // khi cham quay lai) chu khong dua lai dist cu — dist cu dung im se thanh "chua thoat" gia.
+            var er = EscapeTick(now, double.NaN, double.NaN, progressing: false);
+            if (er is not null) return er.Value;
+        }
+        else if (Active is not null)
         {
             var r = RecoveryStep(now, null, null);
             if (r is not null) { State = r.Value.state; return r.Value; }
@@ -775,6 +836,144 @@ internal sealed class NavController
         }
 
         return Search360Step(now);
+    }
+
+    // ================================================================ thang thoat ket
+
+    private static string SideName(int side) => side > 0 ? "PHẢI" : "TRÁI";
+
+    /// <summary>
+    /// Count chuột đã gửi kể từ đầu pha quay. Tự neo lại mốc khi thang vào pha quay mới — đếm count
+    /// là cách DUY NHẤT đo được góc đã quay (xem <see cref="NavRestartTurn"/>).
+    /// </summary>
+    private long EscapeTurnCounts()
+    {
+        if (_escTurnSerial != _ladder.TurnSerial)
+        {
+            _escTurnSerial = _ladder.TurnSerial;
+            _escTurnMark = _input.XSentCounts;
+            return 0;
+        }
+        return Math.Abs(_input.XSentCounts - _escTurnMark);
+    }
+
+    /// <summary>Mở một đợt thoát kẹt. Trả false khi đang có đợt chạy (bậc đang chạy giữ quyền).</summary>
+    private bool BeginEscape(double now, double dist, double rel, string source)
+    {
+        if (!_ladder.Begin(now, dist, rel, _pendingObstacleSide ?? 0, source)) return false;
+        _pendingObstacleSide = null;
+        ResetSmoothMouse();
+        Emit($"[THOÁT KẸT] đợt #{_ladder.Serial} nguồn={source} bên={SideName(_ladder.Side)} bậc {_ladder.Rung} " +
+             $"(lần {_ladder.Attempts}) dist={dist:F1} rel={rel:+0.0;-0.0}");
+        return true;
+    }
+
+    /// <summary>Huỷ đợt đang chạy (đầu nối hiện lại và ĐANG TIẾN, reset nghề…) — trả quyền lái ngay.</summary>
+    private void CancelEscape(double now)
+    {
+        _input.StopMouseStream(immediate: true);
+        _ladder.Cancel(now);
+        Active = null;
+        _recoveryBlockUntil = now;
+        _pendingObstacleSide = null;
+    }
+
+    /// <summary>Chuột của một bậc: pha quay phát tốc độ cố định, pha lái thì servo bám đích có trần.</summary>
+    private void DriveEscapeMouse(in EscapeAction a, double rel)
+    {
+        if (a.WantTurn)
+        {
+            EscapeTurnCounts();                                    // neo moc ngay tick dau cua pha quay
+            _input.SetMouseXRate(a.Side * a.TurnRateCps);           // lease 120 ms: phai phat lai MOI tick
+            return;
+        }
+        if (!a.Servo || !double.IsFinite(rel))
+        {
+            _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+            return;
+        }
+        double ae = Math.Abs(rel);
+        double dead = NavTuning.RamTargetLockDeadzoneDeg;
+        if (ae <= dead)
+        {
+            _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+            return;
+        }
+        // Tran yaw khi dang truot: camera quay nhanh thi huong truot xoay theo, thanh ra di vong cung
+        // quanh dung cai vat can vua dam. Pha tham do khong kep (YawCapCps = 0) de lai nhu binh thuong.
+        double cap = a.YawCapCps > 0 ? a.YawCapCps : NavTuning.RamTargetLockMouseMaxRateCps;
+        _input.SetMouseXRate((rel > 0 ? 1.0 : -1.0) * Math.Min(ServoCurve(ae, dead), cap));
+    }
+
+    private void LogEscapePhase(string before, in EscapeAction a)
+    {
+        if (before == NavEscape.Turn)
+        {
+            double deg = _ladder.LastTurnCounts / NavTuning.MouseCountsPerDegree;
+            Emit($"[THOÁT r{a.Rung}] quay {a.Side * deg:+0.0;-0.0}° " +
+                 $"({_ladder.LastTurnCounts}/{_ladder.TurnCountsTarget} count, {_ladder.LastTurnWhy})");
+        }
+        if (a.State == NavEscape.Probe)
+        {
+            Emit($"[THOÁT r{a.Rung}] thăm dò {NavTuning.EscapeProbeS:F2}s — W + lái bình thường");
+            return;
+        }
+        string probe = double.IsFinite(_ladder.LastProbeFromDist) && before == NavEscape.Probe
+            ? $" (thăm dò {_ladder.LastProbeFromDist:F1}→{_ladder.LastProbeToDist:F1} px: chưa thoát)"
+            : "";
+        Emit($"[THOÁT r{a.Rung}] {a.State} bên={SideName(a.Side)}{probe}");
+    }
+
+    /// <summary>
+    /// Một tick của thang: dịch <see cref="EscapeAction"/> sang chuột + tập phím. Trả <c>null</c> khi
+    /// đợt vừa ĐÓNG (đã thoát) — người gọi lái tiếp như thường ngay trong tick đó.
+    /// </summary>
+    private (NavKey keys, string state)? EscapeTick(double now, double dist, double rel, bool progressing)
+    {
+        double? d = double.IsFinite(dist) ? dist : null;
+        double? r = double.IsFinite(rel) ? rel : null;
+
+        // Bac 4 = KET1 cu nguyen ven: chay het no da, xong moi bao thang len pha tham do.
+        if (_ladder.Phase == NavEscape.Legacy && Active is not null)
+        {
+            var kr = RecoveryStep(now, d, r);
+            if (kr is not null) { State = kr.Value.state; return kr; }
+            _ladder.FinishRung(now);
+        }
+
+        string before = _ladder.Phase;
+        int rung = _ladder.Rung;
+        var st = _ladder.Step(now, dist, progressing, EscapeTurnCounts());
+        if (st is null) { OnEscapeClosed(now, rung); return null; }
+
+        var a = st.Value;
+        if (a.Legacy && Active is null)
+        {
+            if (a.State != before) LogEscapePhase(before, a);
+            StartKet1Recovery(now, rel, _ladder.Source, force: true, forceSide: a.Side);
+            var kr = RecoveryStep(now, d, r);
+            if (kr is not null) { State = kr.Value.state; return kr; }
+            _ladder.FinishRung(now);
+            var st2 = _ladder.Step(now, dist, progressing, 0);
+            if (st2 is null) { OnEscapeClosed(now, rung); return null; }
+            before = NavEscape.Legacy;
+            a = st2.Value;
+        }
+
+        if (a.State != before) LogEscapePhase(before, a);
+        DriveEscapeMouse(a, rel);
+        State = a.State;
+        return (a.Keys, a.State);
+    }
+
+    private void OnEscapeClosed(double now, int rung)
+    {
+        _input.StopMouseStream(immediate: true, axis: MouseAxis.X);
+        Active = null;
+        _recoveryBlockUntil = now;
+        var ep = _ladder.ClosedEpisode;
+        double ms = ep is null ? 0.0 : (now - ep.StartT) * 1000.0;
+        Emit($"[THOÁT XONG] bậc {rung}, {ms:F0} ms (đợt #{ep?.Serial ?? 0}, {ep?.Attempts ?? 0} lần)");
     }
 
     // ================================================================ KET1

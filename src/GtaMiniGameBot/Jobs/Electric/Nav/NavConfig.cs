@@ -209,7 +209,15 @@ internal static class NavTuning
     public const double ImpactMaxRadialSpanPx = 1.15;
     public const double ImpactConfirmS = 0.180;
     public const double ImpactMinTargetConf = 0.50;
-    public const double StuckPostCooldownS = 0.950;                      // stuck_post_cooldown_ms
+    /// <summary>
+    /// <c>stuck_post_cooldown_ms</c> — 0.950 của bản Python rút còn 0.400.
+    ///
+    /// Vì sao: bộ dò đã cần 0,9 s bán kính phẳng + 0,18 s xác nhận. Nghỉ thêm 0,95 s SAU đó (bản cũ còn
+    /// xoá sạch lịch sử) nghĩa là một cú thoát kẹt hỏng phải chờ ~2 s mới được báo kẹt lại — đúng chu kỳ
+    /// "kẹt lại mỗi 3,5–4 s" đọc được trong log thật. Thang thoát kẹt tự leo bậc trong một đợt nên
+    /// không cần kỳ nghỉ dài; 0,40 s chỉ còn để pha thăm dò 0,45 s không tự bắn thành cú kẹt mới.
+    /// </summary>
+    public const double StuckPostCooldownS = 0.400;
     public const double WorldSkipMinimapStuckConf = 0.55;                // world_direct_skip_minimap_stuck_conf
     public const double WorldSkipMinimapStuckArea = 1200.0;
 

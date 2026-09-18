@@ -650,6 +650,26 @@ internal static class VerifyNav
             now += 0.025;
         }
         Check(ref fail, !any, "góc 60° > 55° → không tính kẹt", "");
+
+        // Cooldown GIU lich su: thoat ket hong thi phai duoc bao ket lai ngay sau ky nghi chu khong
+        // phai dung lai ca cua so 0.9 s (ban cu goi Reset() nen moi vong ket ton them ~1,1 s).
+        var wd4 = new NavWatchdog(S1);
+        now = 0; double first = -1, second = -1;
+        for (int i = 0; i < 200; i++)
+        {
+            wd4.Add(now, 0, -50);
+            if (wd4.ImpactStuck(now, true, true, 50, 0))
+            {
+                if (first < 0) { first = now; wd4.Cooldown(now); }
+                else { second = now; break; }
+            }
+            now += 0.025;
+        }
+        Check(ref fail, first > 0 && second > 0
+                        && second - first >= NavTuning.StuckPostCooldownS
+                        && second - first <= NavTuning.StuckPostCooldownS + NavTuning.ImpactConfirmS + 0.06,
+              "sau nghỉ 0.40 s lịch sử còn nguyên → kẹt lại chỉ tốn thêm 0.18 s xác nhận",
+              $"lần đầu {first:F3}s, lại sau {second - first:F3}s");
         return fail;
     }
 

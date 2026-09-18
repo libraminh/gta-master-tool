@@ -102,6 +102,9 @@ internal sealed class NavInput : IDisposable
     /// <summary>Lỗi của luồng chuột (SendInput thiếu). Khác null là luồng đã tự dừng.</summary>
     public Exception Fault { get; private set; }
 
+    /// <summary><c>mouse_global_speed_multiplier</c> — ai cần SUY RA góc từ count phải biết số này.</summary>
+    public double MouseSpeedMultiplier => _xMultiplier;
+
     /// <param name="mouseSpeedMultiplier"><c>mouse_global_speed_multiplier</c> — chỉ nhân trục X.</param>
     public NavInput(double mouseSpeedMultiplier)
     {
