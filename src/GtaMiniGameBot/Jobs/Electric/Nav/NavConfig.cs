@@ -371,18 +371,19 @@ internal static class NavTuning
     //
     // Vi sao co thang nay ben canh KET1: KET1 la MOT bai nhay mu duy nhat (quay dau 168° roi be ngang
     // roi W), lam gi cung mat ~2,1 s va khong bao gio biet no co thoat duoc hay khong. Nguoi choi that
-    // thi thu cai RE nhat truoc — truot ngang mot buoc — roi moi leo dan len cai dat tien hon. Thang
+    // thi thu cai RE nhat truoc — lech nguoi mot buoc — roi moi leo dan len cai dat tien hon. Thang
     // nay xep dung thu tu do, va sau MOI bac co mot pha tham do 0,45 s de phan "thoat chua".
+    //
+    // 19/09, sau hai buoi thu that: bac "truot ngang THUAN A/D" da bi XOA khoi thang (cuu 1/40 dot).
+    // Thang con bon bac: cheo W+A/D → lui+quay 45°+chay → cheo dao ben → KET1, roi vong lai bac lui+quay
+    // voi ben dao. Ti le cuu do duoc: cheo 6/35, lui+quay 23/66 (manh nhat), cheo dao 6/53, KET1 6/48.
 
     /// <summary>
-    /// Trượt ngang THUẦN (A/D, không W). Rẻ nhất và đúng nhất cho cái kẹt hay gặp trong sân: đế cột /
-    /// tủ điện ngay trước mũi chân, chỉ cần lệch nửa thân người là đi tiếp được. 0,55 s ≈ 1,5 m.
-    /// </summary>
-    public const double EscapeStrafeS0 = 0.55;
-
-    /// <summary>
-    /// Trượt chéo (W + A/D). Lâu hơn bậc 0 vì vừa phải đi vòng vừa phải men dọc mặt vật cản; game tự
-    /// cho trượt dọc tường khi vector đi ép vào tường, nên đây là bậc "đi vòng" rẻ nhất.
+    /// Trượt chéo (W + A/D) — BẬC ĐẦU của thang kể từ 19/09.
+    ///
+    /// Bậc "trượt ngang THUẦN A/D 0,55 s" đứng trước nó đã bị XOÁ: đo hai buổi thử thật, nó cứu được
+    /// 1/40 đợt (PR2 1/28, PR3 0/12) mà vẫn tốn 0,55 s + 0,45 s thăm dò mỗi đợt. Không giữ lại làm gì —
+    /// đi ngang không W quá chậm để lách khỏi đế cột. Bậc chéo này cứu 6/35, và nó giữ được hướng nhìn.
     /// </summary>
     public const double EscapeStrafeS1 = 0.90;
 
@@ -764,18 +765,30 @@ internal static class NavTuning
 
     /// <summary>
     /// Còn ngần này cung đường thì GIAO LẠI cho luồng cũ (chấm thật → cột 3D → prompt → E). Bản đồ
-    /// chỉ hứa "đi tới gần đúng tư thế người đã đứng", 3 m cuối là việc của bộ dò đã chỉnh kỹ.
+    /// chỉ hứa "đi tới gần đúng tư thế người đã đứng", mét cuối là việc của bộ dò đã chỉnh kỹ.
+    ///
+    /// 19/09 hạ 6 → 3: các máy trong sân cách nhau 5–6 m nên CẢ quãng đường chỉ dài 6–22 mu (log buổi
+    /// thử: "lập đường tới máy 0: 3 khúc, 22 mu", "tới máy 16: 2 khúc, 6 mu"). Để 6 mu thì vừa lập
+    /// đường xong đã đủ điều kiện giao lại, bộ bám không đi nổi một bước.
     /// </summary>
-    public const double YardHandoverMu = 6.0;
+    public const double YardHandoverMu = 3.0;
 
     /// <summary>
     /// Tư thế tiếp cận chỉ quan sát MỘT lần (<c>lowConfidence</c>) hoặc máy suy từ vị trí đứng
     /// (<c>fromStand</c>) thì giao lại SỚM hơn — số đo đó có thể lệch vài mu, bám sát nó vô nghĩa.
+    /// 19/09 hạ 10 → 5 cùng lý do: 10 mu còn dài hơn quãng đường của phần lớn chuyến.
     /// </summary>
-    public const double YardHandoverLowConfMu = 10.0;
+    public const double YardHandoverLowConfMu = 5.0;
 
-    /// <summary>Chấm vàng THẬT đã khoá và đủ gần/đủ thẳng thì giao lại ngay, không đợi hết cung.</summary>
-    public const double YardHandoverDotPx = 25.0;
+    /// <summary>
+    /// Chấm vàng THẬT đã khoá và đủ gần/đủ thẳng thì giao lại ngay, không đợi hết cung.
+    ///
+    /// 19/09 hạ 25 → 8. 25 (×Px 1,333 = 33 px màn) là gần như CẢ SÂN: đếm trên log buổi thử, 80/115 mẫu
+    /// dưới 12 px, 13 mẫu 20–34, chỉ 3 mẫu trên 34 — nên luật này nổ ngay tick đầu của mọi chuyến và bộ
+    /// bám chưa bao giờ lái (cả phiên đúng MỘT tick trạng thái <c>MAP_</c>). Prompt E thật nổ khi chấm
+    /// còn 5,9–9,8 px, nên 8 (≈10,7 px màn) mới đúng nghĩa "đã tới nơi rồi, trả lái cho luồng cũ".
+    /// </summary>
+    public const double YardHandoverDotPx = 8.0;
 
     public const double YardHandoverDotDeg = 30.0;
 

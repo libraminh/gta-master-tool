@@ -94,6 +94,10 @@ internal sealed class YardFollower
     private bool _sawFix2, _handover, _needRegainPlan;
     private double _lastUsableT;
 
+    // "bo bam co that su lam viec khong" — so DUY NHAT thieu trong buoi thu 18/09, luc do khong cach nao
+    // biet no giao lai ngay tick dau hay da di duoc mot doan. Ghi cung + cuoi doan bam roi in ra luc giao.
+    private double _driveStartT = -1, _driveStartRemainingMu = -1, _driveLastRemainingMu = -1;
+
     public YardFollower(YardMap map, NavScale s, double originX, double originY)
     {
         _map = map is { Grid: not null, Markers.Count: > 0 } ? map : null;
@@ -228,6 +232,8 @@ internal sealed class YardFollower
         Active = true;
         RemainingMu = remaining;
         State = YardFollow.Follow;
+        if (_driveStartT < 0) { _driveStartT = now; _driveStartRemainingMu = remaining; }
+        _driveLastRemainingMu = remaining;
         fo = new FollowOutput
         {
             Active = true,
@@ -269,7 +275,11 @@ internal sealed class YardFollower
         {
             _handover = true;
             _route = null;
-            Emit($"[BẢN ĐỒ] giao lại 3 m cuối cho luồng cũ — máy {_markerId}, {why}");
+            string drove = _driveStartT < 0
+                ? "CHƯA BÁM ĐƯỢC BƯỚC NÀO"
+                : $"đã bám {Math.Max(0.0, _driveStartRemainingMu - _driveLastRemainingMu):F1} mu " +
+                  $"trong {now - _driveStartT:F1}s";
+            Emit($"[BẢN ĐỒ] giao lại đoạn cuối cho luồng cũ — máy {_markerId}, {why} ({drove})");
         }
         return Idle(ref fo, YardFollow.Handover);
     }
@@ -355,6 +365,9 @@ internal sealed class YardFollower
         _route = null;
         _routeMarker = -1;
         _lastPlanWhy = "";
+        _driveStartT = -1;
+        _driveStartRemainingMu = -1;
+        _driveLastRemainingMu = -1;
     }
 
     // ================================================================ lap duong

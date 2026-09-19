@@ -8,15 +8,21 @@ namespace GtaMiniGameBot;
 ///
 /// Đây là dụng cụ ĐO của PR này: bật/tắt <see cref="NavSettings.EscapeLadderEnabled"/> hai buổi ≥ 20
 /// phút rồi so hai dòng <c>[TỔNG KẸT PHIÊN]</c>. Số quan trọng nhất là <c>giây/cú</c> và <c>tỉ lệ
-/// thoát ở bậc 0–1</c> (thoát rẻ), rồi tới <c>số lần tới bậc 4</c> (thang đã thua, phải nhảy KET1).
+/// thoát ở bậc 0–1</c> (thoát rẻ), rồi tới <c>số lần tới bậc chót</c> (thang đã thua, phải nhảy KET1).
 ///
 /// Mọi truy cập đi qua một khoá: <see cref="NavBot"/> chạy trên luồng riêng còn <see cref="ElectricBot"/>
 /// đọc tổng kết trên luồng điều phối.
 /// </summary>
 internal static class NavEscapeStats
 {
-    /// <summary>Số bậc của thang (0..4) — xem <see cref="NavEscapeLadder"/>.</summary>
-    public const int RungCount = 5;
+    /// <summary>
+    /// Số bậc của thang (0..3) — xem <see cref="NavEscapeLadder"/>. Từ 19/09 còn bốn bậc: bậc trượt
+    /// ngang thuần bị xoá vì chỉ cứu 1/40 đợt trên hai buổi thử thật.
+    /// </summary>
+    public const int RungCount = 4;
+
+    /// <summary>Bậc chót (KET1 cũ) — thang đã thua ở mọi bậc rẻ hơn.</summary>
+    public const int LastRung = RungCount - 1;
 
     /// <summary>Một bộ đếm độc lập: một cho LƯỢT hiện tại, một cho cả PHIÊN.</summary>
     public sealed class Counters
@@ -33,8 +39,8 @@ internal static class NavEscapeStats
         /// <summary>Đợt bị huỷ giữa chừng (đầu nối hiện lại và đang tiến, reset nghề…).</summary>
         public int Cancelled;
 
-        /// <summary>Số lần thang phải leo tới bậc 4 (KET1 cũ) — thang đã thua ở bốn bậc rẻ.</summary>
-        public int Rung4;
+        /// <summary>Số lần thang phải leo tới bậc chót (KET1 cũ) — thang đã thua ở mọi bậc rẻ hơn.</summary>
+        public int RungLast;
 
         /// <summary>Số cú KET1 chạy ĐỘC LẬP (tắt thang, hoặc nguồn LIGHTNING_*).</summary>
         public int Ket1Runs;
@@ -50,7 +56,7 @@ internal static class NavEscapeStats
 
         public void Clear()
         {
-            Stuck = Episodes = Joins = Cancelled = Rung4 = Ket1Runs = 0;
+            Stuck = Episodes = Joins = Cancelled = RungLast = Ket1Runs = 0;
             Array.Clear(Attempts);
             Array.Clear(Success);
             TotalS = 0;
@@ -71,7 +77,7 @@ internal static class NavEscapeStats
                 if (Attempts[k] > 0) rungs.Add($"b{k} {Success[k]}/{Attempts[k]}");
             if (rungs.Count > 0) sb.Append(" · thoát/thử " + string.Join(" ", rungs));
 
-            if (Rung4 > 0) sb.Append($" · tới bậc 4: {Rung4}");
+            if (RungLast > 0) sb.Append($" · tới bậc chót (KET1): {RungLast}");
             if (Cancelled > 0) sb.Append($" · huỷ giữa chừng {Cancelled}");
             if (Ket1Runs > 0) sb.Append($" · KET1 rời {Ket1Runs}");
             return sb.ToString();
@@ -126,7 +132,7 @@ internal static class NavEscapeStats
         {
             TripC.Attempts[rung]++;
             SessionC.Attempts[rung]++;
-            if (rung == 4) { TripC.Rung4++; SessionC.Rung4++; }
+            if (rung == LastRung) { TripC.RungLast++; SessionC.RungLast++; }
         }
     }
 

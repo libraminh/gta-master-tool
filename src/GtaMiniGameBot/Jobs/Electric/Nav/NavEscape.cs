@@ -3,7 +3,7 @@ namespace GtaMiniGameBot;
 /// <summary>Tên các pha của thang thoát kẹt. Tiền tố <c>ESC_</c> là thứ lớp sàn phím nhận ra (xem <see cref="NavKey.NoAutoW"/>).</summary>
 internal static class NavEscape
 {
-    public const string Strafe = "ESC_STRAFE";
+    // "ESC_STRAFE" (truot ngang thuan A/D) da bi xoa 19/09: hai buoi thu that cho 1/40 dot duoc cuu.
     public const string StrafeW = "ESC_STRAFE_W";
     public const string Backoff = "ESC_BACKOFF";
     public const string Turn = "ESC_TURN";
@@ -68,12 +68,16 @@ internal readonly struct EscapeAction
 /// giá (thời gian mất đi + hướng bị mất), và sau MỖI bậc có một pha THĂM DÒ 0,45 s để phán "thoát
 /// chưa" — hỏng thì leo bậc kế NGAY, không nghỉ.
 ///
-///   bậc 0  <c>ESC_STRAFE</c>       A/D thuần + NoAutoW, servo kẹp 300 cps   0,55 s
-///   bậc 1  <c>ESC_STRAFE_W</c>     W + A/D cùng bên                          0,90 s
-///   bậc 2  <c>ESC_BACKOFF</c> → <c>ESC_TURN</c> (45° đếm count) → <c>ESC_CLEAR</c> (W)   ~1,5 s
-///   bậc 3  <c>ESC_STRAFE_FLIP</c>  như bậc 1 nhưng ĐẢO bên                   0,90 s
-///   bậc 4  <c>ESC_KET1</c>         KET1 cũ nguyên vẹn                        ~2,1 s
-///   rồi lặp 2 → 3 → 4, mỗi vòng đảo bên gốc; watchdog 30 s hiện có vẫn là lưới cuối.
+///   bậc 0  <c>ESC_STRAFE_W</c>     W + A/D cùng bên, servo kẹp 300 cps       0,90 s
+///   bậc 1  <c>ESC_BACKOFF</c> → <c>ESC_TURN</c> (45° đếm count) → <c>ESC_CLEAR</c> (W)   ~1,5 s
+///   bậc 2  <c>ESC_STRAFE_FLIP</c>  như bậc 0 nhưng ĐẢO bên                   0,90 s
+///   bậc 3  <c>ESC_KET1</c>         KET1 cũ nguyên vẹn                        ~2,1 s
+///   rồi lặp 1 → 2 → 3, mỗi vòng đảo bên gốc; watchdog 30 s hiện có vẫn là lưới cuối.
+///
+/// 19/09, sau hai buổi thử thật: bậc "A/D THUẦN 0,55 s" từng đứng trước bậc 0 đã bị XOÁ — nó cứu được
+/// 1/40 đợt (PR2 1/28, PR3 0/12) mà vẫn ngốn 0,55 s + 0,45 s thăm dò mỗi lần. Tỉ lệ cứu đo được của
+/// thang còn lại: chéo 6/35, lùi+quay 23/66, chéo đảo 6/53, KET1 6/48 — nên hết bậc 3 thì vòng về
+/// LÙI+QUAY (bậc mạnh nhất) với bên đảo, chứ không về bậc chéo.
 ///
 /// ĐỢT (<see cref="Episode"/>) là khái niệm giữ cho thang không bị reset về bậc 0 mãi: kẹt lại ở CÙNG
 /// CHỖ trong 4 s thì đó vẫn là cùng một vật cản → leo bậc, giữ bên. Chỗ khác thì về bậc 0, nhưng vẫn
@@ -151,8 +155,12 @@ internal sealed class NavEscapeLadder
 
     public string Source => _ep?.Source;
 
-    /// <summary>Bên của pha đang chạy (bậc 3 đã đảo).</summary>
-    public int Side => _ep is null ? 0 : (_ep.Rung == 3 ? -_ep.Side : _ep.Side);
+    /// <summary>
+    /// Bên của pha đang chạy. Bậc chéo ĐẢO dùng bên ngược lại — buộc theo TÊN PHA chứ không theo số
+    /// bậc: 19/09 xoá một bậc làm mọi số bậc tụt một nấc, và luật buộc theo số đã lặng lẽ thôi đảo bên
+    /// (ca "bậc 2 đảo bên so với bậc 0" bắt được).
+    /// </summary>
+    public int Side => _ep is null ? 0 : (_phase == NavEscape.StrafeFlip ? -_ep.Side : _ep.Side);
 
     /// <summary>Đổi số mỗi lần vào pha quay — người gọi neo lại mốc đếm count khi thấy số này đổi.</summary>
     public int TurnSerial { get; private set; }
@@ -180,21 +188,24 @@ internal sealed class NavEscapeLadder
 
     // ================================================================ may pha thuan
 
-    /// <summary>Pha đầu của một bậc.</summary>
+    /// <summary>
+    /// Pha đầu của một bậc. Thang bốn bậc (19/09, sau khi xoá bậc trượt ngang thuần):
+    /// chéo W+A/D → lùi+quay 45°+chạy → chéo đảo bên → KET1.
+    /// </summary>
     public static string PhaseForRung(int rung) => rung switch
     {
-        0 => NavEscape.Strafe,
-        1 => NavEscape.StrafeW,
-        2 => NavEscape.Backoff,
-        3 => NavEscape.StrafeFlip,
+        0 => NavEscape.StrafeW,
+        1 => NavEscape.Backoff,
+        2 => NavEscape.StrafeFlip,
         _ => NavEscape.Legacy
     };
 
     /// <summary>
-    /// Bậc kế tiếp. Hết bậc 4 thì quay lại bậc 2 và ĐẢO bên gốc: ba bậc rẻ nhất đã thử cả hai bên rồi,
-    /// cái còn lại chỉ có thể là "đi vòng xa hơn về phía kia".
+    /// Bậc kế tiếp. Hết bậc 3 (KET1) thì quay lại bậc LÙI+QUAY với bên ĐẢO, chứ không quay về bậc chéo:
+    /// đo hai buổi thử, lùi+quay cứu 23/66 — mạnh nhất thang — còn hai bậc chéo chỉ 6/35 và 6/53. Đã
+    /// thử cả thang một bên mà chưa thoát thì thứ đáng thử lại là cái mạnh nhất, hướng ngược lại.
     /// </summary>
-    public static (int rung, bool flipSide) NextRung(int rung) => rung >= 4 ? (2, true) : (rung + 1, false);
+    public static (int rung, bool flipSide) NextRung(int rung) => rung >= 3 ? (1, true) : (rung + 1, false);
 
     /// <summary>
     /// Pha kế tiếp TRONG một bậc, thuần theo thời gian/count — <see cref="NavRestartTurn.Advance"/> cùng
@@ -204,7 +215,6 @@ internal sealed class NavEscapeLadder
     public static string Advance(string phase, double elapsed, long countsDone, long countsTarget,
                                 bool stalled, double capS) => phase switch
     {
-        NavEscape.Strafe when elapsed >= NavTuning.EscapeStrafeS0 => NavEscape.Probe,
         NavEscape.StrafeW when elapsed >= NavTuning.EscapeStrafeS1 => NavEscape.Probe,
         NavEscape.StrafeFlip when elapsed >= NavTuning.EscapeStrafeS1 => NavEscape.Probe,
         NavEscape.Backoff when elapsed >= NavTuning.EscapeBackoffS => NavEscape.Turn,
@@ -410,8 +420,6 @@ internal sealed class NavEscapeLadder
 
         return _phase switch
         {
-            // Truot ngang thuan: NoAutoW vi lop san phim mac dinh ep W vao moi tap.
-            NavEscape.Strafe => new EscapeAction(strafe | NavKey.NoAutoW, _phase, rung, side, true, cap, false, 0, false),
             NavEscape.StrafeW => new EscapeAction(NavKey.W | strafe, _phase, rung, side, true, cap, false, 0, false),
             NavEscape.StrafeFlip => new EscapeAction(NavKey.W | strafe, _phase, rung, side, true, cap, false, 0, false),
             NavEscape.Backoff => new EscapeAction(NavKey.S, _phase, rung, side, false, 0, false, 0, false),

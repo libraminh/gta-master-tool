@@ -24,6 +24,7 @@ internal static class VerifyMap
     {
         bool learn = args.Any(a => a.Equals("--learn", StringComparison.OrdinalIgnoreCase));
         bool build = args.Any(a => a.Equals("--build", StringComparison.OrdinalIgnoreCase));
+        bool follow = args.Any(a => a.Equals("--follow", StringComparison.OrdinalIgnoreCase));
 
         Console.WriteLine("== kiểm bộ ghi bản đồ sân trạm biến áp (job Điện) ==");
 
@@ -52,6 +53,7 @@ internal static class VerifyMap
                               $"1 mu = {NavTuning.YardDRef:F0}ᵗʰ khoảng ⚡✕");
             fail += RealShots(profile, s, ox, oy, learn);
             fail += RealMapPlan(profile);
+            if (follow) fail += ReplayFollow(profile, s, ox, oy);
             if (build) fail += BuildReal(profile, s);
         }
 
@@ -1296,23 +1298,63 @@ internal static class VerifyMap
                   $"máy {f.MarkerId}, trạng thái {f.State}");
         }
 
-        // ---- (6) cham that da khoa va du gan -> giao lai ngay ----
+        // ---- (6) cham that da khoa: 20 px KHONG con lam giao lai som, 8 px thi co ----
+        //
+        // Day la ca khoa dung cai loi cua buoi thu 18/09: nguong cu 25·Px (=33 px man) khien moi chuyen
+        // giao lai ngay tick dau (do tren log: 80/115 mau duoi 12 px), bo bam khong lai duoc buoc nao.
         {
-            var f = new YardFollower(map, S2K, Ox, Oy);
             var pose = new YardPose
             {
                 Quality = YardQuality.Fix2, Conf = 0.9, S = 1.0,
                 Phi = YardPoseSolver.PhiOf(0), ThetaDeg = 0,
                 P = new Vec2(0, 25), T = new Vec2(42, 25)
             };
-            for (int i = 0; i < 12; i++)
-                f.Step(i * 0.025, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
             var dot = new TargetOutput { State = "LOCK", Visible = true, X = Ox + 4, Y = Oy - 12, Confidence = 0.9, Quality = "FULL_LOCK" };
-            bool on = f.Step(1.0, pose, dot, WorldMarker.None, false, 20.0 * S2K.Px, 10.0, false, out _);
-            bool stays = !f.Step(1.1, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
-            Check(ref fail, !on && stays && f.State == YardFollow.Handover,
-                  "chấm vàng thật khoá ở 20 px / 10°: giao lại ngay và tắt tới hết chuyến",
-                  $"trạng thái {f.State}");
+
+            var far = new YardFollower(map, S2K, Ox, Oy);
+            for (int i = 0; i < 12; i++)
+                far.Step(i * 0.025, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
+            bool farDrives = far.Step(1.0, pose, dot, WorldMarker.None, false, 20.0 * S2K.Px, 10.0, false, out _);
+            Check(ref fail, farDrives && far.State == YardFollow.Follow,
+                  "chấm thật ở 20 px KHÔNG còn làm giao lại sớm — vẫn bám", $"trạng thái {far.State}");
+
+            var near = new YardFollower(map, S2K, Ox, Oy);
+            for (int i = 0; i < 12; i++)
+                near.Step(i * 0.025, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
+            bool on = near.Step(1.0, pose, dot, WorldMarker.None, false, 7.0 * S2K.Px, 10.0, false, out _);
+            bool stays = !near.Step(1.1, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
+            Check(ref fail, !on && stays && near.State == YardFollow.Handover,
+                  "chấm thật khoá ở 7 px / 10° (đúng tầm prompt E): giao lại và tắt tới hết chuyến",
+                  $"trạng thái {near.State}");
+        }
+
+        // ---- (7) duong dai thi phai bam gan het duong roi moi giao lai ----
+        {
+            var f = new YardFollower(map, S2K, Ox, Oy);
+            double startRem = -1, lastRem = -1;
+            for (int i = 0; i < 400; i++)
+            {
+                double t = i * 0.025;
+                // Nguoi choi di doc truc x ve phia may, 14 mu/s.
+                var p = new Vec2(Math.Min(40.0, 0.35 * i), 25);
+                var pose = new YardPose
+                {
+                    Quality = YardQuality.Fix2, Conf = 0.9, S = 1.0,
+                    Phi = YardPoseSolver.PhiOf(0), ThetaDeg = 0,
+                    P = p, T = new Vec2(42, 25)
+                };
+                bool on = f.Step(t, pose, TargetOutput.Lost, WorldMarker.None, false, double.NaN, double.NaN, false, out _);
+                if (on)
+                {
+                    if (startRem < 0) startRem = f.RemainingMu;
+                    lastRem = f.RemainingMu;
+                }
+                else if (f.State == YardFollow.Handover) break;
+            }
+            double drove = startRem - lastRem;
+            Check(ref fail, startRem > 0 && drove >= 0.6 * startRem,
+                  "đường dài: bám được ≥ 60 % cung trước khi giao lại",
+                  $"bám {drove:F1}/{startRem:F1} mu");
         }
 
         return fail;
@@ -1327,6 +1369,97 @@ internal static class VerifyMap
     ///
     /// Chưa dạy bản đồ thì KHÔNG phải lỗi — chỉ in một dòng nhắc.
     /// </summary>
+    /// <summary>
+    /// <c>--verify-map --follow</c>: lùa <see cref="YardFollower"/> qua ĐÚNG pose đã ghi của người chơi
+    /// trong <c>rec-*.csv</c> và đo xem nó bám được bao nhiêu phần cung đường trước khi giao lại.
+    ///
+    /// Vì sao cần: buổi thử trong game 18/09 cho thấy bộ bám giao lại ngay tick đầu của mọi chuyến, mà
+    /// log lúc đó KHÔNG có con số nào nói ra điều đó — phải đọc chéo mốc thời gian mới thấy. Ca này đo
+    /// thẳng trên dữ liệu thật, không tốn một phút nào trong game.
+    ///
+    /// Người chơi tự đi (bộ bám không điều khiển được ai trong lúc phát lại), nên con số có nghĩa là
+    /// "bộ bám CÒN CẦM LÁI tới đâu trên quãng đường đó", đúng thứ vừa hỏng. Chấm vàng thật cố tình bỏ
+    /// qua: luật giao lại theo chấm đã có ca riêng trong phần tự kiểm.
+    /// </summary>
+    private static int ReplayFollow(ElectricProfile p, NavScale s, double ox, double oy)
+    {
+        Console.WriteLine();
+        var map = YardMap.LoadFrom(ElectricConfig.YardMapPath(p.Key));
+        if (map is null)
+        {
+            Console.WriteLine("  [phát lại] chưa có yard-map-v1.json — bỏ qua");
+            return 0;
+        }
+
+        var recs = YardRecorder.LoadAll(p.Key, out int broken);
+        if (recs.Count == 0)
+        {
+            Console.WriteLine($"  [phát lại] chưa có rec-*.csv trong {ElectricConfig.MapDir(p.Key)} — bỏ qua");
+            return 0;
+        }
+
+        int fail = 0, trips = 0, drove = 0, instant = 0;
+        var shares = new List<double>();
+
+        foreach (var rec in recs)
+        {
+            var opens = rec.Events.Where(e => e.Name == "PANEL_OPEN").Select(e => e.T).ToList();
+            double from = 0;
+            foreach (double open in opens)
+            {
+                var ticks = rec.Ticks.Where(r => r.T >= from && r.T <= open).ToList();
+                from = open;
+                if (ticks.Count < 40) continue;
+                trips++;
+
+                var f = new YardFollower(map, s, ox, oy);
+                double startRem = -1, lastRem = -1, firstDriveT = -1, handoverT = -1;
+                foreach (var r in ticks)
+                {
+                    if (r.Px is null || r.Py is null) continue;
+                    var pose = new YardPose
+                    {
+                        Quality = r.Q, Conf = r.Conf, S = r.S > 1e-6 ? r.S : 1.0,
+                        Phi = r.Phi, ThetaDeg = r.Theta,
+                        P = new Vec2(r.Px.Value, r.Py.Value),
+                        T = r.Tx is not null && r.Ty is not null ? new Vec2(r.Tx.Value, r.Ty.Value) : null
+                    };
+                    bool on = f.Step(r.T, pose, TargetOutput.Lost, WorldMarker.None, false,
+                                     double.NaN, double.NaN, false, out _);
+                    if (on)
+                    {
+                        if (startRem < 0) { startRem = f.RemainingMu; firstDriveT = r.T; }
+                        lastRem = f.RemainingMu;
+                    }
+                    else if (f.State == YardFollow.Handover && handoverT < 0) handoverT = r.T;
+                }
+
+                if (startRem <= 0) { instant++; continue; }
+                drove++;
+                shares.Add(Math.Clamp((startRem - lastRem) / startRem, 0, 1));
+                if (handoverT > 0 && handoverT - firstDriveT < 0.5) instant++;
+            }
+        }
+
+        if (trips == 0)
+        {
+            Console.WriteLine("  [phát lại] không tách được chuyến nào từ bản ghi — bỏ qua");
+            return 0;
+        }
+
+        shares.Sort();
+        double median = shares.Count == 0 ? 0 : shares[shares.Count / 2];
+        Console.WriteLine($"  [phát lại] {recs.Count} bản ghi ({broken} hỏng), {trips} chuyến; " +
+                          $"bám được {drove}, giao lại ngay {instant}");
+        Check(ref fail, drove >= trips * 0.8,
+              "phát lại bản ghi thật: bộ bám CẦM LÁI ở ≥ 80 % chuyến",
+              $"{drove}/{trips} chuyến");
+        Check(ref fail, median >= 0.60,
+              "phát lại bản ghi thật: trung vị quãng bám ≥ 60 % cung đường",
+              $"trung vị {median * 100:F0} %");
+        return fail;
+    }
+
     private static int RealMapPlan(ElectricProfile p)
     {
         var map = YardMap.LoadFrom(ElectricConfig.YardMapPath(p.Key));

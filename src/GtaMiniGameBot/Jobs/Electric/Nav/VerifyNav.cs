@@ -350,7 +350,7 @@ internal static class VerifyNav
     {
         int fail = 0;
 
-        // ---- thu tu bac khi MOI lan tham do deu hong: 0 → 1 → 2 (lui/quay/thang) → 3 → 4 ----
+        // ---- thu tu bac khi MOI lan tham do deu hong: 0 (cheo) → 1 (lui/quay/thang) → 2 (cheo dao) → 3 (KET1) ----
         var l = new NavEscapeLadder(1.0, 4.0);
         bool began = l.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
         Check(ref fail, began && l.Active && l.Rung == 0 && l.Side == 1,
@@ -359,25 +359,30 @@ internal static class VerifyNav
         var (states, sides, starts, _) = RunLadder(l, 0.0, (_, _) => 60.0, 12.0);
         string want = string.Join(">", new[]
         {
-            NavEscape.Strafe, NavEscape.Probe, NavEscape.StrafeW, NavEscape.Probe,
+            NavEscape.StrafeW, NavEscape.Probe,
             NavEscape.Backoff, NavEscape.Turn, NavEscape.Clear, NavEscape.Probe,
             NavEscape.StrafeFlip, NavEscape.Probe, NavEscape.Legacy
         });
         // Pha tham do lap lai nen so sanh chuoi rut gon khong duoc — so nguyen chuoi.
-        Check(ref fail, string.Join(">", states) == want, "thứ tự bậc 0→1→2→3→4", string.Join(">", states));
+        Check(ref fail, string.Join(">", states) == want, "thứ tự bậc 0→1→2→3", string.Join(">", states));
+        Check(ref fail, states.Count > 0 && states[0] == NavEscape.StrafeW && states.All(s => s != "ESC_STRAFE"),
+              "bậc trượt ngang THUẦN đã bị xoá — thang bắt đầu bằng chéo W+A/D",
+              states.Count > 0 ? states[0] : "rỗng");
         Check(ref fail, sides.TryGetValue(NavEscape.StrafeW, out int s1) && s1 == 1
                         && sides.TryGetValue(NavEscape.StrafeFlip, out int s3) && s3 == -1,
-              "bậc 3 đảo bên so với bậc 1", $"bậc1={sides.GetValueOrDefault(NavEscape.StrafeW)} bậc3={sides.GetValueOrDefault(NavEscape.StrafeFlip)}");
+              "bậc 2 đảo bên so với bậc 0", $"bậc0={sides.GetValueOrDefault(NavEscape.StrafeW)} bậc2={sides.GetValueOrDefault(NavEscape.StrafeFlip)}");
+        Check(ref fail, NavEscapeLadder.NextRung(3) == (1, true),
+              "hết bậc chót thì vòng về LÙI+QUAY (bậc mạnh nhất) với bên đảo", $"{NavEscapeLadder.NextRung(3)}");
         Check(ref fail, l.LastTurnWhy == "đủ count" && l.LastTurnCounts >= l.TurnCountsTarget,
-              "bậc 2 kết thúc theo COUNT (45° = 761 count), không theo cap thời gian",
+              "bậc 1 kết thúc theo COUNT (45° = 761 count), không theo cap thời gian",
               $"{l.LastTurnCounts}/{l.TurnCountsTarget} {l.LastTurnWhy}");
         if (starts.TryGetValue(NavEscape.Turn, out double tTurn) && starts.TryGetValue(NavEscape.Clear, out double tClear))
             Check(ref fail, tClear - tTurn >= 0.40 && tClear - tTurn <= 0.60,
                   "quay 45° ở 420 cps × 4 ≈ 0.45 s", $"{tClear - tTurn:F3}s");
 
-        // Bac 4 giao KET1 cu; bao xong thi len tham do.
+        // Bac chot giao KET1 cu; bao xong thi len tham do.
         l.FinishRung(20.0);
-        Check(ref fail, l.Phase == NavEscape.Probe, "bậc 4 báo xong → thăm dò", l.Phase ?? "null");
+        Check(ref fail, l.Phase == NavEscape.Probe, "bậc chót (KET1) báo xong → thăm dò", l.Phase ?? "null");
 
         // ---- chuot nuot delta: khong count nao them → TAC sau 0.40 s, khong treo het cap ----
         var lStall = new NavEscapeLadder(1.0, 4.0);
@@ -423,7 +428,7 @@ internal static class VerifyNav
               "chọn bên: vật cản thắng góc, |rel| < 10° thì ngược bên trước", "");
 
         // ---- lop san phim: NoAutoW va ESC_ ----
-        var (k0, sp0) = NavBot.ComposeNavKeys(NavKey.D | NavKey.NoAutoW, NavEscape.Strafe);
+        var (k0, sp0) = NavBot.ComposeNavKeys(NavKey.D | NavKey.NoAutoW, NavEscape.Turn);
         var (k1, sp1) = NavBot.ComposeNavKeys(NavKey.W | NavKey.A, NavEscape.StrafeW);
         var (k2, sp2) = NavBot.ComposeNavKeys(NavKey.S, NavEscape.Backoff);
         var (k3, sp3) = NavBot.ComposeNavKeys(NavKey.NoAutoW, NavEscape.Turn);
@@ -453,8 +458,8 @@ internal static class VerifyNav
             var rOn = on.Compute(10.0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
             var off = new NavController(S1, input, escapeLadder: false);
             var rOff = off.Compute(10.0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
-            Check(ref fail, rOn.state == NavEscape.Strafe && rOn.keys == (NavKey.D | NavKey.NoAutoW) && on.EscapeActive,
-                  "Compute kẹt + công tắc BẬT → bậc 0 của thang", $"{rOn.state} {KeysOf(rOn.keys)}");
+            Check(ref fail, rOn.state == NavEscape.StrafeW && rOn.keys == (NavKey.W | NavKey.D) && on.EscapeActive,
+                  "Compute kẹt + công tắc BẬT → bậc 0 (chéo W+A/D) của thang", $"{rOn.state} {KeysOf(rOn.keys)}");
             Check(ref fail, rOff.state == "KET1_TURN_AROUND" && off.EscapeActive && off.EscapeSource == "MINIMAP",
                   "Compute kẹt + công tắc TẮT → KET1 cũ y nguyên", rOff.state);
             input.StopMouseStream(immediate: true);
