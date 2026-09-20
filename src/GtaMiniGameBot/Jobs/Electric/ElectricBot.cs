@@ -29,6 +29,14 @@ internal sealed class ElectricBot
     private IScreenCaptureSession _boardCapture;
 
     /// <summary>
+    /// Buổi dạy bản đồ sống suốt phiên (một CSV cho mọi chuyến), còn <see cref="YardTeachSession"/>
+    /// chỉ cầm quyền giữa hai lần mở minigame — đúng chỗ mà <see cref="NavBot"/> đứng khi chạy thường.
+    /// </summary>
+    private YardRecorder _recorder;
+
+    private YardTeachSession _teach;
+
+    /// <summary>
     /// Cấu hình Discord (webhook, ID để ping) nằm trong <see cref="FishingConfig"/> vì job Câu cá
     /// dùng trước — nhưng nó là cấu hình chung của app, không phải của riêng nghề đó. Nạp MỘT LẦN
     /// mỗi phiên chạy thay vì mỗi chặng đi, và null khi đọc hỏng thì <see cref="DiscordNotifier"/>
@@ -51,6 +59,12 @@ internal sealed class ElectricBot
     public event Action<string> Log;
     public event Action<int> RoundsChanged;
     public event Action<string> Stopped;
+
+    /// <summary>
+    /// Một dòng NGẮN cho ô trạng thái trên UI, khác <see cref="Log"/> (khung Diễn biến). Buổi dạy bản
+    /// đồ phát 2 lần/giây; đổ ngần ấy vào Diễn biến thì không ai đọc kịp dòng nào khác.
+    /// </summary>
+    public event Action<string> Status;
 
     public void Start()
     {
@@ -94,6 +108,9 @@ internal sealed class ElectricBot
 
         try
         {
+            // Mot PHIEN = mot lan bam Chay. Bo dem thoat ket la static (NavBot bi tao moi moi luot),
+            // nen phai xoa o day thi hai buoi do A/B moi khong cong don vao nhau.
+            NavEscapeStats.ResetSession();
             _boardCache = BoardRouteCache.Load();
 
             if (wantWire)
@@ -128,10 +145,14 @@ internal sealed class ElectricBot
             if (wantNav && _cfg.Survival.Enabled)
                 try { _discordCfg = FishingConfig.Load(); } catch { _discordCfg = null; }
 
+            bool teachMap = wantNav && _cfg.Nav.TeachMap;
+
             Emit($"chế độ {TenCheDo(_cfg.Mode)} — " +
-                 (wantNav
-                     ? $"tự đi tới điểm làm việc, {(_cfg.AutoLoop ? "chạy liên tục" : "dừng sau một lượt")}."
-                     : "đang chờ minigame hiện ra."));
+                 (teachMap
+                     ? "GHI BẢN ĐỒ: bạn đi tay, bot chỉ nhìn và ghi (không bấm phím), minigame vẫn tự giải."
+                     : wantNav
+                         ? $"tự đi tới điểm làm việc, {(_cfg.AutoLoop ? "chạy liên tục" : "dừng sau một lượt")}."
+                         : "đang chờ minigame hiện ra."));
 
             // Cho bo dieu huong muon lai dung hai bo tham do nay: no chi biet "da bam E xong roi",
             // con "minigame da mo chua" thi o day moi tra loi duoc. Panel day phai doc du slot
@@ -191,7 +212,12 @@ internal sealed class ElectricBot
 
                 if (wantNav)
                 {
-                    if (!RunNav(ct, PanelVisible, justSolved, panelGoneMs, out message)) return;
+                    if (teachMap)
+                    {
+                        if (!RunTeach(ct, PanelVisible, justSolved, out message)) return;
+                    }
+                    else if (!RunNav(ct, PanelVisible, justSolved, panelGoneMs, out message)) return;
+
                     justSolved = false;
                     WaitPanelAfterArrival(ct, PanelVisible);
                     continue;
@@ -211,6 +237,21 @@ internal sealed class ElectricBot
         }
         finally
         {
+            // So lieu de so A/B cong tac "thang thoat ket" (electric.json → nav.escapeLadderEnabled).
+            if (NavEscapeStats.SessionHasData)
+                Emit($"[TỔNG KẸT PHIÊN] thang {(_cfg.Nav.EscapeLadderEnabled ? "BẬT" : "TẮT")} — " +
+                     NavEscapeStats.SessionSummary());
+
+            if (_recorder is not null)
+            {
+                Emit($"[GHI BẢN ĐỒ] kết thúc — {_recorder.TickCount} tick, {_recorder.EventCount} sự kiện, " +
+                     $"{_teach?.Trips ?? 0} chuyến → {_recorder.Path}");
+                Emit("[GHI BẢN ĐỒ] đủ 20–30 chuyến (mỗi máy ≥ 2 lần) thì bấm “Dựng bản đồ”.");
+            }
+            _teach?.Dispose();
+            _teach = null;
+            _recorder?.Dispose();
+            _recorder = null;
             _boardCache?.SaveIfDirty();
             wireProbe?.Dispose();
             boardProbe?.Dispose();
@@ -279,6 +320,39 @@ internal sealed class ElectricBot
         message = $"bộ điều hướng dừng — {NavBot.TenLyDo(reason)}: {detail}";
         Emit("dừng: " + message);
         return false;
+    }
+
+    /// <summary>
+    /// Chế độ GHI BẢN ĐỒ: người chơi đi tay, bot chỉ chụp minimap và ghi lại.
+    ///
+    /// Khác <see cref="RunNav"/> ở hai điểm cố ý: KHÔNG đòi đã khoanh <c>[E] TƯƠNG TÁC</c> (prompt ở
+    /// đây chỉ là một cột trong bản ghi, không điều khiển gì), và chạy THẲNG trên luồng điều phối
+    /// thay vì đẻ thêm luồng — không có phím nào phải nhả nên không cần lớp dừng an toàn của NavBot.
+    /// </summary>
+    private bool RunTeach(CancellationToken ct, Func<bool> panelVisible, bool afterMinigame, out string message)
+    {
+        message = "";
+
+        if (_recorder is null)
+        {
+            _recorder = new YardRecorder(_profile.Key);
+            if (_recorder.Fault is not null)
+            {
+                message = "không mở được file ghi bản đồ: " + _recorder.Fault.Message;
+                Emit("dừng: " + message);
+                return false;
+            }
+        }
+
+        if (_teach is null)
+        {
+            _teach = new YardTeachSession(_cfg, _screen, _profile, _recorder);
+            _teach.Log += Emit;
+            _teach.Status += s => Status?.Invoke(s);
+        }
+
+        _teach.Run(ct, panelVisible, afterMinigame);
+        return true;
     }
 
     /// <summary>

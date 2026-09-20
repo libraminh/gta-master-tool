@@ -78,10 +78,12 @@ internal static class VerifyNav
         fail += TrackerCases();
         fail += ServoCases();
         fail += Ket1Cases();
+        fail += LadderCases();
         fail += MouseCases();
         fail += CameraResetCases();
         fail += RestartTurnCases();
         fail += WatchdogCases();
+        fail += WorldProgressCases();
         fail += PromptCases();
         fail += InteractionCases();
         fail += PanelInterruptCases();
@@ -99,7 +101,8 @@ internal static class VerifyNav
         return bmp;
     }
 
-    private static NavFrame Frame(Bitmap bmp) => NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
+    /// <summary>Cả <see cref="VerifyMap"/> dùng lại — cùng ảnh, cùng cách dựng khung.</summary>
+    internal static NavFrame Frame(Bitmap bmp) => NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
 
     private static void Disc(Bitmap bmp, double cx, double cy, double r, Color c)
     {
@@ -308,6 +311,175 @@ internal static class VerifyNav
         return fail;
     }
 
+    /// <summary>
+    /// Chạy khô THANG THOÁT KẸT ở nhịp 25 ms như vòng lặp thật. Không có input, không có đồng hồ —
+    /// đúng lý do máy pha được viết thuần.
+    /// </summary>
+    /// <param name="dist">Bán kính tới đích mỗi tick (px). Trả về danh sách pha theo thứ tự xuất hiện.</param>
+    private static (List<string> states, Dictionary<string, int> sides, Dictionary<string, double> starts, bool closed)
+        RunLadder(NavEscapeLadder l, double t0, Func<double, string, double> dist, double maxS, double multiplier = 4.0)
+    {
+        var states = new List<string>();
+        var sides = new Dictionary<string, int>();
+        var starts = new Dictionary<string, double>();
+        int turnSerial = l.TurnSerial;
+        long counts = 0;
+        double t = t0;
+        bool closed = false;
+
+        while (t - t0 <= maxS)
+        {
+            var a = l.Step(t, dist(t, l.Phase), false, counts);
+            if (a is null) { closed = true; break; }
+            if (states.Count == 0 || states[^1] != a.Value.State)
+            {
+                states.Add(a.Value.State);
+                sides[a.Value.State] = a.Value.Side;
+                starts.TryAdd(a.Value.State, t);
+            }
+            if (l.TurnSerial != turnSerial) { turnSerial = l.TurnSerial; counts = 0; }
+            // Luong chuot 240 Hz nhan he so truoc khi ra OS, nen count cong theo rate × multiplier.
+            if (a.Value.WantTurn) counts += (long)Math.Round(a.Value.TurnRateCps * multiplier * 0.025);
+            if (a.Value.Legacy) break;
+            t += 0.025;
+        }
+        return (states, sides, starts, closed);
+    }
+
+    private static int LadderCases()
+    {
+        int fail = 0;
+
+        // ---- thu tu bac khi MOI lan tham do deu hong: 0 (cheo) → 1 (lui/quay/thang) → 2 (cheo dao) → 3 (KET1) ----
+        var l = new NavEscapeLadder(1.0, 4.0);
+        bool began = l.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
+        Check(ref fail, began && l.Active && l.Rung == 0 && l.Side == 1,
+              "mở đợt: rel +30° → bên PHẢI, bậc 0", $"bậc={l.Rung} bên={l.Side}");
+
+        var (states, sides, starts, _) = RunLadder(l, 0.0, (_, _) => 60.0, 12.0);
+        string want = string.Join(">", new[]
+        {
+            NavEscape.StrafeW, NavEscape.Probe,
+            NavEscape.Backoff, NavEscape.Turn, NavEscape.Clear, NavEscape.Probe,
+            NavEscape.StrafeFlip, NavEscape.Probe, NavEscape.Legacy
+        });
+        // Pha tham do lap lai nen so sanh chuoi rut gon khong duoc — so nguyen chuoi.
+        Check(ref fail, string.Join(">", states) == want, "thứ tự bậc 0→1→2→3", string.Join(">", states));
+        Check(ref fail, states.Count > 0 && states[0] == NavEscape.StrafeW && states.All(s => s != "ESC_STRAFE"),
+              "bậc trượt ngang THUẦN đã bị xoá — thang bắt đầu bằng chéo W+A/D",
+              states.Count > 0 ? states[0] : "rỗng");
+        Check(ref fail, sides.TryGetValue(NavEscape.StrafeW, out int s1) && s1 == 1
+                        && sides.TryGetValue(NavEscape.StrafeFlip, out int s3) && s3 == -1,
+              "bậc 2 đảo bên so với bậc 0", $"bậc0={sides.GetValueOrDefault(NavEscape.StrafeW)} bậc2={sides.GetValueOrDefault(NavEscape.StrafeFlip)}");
+        Check(ref fail, NavEscapeLadder.NextRung(3) == (1, true),
+              "hết bậc chót thì vòng về LÙI+QUAY (bậc mạnh nhất) với bên đảo", $"{NavEscapeLadder.NextRung(3)}");
+        Check(ref fail, l.LastTurnWhy == "đủ count" && l.LastTurnCounts >= l.TurnCountsTarget,
+              "bậc 1 kết thúc theo COUNT (45° = 761 count), không theo cap thời gian",
+              $"{l.LastTurnCounts}/{l.TurnCountsTarget} {l.LastTurnWhy}");
+        if (starts.TryGetValue(NavEscape.Turn, out double tTurn) && starts.TryGetValue(NavEscape.Clear, out double tClear))
+            Check(ref fail, tClear - tTurn >= 0.40 && tClear - tTurn <= 0.60,
+                  "quay 45° ở 420 cps × 4 ≈ 0.45 s", $"{tClear - tTurn:F3}s");
+
+        // Bac chot giao KET1 cu; bao xong thi len tham do.
+        l.FinishRung(20.0);
+        Check(ref fail, l.Phase == NavEscape.Probe, "bậc chót (KET1) báo xong → thăm dò", l.Phase ?? "null");
+
+        // ---- chuot nuot delta: khong count nao them → TAC sau 0.40 s, khong treo het cap ----
+        var lStall = new NavEscapeLadder(1.0, 4.0);
+        lStall.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
+        double t = 0;
+        string phase = null;
+        double turnStart = -1, turnEnd = -1;
+        for (int i = 0; i < 400 && lStall.Active; i++)
+        {
+            var a = lStall.Step(t, 60.0, false, 0);
+            if (a is null) break;
+            phase = a.Value.State;
+            if (phase == NavEscape.Turn && turnStart < 0) turnStart = t;
+            if (turnStart >= 0 && phase == NavEscape.Clear) { turnEnd = t; break; }
+            t += 0.025;
+        }
+        Check(ref fail, turnEnd > 0 && turnEnd - turnStart >= 0.40 && turnEnd - turnStart <= 0.46 && lStall.LastTurnWhy == "TẮC",
+              "không count nào gửi được → bỏ pha quay sau 0.40 s (TẮC)", $"{turnEnd - turnStart:F3}s {lStall.LastTurnWhy}");
+
+        // ---- tham do THAY tien bo → dong dot ngay o bac 0 ----
+        var lOk = new NavEscapeLadder(1.0, 4.0);
+        lOk.Begin(0.0, 60.0, 30.0, 0, "MINIMAP");
+        var (st2, _, _, closed) = RunLadder(lOk, 0.0, (_, p) => p == NavEscape.Probe ? 58.0 : 60.0, 3.0);
+        Check(ref fail, closed && !lOk.Active && st2.Count == 2 && st2[^1] == NavEscape.Probe
+                        && lOk.ClosedEpisode is not null && lOk.ClosedEpisode.Rung == 0,
+              "thăm dò thấy bán kính giảm 2 px ≥ 0.8·Px → đóng đợt ở bậc 0", string.Join(">", st2));
+
+        // ---- ket lai CUNG CHO trong 4 s → leo bac, giu ben du goc doi dau ----
+        bool again = lOk.Begin(2.0, 60.5, -40.0, 0, "MINIMAP");
+        Check(ref fail, again && lOk.Rung == 1 && lOk.Side == 1,
+              "kẹt lại cùng chỗ (60.5 vs 60) sau 2 s → bậc 1, GIỮ bên phải dù rel −40°", $"bậc={lOk.Rung} bên={lOk.Side}");
+
+        // ---- ket o CHO KHAC → ve bac 0 nhung van giu ben (dot truoc vua xong < 8 s) ----
+        var (_, _, _, closed2) = RunLadder(lOk, 2.0, (_, p) => p == NavEscape.Probe ? 58.0 : 60.5, 4.0);
+        bool far = lOk.Begin(6.0, 200.0, -40.0, 0, "MINIMAP");
+        Check(ref fail, closed2 && far && lOk.Rung == 0 && lOk.Side == 1,
+              "kẹt chỗ khác → bậc 0 nhưng giữ bên (đợt trước xong < 8 s)", $"bậc={lOk.Rung} bên={lOk.Side}");
+
+        // ---- chon ben: vat can > goc toi dich > nguoc ben lan truoc ----
+        Check(ref fail, NavEscapeLadder.ChooseSide(-40.0, 1, -1) == 1
+                        && NavEscapeLadder.ChooseSide(3.0, 0, 1) == -1
+                        && NavEscapeLadder.ChooseSide(-25.0, 0, 1) == -1,
+              "chọn bên: vật cản thắng góc, |rel| < 10° thì ngược bên trước", "");
+
+        // ---- lop san phim: NoAutoW va ESC_ ----
+        var (k0, sp0) = NavBot.ComposeNavKeys(NavKey.D | NavKey.NoAutoW, NavEscape.Turn);
+        var (k1, sp1) = NavBot.ComposeNavKeys(NavKey.W | NavKey.A, NavEscape.StrafeW);
+        var (k2, sp2) = NavBot.ComposeNavKeys(NavKey.S, NavEscape.Backoff);
+        var (k3, sp3) = NavBot.ComposeNavKeys(NavKey.NoAutoW, NavEscape.Turn);
+        var (k4, sp4) = NavBot.ComposeNavKeys(NavKey.None, "KET1_TURN_AROUND");
+        var (k5, sp5) = NavBot.ComposeNavKeys(NavKey.W, "RAM_V63_FAST_TARGET_SNAP");
+        Check(ref fail, k0 == NavKey.D && !sp0, "ComposeNavKeys: D+NoAutoW → D thuần, không SHIFT", KeysOf(k0));
+        Check(ref fail, k1 == (NavKey.W | NavKey.A) && !sp1, "ESC_STRAFE_W: W+A, không SHIFT", KeysOf(k1));
+        Check(ref fail, k2 == NavKey.S && !sp2, "ESC_BACKOFF: S thuần, không tự thêm W", KeysOf(k2));
+        Check(ref fail, k3 == NavKey.None && !sp3, "ESC_TURN: không phím nào (quay tại chỗ)", KeysOf(k3));
+        Check(ref fail, k4 == NavKey.W && !sp4, "KET1 vẫn được tự thêm W, không SHIFT", KeysOf(k4));
+        Check(ref fail, k5 == (NavKey.W | NavKey.Shift) && sp5, "lái bình thường: W+SHIFT", KeysOf(k5));
+
+        using (var input = new NavInput(4.0))
+        {
+            bool threw = false;
+            try { input.Apply(NavKey.NoAutoW); } catch { threw = true; }
+            Check(ref fail, !threw && input.Held == NavKey.None,
+                  "NavInput.Apply lọc bit giả NoAutoW (không ném, không giữ phím)", $"{input.Held}");
+
+            // Cong tac: bat -> Compute vao thang; tat -> dung duong KET1 cu, khong doi gi.
+            var tgt = new TargetOutput
+            {
+                State = "LOCK", Visible = true, X = 120.0, Y = 900.0,
+                Confidence = 0.9, CandidateCount = 1, Quality = "FULL_LOCK", RawGeometry = 0.9
+            };
+            var on = new NavController(S1, input, escapeLadder: true);
+            var rOn = on.Compute(10.0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            var off = new NavController(S1, input, escapeLadder: false);
+            var rOff = off.Compute(10.0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            Check(ref fail, rOn.state == NavEscape.StrafeW && rOn.keys == (NavKey.W | NavKey.D) && on.EscapeActive,
+                  "Compute kẹt + công tắc BẬT → bậc 0 (chéo W+A/D) của thang", $"{rOn.state} {KeysOf(rOn.keys)}");
+            Check(ref fail, rOff.state == "KET1_TURN_AROUND" && off.EscapeActive && off.EscapeSource == "MINIMAP",
+                  "Compute kẹt + công tắc TẮT → KET1 cũ y nguyên", rOff.state);
+            input.StopMouseStream(immediate: true);
+        }
+        return fail;
+    }
+
+    private static string KeysOf(NavKey k)
+    {
+        if (k == NavKey.None) return "-";
+        var parts = new List<string>();
+        if ((k & NavKey.Shift) != 0) parts.Add("SHIFT");
+        if ((k & NavKey.W) != 0) parts.Add("W");
+        if ((k & NavKey.S) != 0) parts.Add("S");
+        if ((k & NavKey.A) != 0) parts.Add("A");
+        if ((k & NavKey.D) != 0) parts.Add("D");
+        if ((k & NavKey.NoAutoW) != 0) parts.Add("NoAutoW");
+        return string.Join("+", parts);
+    }
+
     private static int MouseCases()
     {
         int fail = 0;
@@ -500,6 +672,152 @@ internal static class VerifyNav
             now += 0.025;
         }
         Check(ref fail, !any, "góc 60° > 55° → không tính kẹt", "");
+
+        // Cooldown GIU lich su: thoat ket hong thi phai duoc bao ket lai ngay sau ky nghi chu khong
+        // phai dung lai ca cua so 0.9 s (ban cu goi Reset() nen moi vong ket ton them ~1,1 s).
+        var wd4 = new NavWatchdog(S1);
+        now = 0; double first = -1, second = -1;
+        for (int i = 0; i < 200; i++)
+        {
+            wd4.Add(now, 0, -50);
+            if (wd4.ImpactStuck(now, true, true, 50, 0))
+            {
+                if (first < 0) { first = now; wd4.Cooldown(now); }
+                else { second = now; break; }
+            }
+            now += 0.025;
+        }
+        Check(ref fail, first > 0 && second > 0
+                        && second - first >= NavTuning.StuckPostCooldownS
+                        && second - first <= NavTuning.StuckPostCooldownS + NavTuning.ImpactConfirmS + 0.06,
+              "sau nghỉ 0.40 s lịch sử còn nguyên → kẹt lại chỉ tốn thêm 0.18 s xác nhận",
+              $"lần đầu {first:F3}s, lại sau {second - first:F3}s");
+        return fail;
+    }
+
+    /// <summary>Một cột vàng 3D tổng hợp — chỉ cần các trường mà bộ phán tiến độ đọc.</summary>
+    private static WorldMarker Pillar(double area, double height, double x) => new()
+    {
+        Locked = true, Present = true, X = x, Y = 700.0, Area = area, Width = 60.0, Height = height,
+        Confidence = 0.80, Quality = "WORLD_LOCK", LastSeenAge = 0.0
+    };
+
+    /// <summary>
+    /// Tiến độ cột 3D đo bằng MEDIAN TRƯỢT. Hai ca đầu dựng đúng hai triệu chứng đo được trong buổi
+    /// thử PR2 (bot-log 20:53–21:18): rung do che khuất bị bản cũ đọc thành "đang tiến" (76/128 đợt
+    /// thoát kẹt bị huỷ trong 25–70 ms), và không lần nào kết luận được "đứng im" (0 lần
+    /// [WORLD-IMPACT-CONFIRMED] dù có lúc bot đứng chết 25 s).
+    /// </summary>
+    private static int WorldProgressCases()
+    {
+        int fail = 0;
+        double px = S1.Px;
+        const double dt = 0.025;
+        double[] mul = { 1.4, 1.0, 0.6, 1.0 };      // che mot phan roi lo lai: ±40 % quanh trung binh phang
+
+        // 1) Rung ±40 % quanh trung binh PHANG → khong tien, va la "dung im".
+        var flick = new List<WorldProgressSample>();
+        for (int i = 0; i <= 56; i++)
+            flick.Add(new WorldProgressSample(i * dt, 3000.0 * mul[i % 4], 100.0, 10.0, 60.0));
+        var jf = NavController.JudgeWorldProgress(flick, 56 * dt, px);
+        Check(ref fail, jf.Ready && !jf.Progressing && jf.Frozen,
+              "diện tích rung ±40 % quanh trung bình phẳng → KHÔNG tiến, và là đứng im",
+              $"tỉ lệ diện tích {jf.AreaRatio:F3} cao {jf.HeightRatio:F3} rơi {jf.DistDropPx:F1}px");
+
+        // 2) Cung chuoi do chay qua NavController → phai xac nhan KET sau ~1.0 s (du lich su) + 0.22 s.
+        using (var input = new NavInput(4.0))
+        {
+            var ctl = new NavController(S1, input, escapeLadder: true);
+            double tStuck = -1, tProg = -1;
+            for (int i = 0; i <= 80 && tStuck < 0; i++)
+            {
+                var (prog, stuck) = ctl.ObserveWorld(i * dt, Pillar(3000.0 * mul[i % 4], 100.0, W / 2.0 + 10.0), W, 60.0);
+                if (prog && tProg < 0) tProg = i * dt;
+                if (stuck) tStuck = i * dt;
+            }
+            Check(ref fail, tProg < 0, "rung che khuất không lần nào bị đọc thành “đang tiến”",
+                  tProg < 0 ? "0 lần" : $"lần đầu ở {tProg:F3}s");
+            Check(ref fail, tStuck >= 0.85 && tStuck <= 1.30,
+                  "đứng im hết một cửa sổ đầy → [WORLD-IMPACT] xác nhận kẹt (0,6 s + 6 mẫu cửa sổ cũ + 0,22 s)",
+                  $"{tStuck:F3}s");
+
+            // 3) Chua du 1 s lich su thi KHONG duoc phan "dang tien" — day dung la cho cu takeover
+            //    chui ra: dot thoat ket vua mo, marker vua hien, lich su rong.
+            var fresh = new NavController(S1, input, escapeLadder: true);
+            bool warmProg = false;
+            for (int i = 0; i <= 3; i++)
+                warmProg |= fresh.ObserveWorld(i * dt, Pillar(3000.0 + i * 900.0, 100.0 + i * 8, W / 2.0), W, 60.0 - i).progressing;
+            Check(ref fail, !warmProg, "mới thấy cột 75 ms (chưa đủ lịch sử) → chưa phán “đang tiến”", "");
+            input.StopMouseStream(immediate: true);
+        }
+
+        // 4) Cot lon deu VA ban kinh minimap giam → dang tien.
+        var grow = new List<WorldProgressSample>();
+        for (int i = 0; i <= 56; i++)
+        {
+            double t = i * dt;
+            grow.Add(new WorldProgressSample(t, 3000.0 * Math.Pow(1.30, t), 100.0 * Math.Pow(1.14, t), 10.0, 60.0 - 4.0 * t));
+        }
+        var jg = NavController.JudgeWorldProgress(grow, 56 * dt, px);
+        Check(ref fail, jg.Ready && jg.Progressing && !jg.Frozen,
+              "cột lớn đều 30 %/s + bán kính minimap giảm → đang tiến",
+              $"tỉ lệ diện tích {jg.AreaRatio:F3} cao {jg.HeightRatio:F3} rơi {jg.DistDropPx:F1}px");
+
+        // 5) Cot lon len ma ban kinh KHONG giam = dang xoay nguoi / cot vua bi che vua lo, khong phai
+        //    dang toi. Day la dieu kien VA da chan cu takeover luc bot dung chet o dist=20.5.
+        var spin = grow.Select(s => s with { DistPx = 60.0 }).ToList();
+        var js = NavController.JudgeWorldProgress(spin, 56 * dt, px);
+        Check(ref fail, js.Ready && !js.Progressing,
+              "cột lớn lên nhưng bán kính minimap đứng yên → KHÔNG tính là tiến",
+              $"tỉ lệ diện tích {js.AreaRatio:F3} rơi {js.DistDropPx:F1}px");
+
+        // 6) Nguong 1.08 la giua HAI MEDIAN (cach nhau ~0,6 s) → tuong duong ~13,8 %/s. Ghi lai day de
+        //    ai doi hang so con thay ngay no nghia la gi.
+        var slow = new List<WorldProgressSample>();
+        for (int i = 0; i <= 56; i++)
+        {
+            double t = i * dt;
+            slow.Add(new WorldProgressSample(t, 3000.0 * Math.Pow(1.08, t), 100.0, 10.0, 60.0 - 4.0 * t));
+        }
+        var jl = NavController.JudgeWorldProgress(slow, 56 * dt, px);
+        Check(ref fail, jl.Ready && !jl.Progressing && !jl.Frozen,
+              "cột lớn 8 %/giây → dưới ngưỡng (1.08 tính giữa hai median cách 0,6 s ≈ 13,8 %/s)",
+              $"tỉ lệ diện tích {jl.AreaRatio:F3}");
+
+        // 7) Chinh sach takeover: thang BAT thi marker hien lai KHONG duoc cat ngang dot dang chay
+        //    (pha tham do cua thang tu dong dot khi co tien do that); thang TAT thi duong cu y nguyen.
+        using (var input = new NavInput(4.0))
+        {
+            var tgt = new TargetOutput
+            {
+                State = "LOCK", Visible = true, X = 120.0, Y = 900.0,
+                Confidence = 0.9, CandidateCount = 1, Quality = "FULL_LOCK", RawGeometry = 0.9
+            };
+            var on = new NavController(S1, input, escapeLadder: true);
+            var off = new NavController(S1, input, escapeLadder: false);
+            for (int i = 0; i <= 48; i++)
+            {
+                double t = i * dt;
+                var pillar = Pillar(3000.0 * Math.Pow(1.30, t), 100.0 * Math.Pow(1.14, t), W / 2.0 + 10.0);
+                on.ObserveWorld(t, pillar, W, 60.0 - 4.0 * t);
+                off.ObserveWorld(t, pillar, W, 60.0 - 4.0 * t);
+            }
+            double t0 = 48 * dt;
+            on.Compute(t0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            off.Compute(t0, tgt, 60.0, 20.0, 20.0, -56.0, stuck: true);
+            var late = Pillar(3000.0 * Math.Pow(1.30, t0 + dt), 100.0 * Math.Pow(1.14, t0 + dt), W / 2.0 + 10.0);
+            on.ObserveWorld(t0 + dt, late, W, 60.0 - 4.0 * (t0 + dt));
+            off.ObserveWorld(t0 + dt, late, W, 60.0 - 4.0 * (t0 + dt));
+            var rOn = on.WorldStep(t0 + dt, late, W, false, 60.0);
+            var rOff = off.WorldStep(t0 + dt, late, W, false, 60.0);
+            Check(ref fail, on.EscapeActive && rOn is not null && rOn.Value.state.StartsWith("ESC_", StringComparison.Ordinal),
+                  "thang BẬT: cột hiện lại giữa đợt thoát kẹt KHÔNG huỷ đợt",
+                  rOn?.state ?? "null");
+            Check(ref fail, !off.EscapeActive,
+                  "thang TẮT: KET1 vẫn bị cột hiện lại huỷ như cũ (đường A/B không đổi)",
+                  rOff?.state ?? "null");
+            input.StopMouseStream(immediate: true);
+        }
         return fail;
     }
 
@@ -754,7 +1072,7 @@ internal static class VerifyNav
 
     // ================================================================ anh that
 
-    private static Bitmap Load(ElectricProfile p, string name, out string why)
+    internal static Bitmap Load(ElectricProfile p, string name, out string why)
     {
         why = null;
         string path = ElectricConfig.ShotPath(p.Key, name);
@@ -875,7 +1193,7 @@ internal static class VerifyNav
     /// Mũi tên trắng trên minimap phải nằm sát gốc cố định (163, 980.4)·sx. Bot không dò mũi tên khi
     /// chạy (vị trí luôn là gốc cố định, đúng bản Python), nên đây là chỗ DUY NHẤT kiểm con số này.
     /// </summary>
-    private static int ArrowCheck(string tag, NavFrame f, NavScale s, double ox, double oy)
+    internal static int ArrowCheck(string tag, NavFrame f, NavScale s, double ox, double oy)
     {
         int fail = 0;
         var t = NavTuning.TargetRoiRef;

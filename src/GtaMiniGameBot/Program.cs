@@ -118,6 +118,21 @@ internal static class Program
             return rc;
         }
 
+        if (args.Length > 0 && args[0].Equals("--verify-map", StringComparison.OrdinalIgnoreCase))
+        {
+            Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);
+            TrySetUtf8Console();
+            var report = new StringWriter();
+            Console.SetOut(new TeeWriter(Console.Out, report));
+
+            int rc;
+            try { rc = VerifyMap.Run(args); }
+            catch (Exception ex) { Console.WriteLine("LOI: " + ex); rc = 3; }
+
+            TryWriteUtf8(Path.Combine(AppContext.BaseDirectory, "verify-map.txt"), report.ToString());
+            return rc;
+        }
+
         if (args.Length > 0 && args[0].Equals("--verify-board", StringComparison.OrdinalIgnoreCase))
         {
             Native.AttachConsole(Native.ATTACH_PARENT_PROCESS);

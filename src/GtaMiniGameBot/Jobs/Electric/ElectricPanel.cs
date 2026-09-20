@@ -27,6 +27,8 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkButton _btnBoardRoi = new();
     private readonly DarkButton _btnBoardDefault = new();
     private readonly DarkButton _btnPrompt = new();
+    private readonly DarkButton _btnLearnBlips = new();
+    private readonly DarkButton _btnBuildMap = new();
     private readonly DarkButton _btnEatCenters = new();
     private readonly DarkButton _btnTestFood = new();
     private readonly DarkButton _btnTestWater = new();
@@ -38,6 +40,7 @@ internal sealed class ElectricPanel : UserControl
     private readonly DarkButton _btnToggle = new();
     private readonly DarkCheck _autoWalk = new();
     private readonly DarkCheck _autoLoop = new();
+    private readonly DarkCheck _teachMap = new();
     private readonly DarkCheck _autoEat = new();
     private readonly LogView _log = new();
 
@@ -113,7 +116,7 @@ internal sealed class ElectricPanel : UserControl
         var host = new DrawPanel
         {
             Dock = DockStyle.Top,
-            Height = Theme.Px(580),
+            Height = Theme.Px(628),
             BackColor = Theme.Ground
         };
 
@@ -179,7 +182,7 @@ internal sealed class ElectricPanel : UserControl
         var navBox = new DarkGroup
         {
             Title = "Tự đi tới điểm làm việc",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(244), w, Theme.Px(100))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(244), w, Theme.Px(148))
         };
         host.Controls.Add(navBox);
 
@@ -202,13 +205,32 @@ internal sealed class ElectricPanel : UserControl
 
         Lab(navBox, "Chụp lúc prompt hiện, khoanh trùm ô E lẫn chữ. Ô đó là vùng quét.",
             Theme.Px(330), Theme.Px(54), w - Theme.Px(342));
+
+        _teachMap.Text = "Ghi bản đồ (chạy tay, bot không bấm phím)";
+        _teachMap.SetBounds(Theme.Px(12), Theme.Px(76), Theme.Px(310), Theme.Px(22));
+        _teachMap.SetCheckedQuiet(_cfg.Nav.TeachMap);
+        _teachMap.CheckedChanged += OnTeachMapChanged;
+        navBox.Controls.Add(_teachMap);
+
+        _btnLearnBlips.Text = "Học mốc minimap…";
+        _btnLearnBlips.SetBounds(Theme.Px(330), Theme.Px(80), Theme.Px(260), Theme.Px(26));
+        _btnLearnBlips.Click += (_, _) => LearnBlips();
+        navBox.Controls.Add(_btnLearnBlips);
+
+        _btnBuildMap.Text = "Dựng bản đồ";
+        _btnBuildMap.SetBounds(Theme.Px(330), Theme.Px(112), Theme.Px(260), Theme.Px(26));
+        _btnBuildMap.Click += (_, _) => BuildMap();
+        navBox.Controls.Add(_btnBuildMap);
+
         Lab(navBox, "Lượt đầu tắt “Chạy liên tục” để đọc log.",
-            Theme.Px(12), Theme.Px(76), Theme.Px(300));
+            Theme.Px(12), Theme.Px(102), Theme.Px(300));
+        Lab(navBox, "Ghi bản đồ: đi tay 20–30 chuyến, mỗi máy ít nhất 2 lần.",
+            Theme.Px(12), Theme.Px(122), Theme.Px(310));
 
         var eatBox = new DarkGroup
         {
             Title = "Tự ăn bánh / uống nước",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(352), w, Theme.Px(168))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(400), w, Theme.Px(168))
         };
         host.Controls.Add(eatBox);
 
@@ -269,7 +291,7 @@ internal sealed class ElectricPanel : UserControl
         var help = new DarkGroup
         {
             Title = "Cách dùng",
-            Bounds = new Rectangle(Theme.Px(16), Theme.Px(528), w, Theme.Px(40))
+            Bounds = new Rectangle(Theme.Px(16), Theme.Px(576), w, Theme.Px(40))
         };
         host.Controls.Add(help);
 
@@ -437,8 +459,114 @@ internal sealed class ElectricPanel : UserControl
                 ? "tự đi tới điểm làm việc: BẬT"
                 : "tự đi: BẬT — chưa khoanh [E] TƯƠNG TÁC, bấm nút khoanh trước khi chạy")
             : "tự đi tới điểm làm việc: TẮT (đứng sẵn ở bảng rồi bật job)");
+        _teachMap.Enabled = !IsRunning && _cfg.AutoWalk;
         RefreshCalib();
         RefreshNote();
+    }
+
+    /// <summary>
+    /// Buổi dạy bản đồ. Nằm TRONG bộ tự đi (nó dùng chung vòng chụp minimap và bộ thăm dò minigame),
+    /// nên tắt “Tự tìm điểm vàng…” là ô này cũng tắt theo.
+    /// </summary>
+    private void OnTeachMapChanged()
+    {
+        _cfg.Nav.TeachMap = _teachMap.Checked;
+        _cfg.Save();
+
+        if (!_cfg.Nav.TeachMap)
+        {
+            Append("ghi bản đồ: TẮT — bot lại tự đi như thường");
+            return;
+        }
+
+        Append("ghi bản đồ: BẬT — bot KHÔNG bấm phím, bạn tự đi tới từng máy; minigame vẫn được giải tự động.");
+        Append($"bản ghi vào {ElectricConfig.MapDir(_profile.Key)} (một CSV cho cả buổi).");
+        if (BlipTemplates.Load(_profile.Key) is null)
+            Append("chưa học mốc minimap — bấm “Học mốc minimap…” một lần để dò chính xác hơn.");
+        if (!_cfg.AutoWalk)
+            Append("lưu ý: phải bật “Tự tìm điểm vàng…” thì chế độ ghi mới chạy.");
+    }
+
+    /// <summary>
+    /// Học mẫu ⚡ / ✕ / 🍕 từ một ảnh tĩnh — cùng khuôn “chụp still rồi cắt mẫu” của
+    /// <see cref="ApplyPrompt"/>, chỉ khác là vùng cắt do bộ dò tự tìm chứ không phải người khoanh.
+    /// </summary>
+    private void LearnBlips()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi học mốc"); return; }
+
+        var bmp = StillPicker.CaptureWithCountdown(
+            FindForm(), _screen,
+            "Đứng trong sân trạm biến áp, minimap thấy RÕ cả ⚡ (NPC việc làm) lẫn ✕ đỏ, " +
+            "và chấm vàng KHÔNG nằm đè lên ⚡.",
+            _cfg.ShotCountdownSec, _cfg.WindowMatch, out string problem);
+
+        if (bmp is null)
+        {
+            Append("không chụp được: " + (problem ?? "không rõ"));
+            return;
+        }
+
+        try
+        {
+            StillPicker.Save(bmp, ElectricConfig.ShotPath(_profile.Key, "nav-blips"));
+
+            var s = new NavScale(_profile.Width, _profile.Height, _cfg.Nav.ScreenPxScale);
+            var frame = NavFrame.FromBitmap(bmp, new Rectangle(0, 0, bmp.Width, bmp.Height));
+            var tpl = BlipTemplates.Learn(frame, s, "nav-blips", out string why);
+            if (tpl is null)
+            {
+                Append("học mốc minimap KHÔNG được: " + (why ?? "không rõ") + " — đứng chỗ khác rồi thử lại.");
+                return;
+            }
+
+            tpl.Save(_profile.Key);
+            Append($"đã học mốc minimap: {tpl.Describe()} → {ElectricConfig.MapDir(_profile.Key)}");
+            Append("kiểm lại ngoài game bằng “--verify-map” nếu muốn xem số đo.");
+        }
+        catch (Exception ex) { Append("học mốc minimap lỗi: " + ex.Message); }
+        finally { bmp.Dispose(); }
+    }
+
+    /// <summary>
+    /// Dựng bản đồ từ mọi <c>rec-*.csv</c> đã ghi. Chạy trên luồng nền: A* và distance transform trên
+    /// lưới vài trăm nghìn ô đủ lâu để đóng băng UI, mà báo cáo thì người dùng muốn đọc dần.
+    /// </summary>
+    private void BuildMap()
+    {
+        if (IsRunning) { Append("đang chạy — tắt trước khi dựng bản đồ"); return; }
+
+        string key = _profile.Key;
+        var scale = new NavScale(_profile.Width, _profile.Height, _cfg.Nav.ScreenPxScale);
+        _btnBuildMap.Enabled = false;
+        Append("đang dựng bản đồ…");
+
+        new Thread(() =>
+        {
+            try
+            {
+                var recs = YardRecorder.LoadAll(key, out int broken);
+                if (broken > 0) Post(() => Append($"bỏ qua {broken} file bản ghi hỏng hoặc khác phiên bản."));
+
+                var map = YardMapBuilder.Build(recs, scale, key, out var rep);
+                foreach (var line in rep.Lines) Post(() => Append(line));
+
+                if (map is null) return;
+
+                map.Save(key);
+                string png = Path.Combine(ElectricConfig.DebugMapDir(key), "yard-map.png");
+                YardMapBuilder.RenderPng(map, png);
+                YardMap.ClearCache();
+                Post(() =>
+                {
+                    Append($"đã ghi {ElectricConfig.YardMapPath(key)}");
+                    Append($"ảnh soi bằng mắt: {png}");
+                });
+            }
+            catch (Exception ex) { Post(() => Append("dựng bản đồ lỗi: " + ex.Message)); }
+            finally { Post(() => _btnBuildMap.Enabled = !IsRunning); }
+        })
+        { IsBackground = true, Name = "YardMapBuilder" }.Start();
     }
 
     private void OnAutoLoopChanged()
@@ -828,6 +956,9 @@ internal sealed class ElectricPanel : UserControl
         _rounds = 0;
         _bot = new ElectricBot(_cfg, _screen, _profile);
         _bot.Log += s => Post(() => Append(s));
+        // Dong trang thai cua buoi day ban do: 2 lan/giay, chi hien tren o trang thai chu khong do
+        // vao Dien bien — khong thi moi dong khac bi troi mat.
+        _bot.Status += s => Post(() => _status.Text = s);
         _bot.RoundsChanged += n => Post(() =>
         {
             _rounds = n;
@@ -864,6 +995,10 @@ internal sealed class ElectricPanel : UserControl
         _btnBoardRoi.Enabled = !running;
         _btnBoardDefault.Enabled = !running;
         _btnPrompt.Enabled = !running;
+        _btnLearnBlips.Enabled = !running;
+        _btnBuildMap.Enabled = !running;
+        // Ghi ban do nam trong bo tu di: tat "Tu tim diem vang..." thi o nay khong con nghia gi.
+        _teachMap.Enabled = !running && _cfg.AutoWalk;
         _btnEatCenters.Enabled = !running;
         _btnTestFood.Enabled = !running;
         _btnTestWater.Enabled = !running;

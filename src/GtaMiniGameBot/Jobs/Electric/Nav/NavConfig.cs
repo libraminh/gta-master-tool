@@ -38,6 +38,36 @@ internal sealed class NavSettings
     /// <summary><c>job_recovery_enabled</c> — mất điểm vàng lâu thì đi tới NPC tia sét reset nghề.</summary>
     public bool JobRecoveryEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Buổi DẠY bản đồ sân: người dùng đi tay, bot chỉ chụp minimap và ghi lại — KHÔNG gửi phím nào.
+    ///
+    /// Vì sao là cờ trong file chứ không phải hằng: đây là một chế độ chạy khác hẳn (một buổi 20–30
+    /// chuyến rồi thôi), và người dùng phải bật/tắt được giữa chừng mà không build lại. Minigame mở
+    /// ra thì bộ giải bảng/dây vẫn giải như thường — người chỉ cần đi.
+    /// </summary>
+    public bool TeachMap { get; set; }
+
+    /// <summary>
+    /// THANG THOÁT KẸT thay cú nhảy KET1 ở hai nguồn MINIMAP/WORLD: trượt ngang → trượt chéo → lùi+bẻ
+    /// 45°+W → trượt chéo đảo bên → KET1 cũ, sau mỗi bậc thăm dò 0,45 s xem thoát chưa.
+    ///
+    /// Vì sao là cờ trong file: đây là thay đổi HÀNH VI LÁI, phải so A/B được trong game mà không
+    /// build lại — bật 20 phút, tắt 20 phút, đọc <c>[TỔNG KẸT PHIÊN]</c> hai bên. <c>false</c> = đúng
+    /// đường KET1 như trước.
+    /// </summary>
+    public bool EscapeLadderEnabled { get; set; } = true;
+
+    /// <summary>
+    /// BÁM WAYPOINT theo bản đồ sân đã dạy: biết mình đứng đâu (pose từ ⚡+✕) thì đi theo ô người đã
+    /// đi tới đúng tư thế tiếp cận của máy đích, chỉ giao lại luồng cột 3D → prompt → E ở ~3 m cuối.
+    ///
+    /// Vì sao là cờ trong file: giống <see cref="EscapeLadderEnabled"/>, đây là thay đổi HÀNH VI LÁI
+    /// phải so A/B được trong game mà không build lại. <c>false</c> = đúng đường PR2 (lái theo chấm
+    /// vàng / cột 3D như trước), và <b>không có file <c>yard-map-v1.json</c> thì cũng y hệt như vậy</b>
+    /// — bộ bám tự nằm im, không tốn một mili-giây nào.
+    /// </summary>
+    public bool UseYardMap { get; set; } = true;
+
     /// <summary>Nhịp ghi dòng trạng thái vào log — <c>console_interval_s</c> 0.16 của Python.</summary>
     public int LogEveryMs { get; set; } = 160;
 
@@ -51,6 +81,8 @@ internal sealed class NavSettings
         if (double.IsNaN(PlayerOriginXRef) || PlayerOriginXRef < 0 || PlayerOriginXRef > 1920) PlayerOriginXRef = 0;
         if (double.IsNaN(PlayerOriginYRef) || PlayerOriginYRef < 0 || PlayerOriginYRef > 1080) PlayerOriginYRef = 0;
         LogEveryMs = Math.Clamp(LogEveryMs <= 0 ? 160 : LogEveryMs, 50, 5000);
+        // TeachMap/EscapeLadderEnabled/UseYardMap la bool nen khong co gi de kep — nhung khoa SO nao
+        // them vao day sau nay thi phai kep o day, dung tin file json.
     }
 }
 
@@ -188,9 +220,19 @@ internal static class NavTuning
     public const double ImpactMaxRadialSpanPx = 1.15;
     public const double ImpactConfirmS = 0.180;
     public const double ImpactMinTargetConf = 0.50;
-    public const double StuckPostCooldownS = 0.950;                      // stuck_post_cooldown_ms
-    public const double WorldSkipMinimapStuckConf = 0.55;                // world_direct_skip_minimap_stuck_conf
-    public const double WorldSkipMinimapStuckArea = 1200.0;
+    /// <summary>
+    /// <c>stuck_post_cooldown_ms</c> — 0.950 của bản Python rút còn 0.400.
+    ///
+    /// Vì sao: bộ dò đã cần 0,9 s bán kính phẳng + 0,18 s xác nhận. Nghỉ thêm 0,95 s SAU đó (bản cũ còn
+    /// xoá sạch lịch sử) nghĩa là một cú thoát kẹt hỏng phải chờ ~2 s mới được báo kẹt lại — đúng chu kỳ
+    /// "kẹt lại mỗi 3,5–4 s" đọc được trong log thật. Thang thoát kẹt tự leo bậc trong một đợt nên
+    /// không cần kỳ nghỉ dài; 0,40 s chỉ còn để pha thăm dò 0,45 s không tự bắn thành cú kẹt mới.
+    /// </summary>
+    public const double StuckPostCooldownS = 0.400;
+
+    // Bo: world_direct_skip_minimap_stuck_conf/area (0.55 / 1200). Luat "thay world marker du tin thi
+    // xoa ung vien ket" bit mieng watchdog ban kinh o dung doan cuoi — cot vang la DICH nen no luon
+    // trong khung. Thay bang "chi khi DANG TIEN THAT", xem NavController.JudgeWorldProgress.
 
     // ================================================================ obstacle (chi lay side)
     public const int ObstacleCannyLow = 50, ObstacleCannyHigh = 135;
@@ -258,17 +300,44 @@ internal static class NavTuning
     public const double WorldArcMemoryS = 0.500;                         // world_arc_memory_ms
     public const double WorldBreakoutTimeoutS = 5.0;                     // chi de log
     public const double WorldImpactWindowS = 1.200;
-    public const int WorldImpactMinSamples = 18;
     public const double WorldImpactConfirmS = 0.220;
     public const double WorldImpactMaxErrorPx = 180.0;
-    public const double WorldProgressAreaGrowthPct = 0.035;
-    public const double WorldProgressHeightGrowthPx = 5.0;
-    public const double WorldProgressAreaSpanPct = 0.065;
-    public const double WorldProgressHeightSpanPx = 9.0;
-    public const double WorldImpactMaxAreaGrowthAbsPct = 0.014;
-    public const double WorldImpactMaxHeightGrowthAbsPx = 2.0;
-    public const double WorldImpactMaxAreaSpanPct = 0.038;
-    public const double WorldImpactMaxHeightSpanPx = 5.2;
+
+    // ---------------- tien do cot 3D do bang MEDIAN TRUOT (thay bo "span" cu) ----------------
+    //
+    // Do tu buoi thu that 20:53–21:18: cot vang bi che mot phan thi dien tich nhay 2074→4173 va
+    // 2929→6707 trong duoi mot giay trong khi nguoi choi DUNG YEN. Ban cu lay p90−p10 tho lam bang
+    // chung "dang tien", nen no vua cho phep huy thoat ket (76/128 dot bi cat trong 25–70 ms, bac
+    // truot ngang chua chay lan nao) vua khong bao gio ket luan duoc "dung im" — [WORLD-IMPACT-
+    // CONFIRMED] ban 0 lan ca phien, ke ca luc bot dung chet 25 s o dist=20.5.
+
+    /// <summary>
+    /// Cửa sổ median "mới". 0,4 s nuốt trọn một cú che khuất (che rồi lộ hết ~0,2 s) nhưng vẫn đủ
+    /// ngắn để một người đang chạy tới cột làm median nhích lên thấy rõ.
+    /// </summary>
+    public const double WorldMedianWindowS = 0.40;
+
+    /// <summary>Cửa sổ median "cũ" = <c>[now−1.0, now−0.6]</c> — chừa 0,2 s đệm để hai cửa sổ không dính nhau.</summary>
+    public const double WorldMedianPriorLoS = 0.60, WorldMedianPriorHiS = 1.00;
+
+    /// <summary>Mỗi cửa sổ phải có ngần này mẫu mới được phán. 0,4 s ở nhịp 25 ms cho ~16 mẫu.</summary>
+    public const int WorldMedianMinSamples = 6;
+
+    /// <summary>
+    /// Đang tiến: median mới ≥ 1.08 × median cũ. Người chạy 7 m/s tới cột cách 20 m làm tỉ lệ này
+    /// ~1,6 sau 0,6 s (diện tích ∝ 1/d²), nên 1.08 KHÔNG phải cái chặn thật — nó chỉ đủ cao để rung
+    /// do che khuất (median lệch dưới 1 %) không bao giờ đội lốt "đang tiến".
+    /// </summary>
+    public const double WorldProgressMedianRatio = 1.08;
+
+    /// <summary>
+    /// Điều kiện VÀ khi có chấm vàng: bán kính minimap phải giảm ngần này px trong cùng khoảng. Cột
+    /// lớn lên mà khoảng cách không giảm = đang xoay người / đang bị che rồi lộ, không phải đang tới.
+    /// </summary>
+    public const double WorldProgressMinDistDropPx = 0.5;
+
+    /// <summary>Đứng im: cả diện tích lẫn chiều cao lệch ≤ 3 % giữa hai median. Rung che khuất đã bị median nuốt nên 3 % là rộng rãi.</summary>
+    public const double WorldFrozenMedianPct = 0.03;
 
     // ================================================================ mat cham (lost_step)
     public const double RamLineLostStraightS = 1.800;
@@ -297,6 +366,71 @@ internal static class NavTuning
     public const double Ket1SideTurnHardMaxS = 0.480;
     public const double Ket1ClearForwardS = 0.650;
     public const double Ket1RearmS = 0.500;
+
+    // ================================================================ thang thoat ket (Escape*)
+    //
+    // Vi sao co thang nay ben canh KET1: KET1 la MOT bai nhay mu duy nhat (quay dau 168° roi be ngang
+    // roi W), lam gi cung mat ~2,1 s va khong bao gio biet no co thoat duoc hay khong. Nguoi choi that
+    // thi thu cai RE nhat truoc — lech nguoi mot buoc — roi moi leo dan len cai dat tien hon. Thang
+    // nay xep dung thu tu do, va sau MOI bac co mot pha tham do 0,45 s de phan "thoat chua".
+    //
+    // 19/09, sau hai buoi thu that: bac "truot ngang THUAN A/D" da bi XOA khoi thang (cuu 1/40 dot).
+    // Thang con bon bac: cheo W+A/D → lui+quay 45°+chay → cheo dao ben → KET1, roi vong lai bac lui+quay
+    // voi ben dao. Ti le cuu do duoc: cheo 6/35, lui+quay 23/66 (manh nhat), cheo dao 6/53, KET1 6/48.
+
+    /// <summary>
+    /// Trượt chéo (W + A/D) — BẬC ĐẦU của thang kể từ 19/09.
+    ///
+    /// Bậc "trượt ngang THUẦN A/D 0,55 s" đứng trước nó đã bị XOÁ: đo hai buổi thử thật, nó cứu được
+    /// 1/40 đợt (PR2 1/28, PR3 0/12) mà vẫn tốn 0,55 s + 0,45 s thăm dò mỗi đợt. Không giữ lại làm gì —
+    /// đi ngang không W quá chậm để lách khỏi đế cột. Bậc chéo này cứu 6/35, và nó giữ được hướng nhìn.
+    /// </summary>
+    public const double EscapeStrafeS1 = 0.90;
+
+    /// <summary>Lùi S trước khi quay: đứng dí vào vật cản mà quay thì quay xong vẫn dí, W không ăn.</summary>
+    public const double EscapeBackoffS = 0.35;
+
+    /// <summary>
+    /// Góc bẻ của bậc 2 — 45° đủ để né một cái tủ điện mà chưa mất hướng tới đích (KET1 quay 168°,
+    /// tức là quay LƯNG lại đích, rồi phải tìm đường về). Đo bằng ĐẾM COUNT, xem <see cref="NavRestartTurn"/>.
+    /// </summary>
+    public const double EscapeTurnDeg = 45.0;
+
+    /// <summary>Không gửi thêm count nào trong ngần này giây = game đang nuốt chuột → bỏ pha quay.</summary>
+    public const double EscapeTurnStallS = 0.40;
+
+    /// <summary>W thẳng sau khi bẻ: đủ để ra khỏi bóng vật cản rồi mới thăm dò.</summary>
+    public const double EscapeClearS = 0.60;
+
+    /// <summary>
+    /// Trần yaw khi đang trượt ngang. Servo bình thường quay tới 1650 cps; trượt ngang mà camera quay
+    /// nhanh thì hướng trượt xoay theo camera và ta đi hình vòng cung quanh đúng cái vật cản vừa đâm.
+    /// </summary>
+    public const double EscapeStrafeYawCapCps = 300.0;
+
+    /// <summary>
+    /// Pha THĂM DÒ sau mỗi bậc: W + servo bình thường. Đủ dài để bán kính tới đích kịp đổi ở tốc độ
+    /// chạy (~14 mu/s), đủ ngắn để hỏng thì leo bậc kế mà tổng vẫn dưới ~1,5 s cho hai bậc đầu.
+    /// </summary>
+    public const double EscapeProbeS = 0.45;
+
+    /// <summary>Bán kính tới đích giảm ngần này (×Px) trong pha thăm dò = đã thoát. Ngưỡng kẹt là 0,16 px.</summary>
+    public const double EscapeProgressPx = 0.8;
+
+    /// <summary>
+    /// Kẹt lại trong ngần này giây kể từ lúc đóng đợt trước thì coi là CÙNG một đợt → leo bậc thay vì
+    /// thử lại bậc 0 (bản KET1 cũ lặp lại cùng một cú nhảy mỗi 3,5–4 s mà không leo thang bao giờ).
+    /// </summary>
+    public const double EscapeEpisodeJoinS = 4.0;
+
+    /// <summary>Cùng chỗ = bán kính tới đích lệch dưới ngần này (×Px) so với lúc mở đợt.</summary>
+    public const double EscapeSameSpotPx = 6.0;
+
+    /// <summary>
+    /// Đợt mới ở chỗ khác vẫn GIỮ BÊN của đợt trước nếu đợt trước vừa kết thúc trong ngần này giây:
+    /// đi vòng một phía thì phải vòng hết một phía, đổi bên giữa chừng là lắc trái/phải tại chỗ.
+    /// </summary>
+    public const double EscapeKeepSideS = 8.0;
 
     // ================================================================ lop san phim (_apply_world_nav_input)
     public const double RamStartWGapMs = 24.0, RamStartWFirstHoldMs = 34.0, RamStartWSoftRearmS = 1.6;
@@ -460,6 +594,251 @@ internal static class NavTuning
     public const double JobPostRehireMinGuardS = 1.2;
     public const int JobPostRehirePromptClearFrames = 8;
     public const double JobPostRehireNoPromptTimeoutS = 3.5;
+
+    // ================================================================ ghi ban do san (Yard*)
+    //
+    // Doc "vi sao" o dau moi cum. Don vi: *Ref = moc 1080p (dien tich chia sx·sy, be rong chia sx,
+    // be cao chia sy — dung thang ma YellowDotDetector.Detect dang dung); *Mu = don vi ban do
+    // (1 mu = 1/138 khoang cach ⚡–✕, xap xi 0,5 m); *Px = pixel tho cua ban Python (nhan NavScale.Px).
+
+    /// <summary>
+    /// Khoảng cách ⚡–✕ quy ước = 138 mu. Đây là ĐỊNH NGHĨA đơn vị bản đồ, không phải số đo: zoom
+    /// minimap đổi theo ngày (đo 138 px ngày 23/08 nhưng 175 px ngày 05/09, tỉ lệ 1,27×) nên mọi
+    /// khoảng cách phải quy về hai mốc cố định này thì bản đồ mới dùng lại được giữa các buổi.
+    /// </summary>
+    public const double YardDRef = 138.0;
+
+    /// <summary>
+    /// Vị trí 🍕 trong hệ sân (mu) — mốc PHỤ, chỉ hiện khi tới gần. Số này đo trên ba ảnh thật
+    /// (63.0,−152.9) / (64.3,−155.9) / (63.7,−156.7); bộ dựng bản đồ ước lượng lại và ghi vào
+    /// <c>yard-map-v1.json</c>, giá trị ở đây là mặc định khi chưa có file map.
+    /// </summary>
+    public const double YardPizzaXMu = 63.5, YardPizzaYMu = -154.5;
+
+    /// <summary>Trọng số 🍕 khi giải pose: thấp hơn ⚡/✕ vì toạ độ của nó là ƯỚC LƯỢNG, không phải định nghĩa.</summary>
+    public const double YardPizzaWeight = 0.7;
+
+    /// <summary>
+    /// Mặt nạ đỏ cho ✕ (H vòng qua 0). LỎNG có chủ ý: màu ✕ không cố định — thường rgb(213,43,39)
+    /// nhưng <c>nav-pair-b</c> pha nền sáng thành (140,51,54) và (239,152,152). Phân biệt thật nằm ở
+    /// hình dạng + NCC, không ở màu.
+    /// </summary>
+    public const int YardRedHLo = 170, YardRedHHi = 10, YardRedSMin = 90, YardRedVMin = 110;
+
+    // ⚡: 12–13×17 px @2K, 102–106 pixel, fill 0.47 — glyph dung thang, khong tron.
+    public const double YardLightningAreaRefMin = 35.0, YardLightningAreaRefMax = 90.0;
+    public const double YardLightningWRefMin = 7.0, YardLightningWRefMax = 12.0;
+    public const double YardLightningHRefMin = 10.0, YardLightningHRefMax = 15.0;
+    public const double YardLightningFillMin = 0.35, YardLightningFillMax = 0.62;
+
+    // ✕: 12×15 px @2K, 150–166 pixel, fill 0.87 — vuong do dac.
+    public const double YardCrossAreaRefMin = 60.0, YardCrossAreaRefMax = 120.0;
+    public const double YardCrossWRefMin = 8.0, YardCrossWRefMax = 11.0;
+    public const double YardCrossHRefMin = 10.0, YardCrossHRefMax = 13.0;
+    public const double YardCrossFillMin = 0.75;
+
+    // 🍕: 22×21 px @2K, 160–165 pixel, fill 0.35 — vong do/trang, rong ruot nen fill thap.
+    public const double YardPizzaAreaRefMin = 70.0, YardPizzaAreaRefMax = 130.0;
+    public const double YardPizzaWRefMin = 14.0, YardPizzaWRefMax = 19.0;
+    public const double YardPizzaHRefMin = 14.0, YardPizzaHRefMax = 18.0;
+    public const double YardPizzaFillMin = 0.25, YardPizzaFillMax = 0.50;
+
+    /// <summary>Lề cắt quanh bbox khi học mẫu — NCC cần thấy cả viền nền, không chỉ ruột glyph.</summary>
+    public const int YardTemplateMarginPx = 2;
+
+    /// <summary>
+    /// Ngưỡng NCC nhận một blip. 0.55 chứ không cao hơn: glyph xoay theo bản đồ vài độ và nền dưới
+    /// blip đổi liên tục, mà mẫu lại chỉ 17×21 nên vài pixel lệch đã kéo NCC xuống.
+    /// </summary>
+    public const double YardNccAccept = 0.55;
+
+    /// <summary>Quét ±2 px quanh tâm bbox rồi lấy điểm cao nhất — tâm màu lệch 2–4 px với glyph ⚡.</summary>
+    public const int YardNccSearchPx = 2;
+
+    /// <summary>
+    /// Mốc phải cách mép ROI ít nhất ngần này (×sx) mới dùng được. Mép vẽ của radar gần trùng mép
+    /// ROI nên blip sắp khuất bị CẮT: bbox co lại, tâm trôi vào trong, và pose lệch một cách âm thầm.
+    /// </summary>
+    public const double YardEdgeInsetRef = 6.0;
+
+    // Cong ti le: zoom doi thi s doi ~27 %, con blip la thi lech vai phan tram — loc bang EMA chat.
+    public const double YardScaleGate = 0.08;
+    public const double YardScaleEmaAlpha = 0.15;
+    public const int YardScaleReinitAfter = 6;
+
+    // Cong vi tri: sigma no theo thoi gian mat fix (nguoi chay ~14 mu/s).
+    public const double YardPosGateMu = 4.0;
+    public const double YardSigmaBaseMu = 1.5, YardSigmaRateMuS = 14.0;
+    public const double YardPosAlpha = 0.5, YardPosBeta = 0.05;
+
+    /// <summary>
+    /// Hướng: trộn nhẹ đo vào dead-reckoning, nhưng lệch quá 20° ba lần liên tiếp thì SNAP và neo lại
+    /// count — game nuốt delta chuột sau NUI, lúc đó DR sai hẳn chứ không trôi từ từ.
+    /// </summary>
+    public const double YardHeadingBlend = 0.35;
+    public const double YardHeadingSnapDeg = 20.0;
+    public const int YardHeadingSnapAfter = 3;
+
+    /// <summary>Dấu của dead-reckoning hướng theo count chuột. Suy luận; residual trong game xác nhận.</summary>
+    public const double YardHeadingSign = 1.0;
+
+    public const double YardFix1MaxHeadingAgeS = 4.0;
+
+    /// <summary>Buổi dạy không có count chuột nên θ chỉ còn đúng ngay sau một FIX2 — cửa sổ rất hẹp.</summary>
+    public const double YardTeachFix1MaxS = 0.75;
+
+    /// <summary>Blip lạ (người chơi khác, xe) bị loại bằng cổng quanh vị trí dự đoán của tracker.</summary>
+    public const double YardPredGatePx = 25.0;
+
+    public const double YardLostAfterS = 2.0;
+
+    // Luoi ban do: 1 mu ≈ 0,5 m nen o vuong 1 mu du min cho A* ma van du tho de 20–30 chuyen phu kin.
+    public const double YardCellMu = 1.0;
+    public const double YardGridMarginMu = 20.0;
+    public const int YardFreeDilateCells = 1;
+
+    /// <summary>DBSCAN gom vị trí máy: 3 mu ≈ 1,5 m — nhỏ hơn khoảng cách giữa hai máy biến áp.</summary>
+    public const double YardClusterEpsMu = 3.0;
+
+    /// <summary>
+    /// Khoảng cách chấm đích tối thiểu để một tick FULL_LOCK được dùng gán máy cho chuyến — chỉ để
+    /// loại chấm đang nằm NGAY DƯỚI mũi tên (đứng sát máy), không phải để loại chấm ở xa. FULL_LOCK
+    /// đã tự loại mảnh vỡ/bị che rồi, nên ngưỡng này nhỏ (6 px, không phải 20 px cũ): trạm biến áp ở
+    /// sân này cách nhau 5–6 m, chuyến ngắn thì chấm không bao giờ ra khỏi bán kính 27 px cũ.
+    /// </summary>
+    public const double YardLabelMinDotPx = 6.0;
+
+    /// <summary>Số tick FULL_LOCK tối thiểu để tin trung vị chấm đích của một chuyến.</summary>
+    public const int YardLabelMinTicks = 8;
+
+    /// <summary>Cửa sổ lấy "tư thế tiếp cận" trước lúc bảng mở: [t−0.8 s, t−0.3 s].</summary>
+    public const double YardApproachWindowStartS = 0.8, YardApproachWindowEndS = 0.3;
+
+    /// <summary>
+    /// Cửa sổ dự phòng khi chấm đích/cửa sổ tiếp cận bình thường trống — lùi về tư thế Ok GẦN NHẤT
+    /// trong ngần này trước lúc mở bảng. Dùng cho cả gán chuyến theo "vị trí đứng" (mục B) lẫn tư thế
+    /// tiếp cận dự phòng (mục C): chấm đích mất sớm không có nghĩa là pose người chơi cũng mất.
+    /// </summary>
+    public const double YardApproachFallbackWindowS = 2.0;
+
+    /// <summary>
+    /// Bán kính (mu) để gán một chuyến "chỉ có vị trí đứng" (không chấm đích) vào máy đã gom cụm gần
+    /// nhất. Rộng hơn <see cref="YardClusterEpsMu"/> một chút vì vị trí đứng đo xa máy hơn tâm cụm.
+    /// </summary>
+    public const double YardStandLabelRadiusMu = 6.0;
+
+    public const double YardRecFlushS = 1.0;
+    public const int YardFrameRingN = 40;
+    public const double YardStatusS = 0.5;
+
+    /// <summary>
+    /// Giá rủi ro men sát vật cản của A* sân — cùng dạng <c>ClearanceCost/(c+0.6)²</c> mà
+    /// <see cref="BoardPlanner"/> dùng. PR1 chỉ dùng để kiểm "mọi máy tới được".
+    /// </summary>
+    public const double YardEdgeCost = 18.0;
+
+    /// <summary>Đứng ngoài ô đã đi thì tìm ô free gần nhất trong bán kính này rồi mới lập đường.</summary>
+    public const double YardOffGridSearchMu = 15.0;
+
+    // ================================================================ bam waypoint (Yard*, PR3)
+    //
+    // Bo bam chi doi mot thu tu ban do: "may nao dang la dich" va "duong nao toi tu the tiep can cua
+    // no". Moi nguong duoi day tra loi mot cau hoi cu the trong chuoi do.
+
+    /// <summary>
+    /// Bán kính nhận máy đích: <c>T</c> (điểm vàng quy về hệ sân) cách tâm một máy trong ngần này thì
+    /// coi là máy đó. 6 mu ≈ 3 m — rộng hơn rms tâm cụm (≤ 1,5 mu) và hẹp hơn khoảng cách giữa hai
+    /// trạm biến áp trong sân.
+    /// </summary>
+    public const double YardMarkerIdRadiusMu = 6.0;
+
+    /// <summary>Số tick liên tiếp cùng một máy mới khoá — 8 tick = 0,2 s, đủ để bỏ một cú nhiễu T.</summary>
+    public const int YardMarkerLockTicks = 8;
+
+    /// <summary>Khoá chỉ mở khi T rời hẳn máy cũ (chuyến mới), không phải khi T rung.</summary>
+    public const double YardMarkerUnlockMu = 12.0;
+
+    public const int YardMarkerUnlockTicks = 40;
+
+    /// <summary>Điểm ngắm chạy trước mũi <see cref="YardLookaheadMu"/> mu (≈3 m) dọc đường đã kéo dây.</summary>
+    public const double YardLookaheadMu = 6.0;
+
+    /// <summary>
+    /// Còn ngần này cung đường thì GIAO LẠI cho luồng cũ (chấm thật → cột 3D → prompt → E). Bản đồ
+    /// chỉ hứa "đi tới gần đúng tư thế người đã đứng", mét cuối là việc của bộ dò đã chỉnh kỹ.
+    ///
+    /// 19/09 hạ 6 → 3: các máy trong sân cách nhau 5–6 m nên CẢ quãng đường chỉ dài 6–22 mu (log buổi
+    /// thử: "lập đường tới máy 0: 3 khúc, 22 mu", "tới máy 16: 2 khúc, 6 mu"). Để 6 mu thì vừa lập
+    /// đường xong đã đủ điều kiện giao lại, bộ bám không đi nổi một bước.
+    /// </summary>
+    public const double YardHandoverMu = 3.0;
+
+    /// <summary>
+    /// Tư thế tiếp cận chỉ quan sát MỘT lần (<c>lowConfidence</c>) hoặc máy suy từ vị trí đứng
+    /// (<c>fromStand</c>) thì giao lại SỚM hơn — số đo đó có thể lệch vài mu, bám sát nó vô nghĩa.
+    /// 19/09 hạ 10 → 5 cùng lý do: 10 mu còn dài hơn quãng đường của phần lớn chuyến.
+    /// </summary>
+    public const double YardHandoverLowConfMu = 5.0;
+
+    /// <summary>
+    /// Chấm vàng THẬT đã khoá và đủ gần/đủ thẳng thì giao lại ngay, không đợi hết cung.
+    ///
+    /// 19/09 hạ 25 → 8. 25 (×Px 1,333 = 33 px màn) là gần như CẢ SÂN: đếm trên log buổi thử, 80/115 mẫu
+    /// dưới 12 px, 13 mẫu 20–34, chỉ 3 mẫu trên 34 — nên luật này nổ ngay tick đầu của mọi chuyến và bộ
+    /// bám chưa bao giờ lái (cả phiên đúng MỘT tick trạng thái <c>MAP_</c>). Prompt E thật nổ khi chấm
+    /// còn 5,9–9,8 px, nên 8 (≈10,7 px màn) mới đúng nghĩa "đã tới nơi rồi, trả lái cho luồng cũ".
+    /// </summary>
+    public const double YardHandoverDotPx = 8.0;
+
+    public const double YardHandoverDotDeg = 30.0;
+
+    /// <summary>
+    /// Khoảng cách trong <c>TargetOutput</c> tổng hợp. SÀN 40·Px là bắt buộc: waypoint 3 m chỉ ~6–8 px
+    /// trên minimap, mà <see cref="RamLinePassTriggerDistPx"/> 14·Px, <see cref="ArrivalShieldEntryDistPx"/>
+    /// 18.5·Px và deadzone gần 23·Px đều đo bằng px — để số thật vào thì servo ngừng lái ngay từ
+    /// waypoint đầu tiên. Chỉ <c>rel</c> mang thông tin; dist giữ ở vùng "xa".
+    /// </summary>
+    public const double YardSynthDistMinPx = 40.0, YardSynthDistMaxPx = 400.0;
+
+    /// <summary>Độ tin cậy của chấm tổng hợp — trên <see cref="RamLineMinConf"/> để servo bám bình thường.</summary>
+    public const double YardSynthConf = 0.85;
+
+    public const double YardReplanS = 1.0;
+
+    /// <summary>
+    /// Sàn giữa hai lần A*. Lập lại còn bị ép bởi <c>Reinit</c>, lệch đường và lúc thang thoát kẹt trả
+    /// quyền; không có sàn này thì một sự kiện lặp lại có thể gọi A* mỗi tick.
+    /// </summary>
+    public const double YardReplanMinS = 0.25;
+
+    public const double YardOffPathReplanMu = 4.0;
+
+    /// <summary>Hết chạy nước rút khi sắp tới nơi hoặc sắp cua — người chơi cũng làm đúng thế.</summary>
+    public const double YardSprintMinRemainingMu = 12.0;
+
+    public const double YardSprintMaxTurnDeg = 35.0;
+
+    public const double YardTurnWindowMu = 8.0;
+
+    /// <summary>
+    /// Ngưỡng tin pose cho hai quyết định KHÔNG phải lái: tắt nước rút, và chọn bên thoát kẹt theo ô
+    /// trống quanh mình thay vì theo mật độ biên Canny.
+    /// </summary>
+    public const double YardFollowMinConf = 0.6;
+
+    /// <summary>Bán kính đếm ô trống mỗi bên khi chọn bên thoát kẹt bằng bản đồ.</summary>
+    public const double YardEscapeSideRadiusMu = 10.0;
+
+    /// <summary>
+    /// Khoảng thoát tối thiểu (ô) để một đoạn thẳng được coi là "nhìn thấy" khi kéo dây.
+    ///
+    /// Kế hoạch ghi 1 ô, nhưng 1 ô nghĩa là "chỉ cần không nằm TRONG ô bị chặn" — đường kéo dây khi đó
+    /// đi sát mặt vật cản, mà mép vùng free lại chính là <c>Dilate(đã đi, 1 ô)</c>, tức đã lấn ra ngoài
+    /// chỗ người thật sự đi 1 ô. Mô phỏng đo được: với 1 ô, hai chuyến có vật cản cọ tường 15–20 tick;
+    /// với 2 ô thì 0 tick và đường chỉ dài thêm ~2 mu. Đi giữa hành lang là cả lý do A* có giá rủi ro
+    /// <see cref="YardEdgeCost"/> ngay từ đầu — kéo dây không được phép vứt nó đi.
+    /// </summary>
+    public const double YardLosMinClear = 2.0;
 
     // ================================================================ vong lap
     /// <summary>

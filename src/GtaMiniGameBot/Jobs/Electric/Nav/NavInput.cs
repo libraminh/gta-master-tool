@@ -20,7 +20,20 @@ internal enum NavKey
     D = 8,
     E = 16,
     Esc = 32,
-    Shift = 64
+    Shift = 64,
+
+    /// <summary>
+    /// KHÔNG phải phím — cờ giả nói với lớp sàn phím (<c>NavBot.ComposeNavKeys</c>): "đừng tự thêm W".
+    ///
+    /// Vì sao cần: <c>_apply_world_nav_input</c> ép W vào MỌI tập phím (kể cả tập rỗng của KET1), nên
+    /// một pha muốn trượt ngang THUẦN (A/D không kèm W) hay quay tại chỗ là không diễn đạt được. Thang
+    /// thoát kẹt cần cả hai. Dùng bit giả thay vì thêm tham số vì chuỗi <c>(NavKey keys, string state)</c>
+    /// đã đi qua bốn lớp — thêm tham số phải sửa hết bốn.
+    ///
+    /// Bit này phải bị LỌC trước khi thành phím thật; <see cref="NavInput.Apply"/> và bộ tra mã phím tự
+    /// lọc để một chỗ quên strip không làm ném <see cref="ArgumentOutOfRangeException"/> giữa lúc chạy.
+    /// </summary>
+    NoAutoW = 128
 }
 
 internal enum MouseAxis { Both, X, Y }
@@ -89,6 +102,9 @@ internal sealed class NavInput : IDisposable
     /// <summary>Lỗi của luồng chuột (SendInput thiếu). Khác null là luồng đã tự dừng.</summary>
     public Exception Fault { get; private set; }
 
+    /// <summary><c>mouse_global_speed_multiplier</c> — ai cần SUY RA góc từ count phải biết số này.</summary>
+    public double MouseSpeedMultiplier => _xMultiplier;
+
     /// <param name="mouseSpeedMultiplier"><c>mouse_global_speed_multiplier</c> — chỉ nhân trục X.</param>
     public NavInput(double mouseSpeedMultiplier)
     {
@@ -109,7 +125,7 @@ internal sealed class NavInput : IDisposable
         lock (_lock) _held |= k;
     }
 
-    private static ushort Vk(NavKey k) => k switch
+    private static ushort Vk(NavKey k) => (k & ~NavKey.NoAutoW) switch
     {
         NavKey.W => VK_W,
         NavKey.A => VK_A,
@@ -158,6 +174,7 @@ internal sealed class NavInput : IDisposable
     /// </summary>
     public void Apply(NavKey wanted)
     {
+        wanted &= ~NavKey.NoAutoW;      // co gia cua lop san phim, khong bao gio thanh phim that
         lock (_lock)
         {
             double now = NavClock.Now;
